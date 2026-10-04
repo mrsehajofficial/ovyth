@@ -1,0 +1,32 @@
+// 015_else_branch_ctrl.vy -- `continue` / `break` living only in an else branch
+//
+// The code generator asks the loop body whether it uses `continue` / `break` to
+// decide whether to emit the jump label. That walk used to inspect only the
+// `if` side of a conditional, so a statement that appeared only in the `else`
+// branch produced a native binary with a `goto` to a label that was never
+// declared: the interpreter ran the program fine and the native backend failed
+// to compile it. A `for` body with no `break` at all must likewise emit no
+// break label, or clang warns about it on every build.
+
+// `continue` lives only in the else branch
+for x in [1, 2, 3, 4] {
+    if x == 2 or x == 4 {
+        print("even", x)
+    } else {
+        continue
+    }
+}
+
+// `break` lives only in the else branch
+for x in [1, 2, 3, 4] {
+    if x < 3 {
+        print("go", x)
+    } else {
+        break
+    }
+}
+
+// no break or continue anywhere in the body
+for x in [1, 2] {
+    print("plain", x)
+}

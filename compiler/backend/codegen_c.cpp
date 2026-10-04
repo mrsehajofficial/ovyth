@@ -145,16 +145,41 @@ bool accumulates_string(const std::string& pre, const StmtList& body,
 
 // Does `body` use `continue` at this loop level? Nested loops get their own
 // label, so a `continue` inside one does not count for the outer loop.
+// `If` must be walked on both sides: a `continue` that appears only in the
+// `else` branch still emits a `goto` to the label.
 bool body_uses_continue(const StmtList& body) {
   for (const Stmt* s : body) {
     if (!s) continue;
     if (s->kind == StmtKind::Continue) return true;
     if (s->kind == StmtKind::While || s->kind == StmtKind::For) continue;
-    if (s->kind == StmtKind::If && body_uses_continue(s->body)) return true;
+    if (s->kind == StmtKind::If && (body_uses_continue(s->body) ||
+                                    body_uses_continue(s->else_body)))
+      return true;
     if (s->kind == StmtKind::Block && body_uses_continue(s->body)) return true;
     if (s->kind == StmtKind::Try) {
       if (body_uses_continue(s->body)) return true;
       if (body_uses_continue(s->else_body)) return true;
+    }
+  }
+  return false;
+}
+
+// The same walk for `break`. emit_for only jumps to its break label from an
+// explicit `break`, so a `for` body without one would emit a label C compilers
+// warn about as unused. Nested loops are skipped for the same reason as above:
+// their `break` belongs to them.
+bool body_uses_break(const StmtList& body) {
+  for (const Stmt* s : body) {
+    if (!s) continue;
+    if (s->kind == StmtKind::Break) return true;
+    if (s->kind == StmtKind::While || s->kind == StmtKind::For) continue;
+    if (s->kind == StmtKind::If &&
+        (body_uses_break(s->body) || body_uses_break(s->else_body)))
+      return true;
+    if (s->kind == StmtKind::Block && body_uses_break(s->body)) return true;
+    if (s->kind == StmtKind::Try) {
+      if (body_uses_break(s->body)) return true;
+      if (body_uses_break(s->else_body)) return true;
     }
   }
   return false;
@@ -1351,6 +1376,7 @@ void Gen::emit_for(const Stmt* s) {
   cur_roots_.push_back(var);
   line("VyValue " + var + " = " + S + "->items[" + X + "];");
   bool uses_continue = body_uses_continue(s->body);
+  bool uses_break = body_uses_break(s->body);
   loops_.push_back(L);
   block(s->body, false);
   loops_.pop_back();
@@ -1358,7 +1384,9 @@ void Gen::emit_for(const Stmt* s) {
   pop_scope();
   indent_--;
   line("}");
-  line(L.brk + ": ;");
+  // Only emitted when the body actually jumps to it -- see the note on the
+  // continue label in the While case.
+  if (uses_break) line(L.brk + ": ;");
   indent_--;
   line("}");
   (void)top;
