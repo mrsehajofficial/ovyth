@@ -39,6 +39,11 @@ bugs the benchmarks exposed, and what will close the rest of the gap.
 
 ## Setup
 
+**Vayu targets Linux** (x86-64). The compiler resolves the runtime archive and
+headers through `/proc/self/exe`, so a build on macOS or Windows will not find
+them yet. There is no prebuilt binary to download — you build it from source,
+which takes about a minute.
+
 On Debian/Ubuntu:
 
 ```bash
