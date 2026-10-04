@@ -1,0 +1,5 @@
+print(1 > 2 ? "no" : "yes")
+print(true and false)
+print(false or true)
+print(not true)
+print(0 == null)

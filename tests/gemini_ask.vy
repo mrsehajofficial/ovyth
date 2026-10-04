@@ -1,0 +1,60 @@
+// Test program: ask one question, send it to a local OpenAI-compatible
+// provider (gemini-web2api), extract the answer from the JSON, print it.
+//
+// Run it with:   build/vyc run tests/gemini_ask.vy
+// Point it elsewhere with env vars, e.g.:
+//   AI_API_URL=http://localhost:8081/v1/chat/completions AI_MODEL=gemini-auto \
+//       build/vyc run tests/gemini_ask.vy
+// Your provider needs no key; if yours does, set AI_API_KEY.
+
+api_url = env_or("AI_API_URL", "http://localhost:8081/v1/chat/completions")
+model = env_or("AI_MODEL", "gemini-auto")
+api_key = env_or("AI_API_KEY", "")
+
+headers = {}
+if api_key != "" {
+    headers["Authorization"] = "Bearer " + api_key
+}
+
+print("Ask the AI anything (type 'exit' to quit)")
+
+while true {
+    user_message = input("> ")
+    if user_message == null {
+        break
+    }
+    if user_message == "" or user_message == "exit" {
+        break
+    }
+
+    try {
+        response = http.post(
+            api_url,
+            headers = headers,
+            json = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": user_message
+                    }
+                ]
+            }
+        )
+
+        if response.status != 200 {
+            print("HTTP " + str(response.status) + ": " + response.body)
+            continue
+        }
+
+        data = json.parse(response.body)
+        answer = data["choices"][0]["message"]["content"]
+        print("")
+        print(answer)
+        print("")
+    } catch error {
+        print("error:", error)
+    }
+}
+
+print("bye")

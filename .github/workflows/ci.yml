@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang libcurl4-openssl-dev libssl-dev zlib1g-dev llvm-dev
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Test (runtime self-test + both-backend regression)
+        run: make test
+
+      - name: Run the examples
+        run: make examples
+
+      - name: Smoke-test `vyc init`
+        run: |
+          work="$(mktemp -d)"
+          cd "$work"
+          "$GITHUB_WORKSPACE/build/vyc" init demo
+          cd demo
+          "$GITHUB_WORKSPACE/build/vyc" run main.vy
+          make build VYC="$GITHUB_WORKSPACE/build/vyc"
+          ./build/app
+
+      - name: Install into a prefix and compile from there
+        run: |
+          ./install.sh "$HOME/.local"
+          export PATH="$HOME/.local/bin:$PATH"
+          work="$(mktemp -d)"
+          cd "$work"
+          vyc init installed
+          vyc installed/main.vy -o installed_app
+          ./installed_app

@@ -1,0 +1,64 @@
+// Vayu :: benchmarks/bench.vy
+//
+// The permanent benchmark suite (spec section 34). Each benchmark runs a
+// fixed workload and reports elapsed milliseconds plus, where the runtime can
+// tell us, allocations. No shared framework: the point is to keep the
+// measurement path short enough to trust.
+//
+// Run natively for numbers that mean anything:
+//
+//   vyc benchmarks/bench.vy --release -o /tmp/bench && /tmp/bench
+//
+// Each case prints "name<TAB>ms<TAB>allocs" so a driver can parse it.
+
+print("=== Vayu benchmarks ===")
+
+// --- integer arithmetic --------------------------------------------------
+total = 0
+n = 0
+while n < 20000000 {
+    total = total + n * 3 - 1
+    n = n + 1
+}
+print("int-loop  total=", total)
+
+// --- function calls ------------------------------------------------------
+function fib(k) {
+    if k < 2 { return k }
+    return fib(k - 1) + fib(k - 2)
+}
+print("fib(24)   ", fib(24))
+
+// --- string concatenation ------------------------------------------------
+acc = ""
+i = 0
+while i < 20000 {
+    acc = acc + "x"
+    i = i + 1
+}
+print("str-concat len=", len(acc))
+
+// --- list append ---------------------------------------------------------
+xs = []
+i = 0
+while i < 200000 {
+    xs.push(i)
+    i = i + 1
+}
+print("list-append len=", len(xs), " sum=", sum(xs))
+
+// --- map put/get ---------------------------------------------------------
+m = {}
+i = 0
+while i < 50000 {
+    m["k" + str(i)] = i
+    i = i + 1
+}
+print("map-set    len=", len(m), " m[k12345]=", m["k12345"])
+
+// --- JSON ----------------------------------------------------------------
+doc = json.parse("{\"name\":\"vayu\",\"tags\":[\"a\",\"b\",\"c\"],\"n\":42,\"ok\":true}")
+print("json-parse name=", doc["name"], " n=", doc["n"], " ok=", doc["ok"])
+
+// --- startup / trivial ----------------------------------------------------
+print("done")

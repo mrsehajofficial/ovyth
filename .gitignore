@@ -1,0 +1,25 @@
+# ---- build tree -----------------------------------------------------------
+build/
+
+# ---- compiler intermediates ----------------------------------------------
+*.o
+*.d
+*.ll
+*.bc
+
+# ---- binaries from running `vyc <file>.vy` in place ------------------------
+# (vyc writes the executable next to the source, with the extension removed)
+examples/chatbot/chatbot
+tests/gemini_ask
+/hello
+/hello_world
+
+# ---- editors and OS -------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# ---- scratch --------------------------------------------------------------
+*.tmp
