@@ -29,7 +29,7 @@ print("")
 // A realistic OpenAI chat completion response
 sample_completion = "{\"id\":\"chatcmpl-abc123\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Arena allocators free all request-scoped memory in O(1) by releasing an entire block, eliminating per-object malloc/free overhead. This is critical for agent workloads where each request creates hundreds of temporary strings, JSON objects, and embedding inputs.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":52,\"total_tokens\":94}}"
 
-N_JSON = 5000
+N_JSON = 50000
 t0 = now()
 i = 0
 last = ""
@@ -45,7 +45,7 @@ print("json_parse\t" + str(round(t_json_parse)) + "ms\t" + str(N_JSON) + " parse
 
 // Parse once, then access the nested path many times
 doc = json.parse(sample_completion)
-N_ACCESS = 50000
+N_ACCESS = 500000
 t0 = now()
 i = 0
 content = ""
@@ -70,7 +70,7 @@ chunks = [
     "Adaptive I/O chooses zero-copy vs buffered based on payload size and hardware capabilities.",
 ]
 
-N_CTX = 5000
+N_CTX = 100000
 t0 = now()
 i = 0
 ctx = ""
@@ -111,7 +111,7 @@ function chunk_text(text, size) {
 
 doc_template = "This document discusses arena allocators and their role in high-performance AI agent systems where memory allocation overhead is critical for latency sensitive workloads processing thousands of requests per second with minimal garbage collection pauses"
 
-N_DOCS = 5000
+N_DOCS = 500
 t0 = now()
 total_chunks = 0
 i = 0
@@ -126,7 +126,7 @@ print("chunk_pipeline\t" + str(round(t_chunk)) + "ms\t" + str(N_DOCS) + " docs\t
 // ----------------------------------------------------------------- 5. String-keyed map (agent state)
 
 // Agent state is often a map of string -> value (tool results, variables)
-N_MAP = 50000
+N_MAP = 10000
 t0 = now()
 i = 0
 state = {}
@@ -150,7 +150,7 @@ print("hash_map_str\t" + str(round(t_map)) + "ms\t" + str(N_MAP) + " inserts+" +
 // Each tool call returns a small JSON object; parse many of them
 tool_result = "{\"status\":\"ok\",\"data\":{\"query\":\"arena allocator\",\"results\":[{\"title\":\"Arena Allocator Design\",\"score\":0.92},{\"title\":\"Memory Management\",\"score\":0.87}],\"total\":2}}"
 
-N_TOOL = 5000
+N_TOOL = 20000
 t0 = now()
 i = 0
 total_score = 0.0
@@ -168,7 +168,7 @@ print("multi_parse\t" + str(round(t_tool)) + "ms\t" + str(N_TOOL) + " tool_jsons
 // The bottleneck in any JSON parser: find the next structural character
 haystack = "The quick brown fox jumps over the lazy dog. Arena allocators free all request-scoped memory in O(1). SIMD scanning finds structural characters at 16 bytes per cycle."
 needle = "\""
-N_SCAN = 50000
+N_SCAN = 1000000
 t0 = now()
 i = 0
 found = 0
