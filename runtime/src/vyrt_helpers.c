@@ -501,13 +501,17 @@ VyValue vy_h_sum(VyValue list, int* threw) {
 
 VyValue vy_h_join(VyValue sep, VyValue list) {
   if (vy_tagof(list) != VY_LIST) return vy_str(vy_str_new("", 0));
-  vy_gc_begin_mutation();
-  VyStr* acc = vy_str_new("", 0);
+
+  /* Use string builder for O(n) join instead of repeated concatenation */
+  VyStrBuilder* sb = vy_sb_new();
+  int first = 1;
   for (uint32_t i = 0; i < list.list->len; i++) {
-    if (i) acc = vy_str_concat(acc, sep.str);
-    acc = vy_str_concat(acc, vy_render(list.list->items[i]));
+    if (!first) vy_sb_append(sb, sep.str->bytes, sep.str->len);
+    VyStr* s = vy_render(list.list->items[i]);
+    vy_sb_append(sb, s->bytes, s->len);
+    first = 0;
   }
-  vy_gc_end_mutation();
-  return vy_str(acc);
+  VyStr* result = vy_sb_finish(sb);
+  return vy_str(result);
 }
 
