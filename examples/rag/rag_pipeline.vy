@@ -130,7 +130,7 @@ function cosine_sim(a, b) {
     mag_a = (a[0]*a[0] + a[1]*a[1] + a[2]*a[2] + a[3]*a[3]) ^ 0.5
     mag_b = (b[0]*b[0] + b[1]*b[1] + b[2]*b[2] + b[3]*b[3]) ^ 0.5
     if mag_a == 0.0 or mag_b == 0.0 { return 0.0 }
-    return dot / (mag_a * mag_b)
+    return float(dot) / (mag_a * mag_b)
 }
 
 // Top-k retrieval by cosine similarity
