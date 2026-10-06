@@ -495,13 +495,14 @@ const char* vy_http_libcurl_version(void);
 
 /* --------------------------------------------------- user functions */
 
-typedef VyValue (*VyFnPtr)(VyValue* args, int argc);
+struct VyFunc;
+typedef VyValue (*VyFnPtr)(struct VyFunc* fn, VyValue* args, int argc);
 struct VyFunc {
   VyFnPtr   call;
   VyStr*    name;
   int       arity;
   int       variadic;
-  void*     upvals;      /* opaque interpreter closure, if any */
+  void*     upvals;      /* opaque closure environment / upvalues */
 };
 
 /* ------------------------------------------------------- gc / memory */
@@ -513,6 +514,11 @@ struct VyFunc {
 void  vy_gc_collect(void);
 void  vy_gc_register_root(VyValue* slot);
 void  vy_gc_unregister_root(VyValue* slot);
+size_t vy_gc_roots_mark(void);
+void   vy_gc_roots_restore(size_t mark);
+typedef void (*VyGcScanner)(void);
+void  vy_gc_set_scanner(VyGcScanner s);
+void  vy_gc_mark_value(VyValue v);
 void  vy_gc_collect_ex(VyValue* extra_roots, int n);
 size_t vy_gc_live_bytes(void);
 size_t vy_gc_heap_bytes(void);
@@ -532,6 +538,54 @@ void vy_throw_str(VyStr* s) __attribute__((noreturn));
 void vy_type_error(const char* want, VyValue got) __attribute__((noreturn));
 void vy_index_error(const char* what, int64_t idx, int64_t len) __attribute__((noreturn));
 void vy_zero_error(void) __attribute__((noreturn));
+
+/* -------------------------------------------------------- arena allocator */
+
+/* Request-scoped region allocator.  All objects allocated from an arena are
+ * freed in O(1) by vy_arena_reset() / vy_arena_free().  Arena strings are NOT
+ * GC-tracked; they must not be stored in long-lived GC containers.          */
+typedef struct VyArena VyArena;
+
+VyArena* vy_arena_new(size_t block_size);   /* 0 -> 64 KB default          */
+void*    vy_arena_alloc(VyArena* a, size_t n);
+void*    vy_arena_calloc(VyArena* a, size_t n);
+char*    vy_arena_strdup(VyArena* a, const char* s, size_t n);
+VyStr*   vy_arena_str(VyArena* a, const char* p, size_t n);
+void     vy_arena_reset(VyArena* a);   /* free all allocs, keep block       */
+void     vy_arena_free(VyArena* a);    /* free everything incl. struct      */
+size_t   vy_arena_used(VyArena* a);
+size_t   vy_arena_peak(VyArena* a);
+
+/* ------------------------------------------------- fast / SIMD JSON */
+
+/* Drop-in replacement for vy_json_parse with optional arena for temporaries. */
+VyValue vy_json_parse_fast(const char* text, size_t len, VyArena* arena);
+
+/* Typed field accessors -- avoid building intermediate VyValues. */
+int     vy_json_get_str  (VyValue obj, const char* key, const char** out_data, size_t* out_len);
+int     vy_json_get_int  (VyValue obj, const char* key, int64_t* out);
+int     vy_json_get_float(VyValue obj, const char* key, double* out);
+VyValue vy_json_get_array(VyValue obj, const char* key);
+
+/* AI-specific chat/tool-call helpers. */
+VyValue vy_json_chat_content(const char* body, size_t len);
+int     vy_json_tool_call(const char* body, size_t len,
+                          VyValue* out_name, VyValue* out_args);
+
+/* --------------------------------------------------- HTTP connection pool */
+
+typedef struct VyHttpPool VyHttpPool;
+
+VyHttpPool*     vy_http_pool_new(int max_conns);   /* 0 -> 8 default        */
+void            vy_http_pool_free(VyHttpPool* p);
+VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
+                                     const char* method, const char* url,
+                                     const char* body, const char* content_type,
+                                     const char* headers_json,
+                                     const char* params_json,
+                                     double timeout_s);
+VyHttpPool*     vy_http_default_pool(void);   /* lazily-created global pool */
+void            vy_http_pool_cleanup(void);   /* free global pool           */
 
 #ifdef __cplusplus
 }

@@ -151,7 +151,7 @@ static VyValue http_call(const std::string& method, VyValue url_v,
 // ---------------------------------------------------------------------------
 // builtin dispatch
 // ---------------------------------------------------------------------------
-VyValue Interp::call_builtin(const std::string& qualifier, const Expr* site, Env& env,
+VyValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std::shared_ptr<Env> env,
                              const ExprList& args,
                              const std::vector<NamedArg>& named, bool* handled) {
   *handled = true;
@@ -186,7 +186,7 @@ VyValue Interp::call_builtin(const std::string& qualifier, const Expr* site, Env
         // `http.get(...)`: the namespace has no field of that name, so call the
         // qualified builtin `ns.method`; but a real field (e.g. a user variable
         // shadowing the namespace) is resolved as a value.
-        VyValue* slot = env.find(ns);
+        VyValue* slot = env ? env->find(ns) : nullptr;
         bool is_ns_map = slot && vy_tagof(*slot) == VY_MAP;
         if (is_ns_map && !vy_map_has(slot->map, vy_s(callee->name)))
           q = ns + "." + callee->name;

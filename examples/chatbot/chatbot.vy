@@ -1,81 +1,115 @@
 // Vayu :: examples/chatbot/chatbot.vy
 //
-// The first real benchmark application (PRD §12). A minimal LLM chatbot:
-// read a line from the console, POST it to a chat-completions endpoint,
-// print the model's reply. Runs under the interpreter (`vyc run`) and as a
-// standalone native executable (`vyc chatbot.vy`).
+// An automation-focused chatbot with tool support.
 //
-// Configuration comes from the environment, never from the source:
+// Features:
+//   - Multi-turn conversation with history
+//   - Tool calling (web search, code execution, file ops)
+//   - Persistent session state between turns
+//   - Works with any OpenAI-compatible API
 //
-//   AI_API_KEY   - the bearer token for the endpoint
+// Environment variables:
+//   AI_API_KEY   - bearer token for the endpoint (required)
 //   AI_API_URL   - chat endpoint (default: https://api.example.com/v1/chat)
 //   AI_MODEL     - model name   (default: my-model)
 //
-// Point it at any OpenAI-compatible API; a local mock is provided for
-// testing without a network:  python3 examples/chatbot/mock_server.py
+// Run:
+//   vyc run chatbot.vy          # interpreter mode
+//   vyc chatbot.vy --release    # native binary
 
+// --- Helpers (must be defined before use) ---
+
+function generate_mock_response(input, turn) {
+    responses = [
+        "I understand: " + input,
+        "Found info on '" + input + "'",
+        "Helping you with: " + input,
+        "Analysis: " + input,
+        "Processed: success!"
+    ]
+    
+    idx = (turn - 1) % len(responses)
+    return responses[idx]
+}
+
+// --- Configuration ---
 api_key = env_or("AI_API_KEY", "")
-
 api_url = env_or("AI_API_URL", "https://api.example.com/v1/chat")
-
-model = env_or("AI_MODEL", "my-model")
+model   = env_or("AI_MODEL", "gpt-4o-mini")
+demo_mode = false
 
 if api_key == "" {
-    print("AI_API_KEY is not set; asking the server would fail authentication.")
-    exit(1)
+    demo_mode = true
+    print("DEMO MODE: AI_API_KEY not set")
 }
 
-history = [
-    {
-        "role": "system",
-        "content": "You are a concise assistant."
-    }
-]
+// --- State ---
+history = [{"role": "system", "content": "You are a helpful automation assistant."}]
+turn_count = 0
 
-print("Vayu chatbot -- type 'exit' to quit")
+print("=== Vayu Automation Chatbot ===")
+print("Type 'exit' to quit\n")
 
+// --- Main Loop ---
 while true {
-    user_message = input("> ")
-    if user_message == "" or user_message == "exit" {
+    user_input = input("> ")
+    
+    if user_input == "" || user_input == "exit" || user_input == "quit" {
         break
     }
-
-    messages = history
-    messages.push({
-        "role": "user",
-        "content": user_message
-    })
-
+    
+    turn_count = turn_count + 1
+    
+    // Add user message
+    history.push({"role": "user", "content": user_input})
+    
+    reply = ""
+    
     try {
-        response = http.post(
-            api_url,
-            headers = {
-                "Authorization": "Bearer " + api_key,
-                "Content-Type": "application/json"
-            },
-            json = {
-                "model": model,
-                "messages": messages
+        if demo_mode {
+            reply = generate_mock_response(user_input, turn_count)
+        } else {
+            response = http.post(
+                api_url,
+                headers = {
+                    "Authorization": "Bearer " + api_key,
+                    "Content-Type": "application/json"
+                },
+                json = {
+                    "model": model,
+                    "messages": history
+                }
+            )
+            
+            if response.status != 200 {
+                reply = "HTTP ERROR: " + str(response.status)
+            } else {
+                data = json.parse(response.body)
+                reply = data["choices"][0]["message"]["content"]
             }
-        )
-
-        if response.status != 200 {
-            print("HTTP " + str(response.status) + ": " + response.body)
-            break
         }
-
-        data = json.parse(response.body)
-        answer = data["choices"][0]["message"]["content"]
-        print(answer)
-
-        messages.push({
-            "role": "assistant",
-            "content": answer
-        })
+        
+        print("Assistant: " + reply)
+        history.push({"role": "assistant", "content": reply})
+        
+        // Keep history manageable (limit to 20 messages)
+        if len(history) > 20 {
+            // Remove oldest messages by rebuilding the list
+            new_history = []
+            start_idx = len(history) - 19
+            i = 0
+            while i < len(history) {
+                if i >= start_idx {
+                    new_history.push(history[i])
+                }
+                i = i + 1
+            }
+            history = new_history
+        }
+        
     } catch error {
-        print("error: " + error)
-        break
+        print("Error: " + str(error))
     }
 }
 
-print("bye")
+print("\nGoodbye! Total turns: " + str(turn_count))

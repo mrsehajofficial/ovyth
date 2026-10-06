@@ -1,0 +1,11 @@
+sample = "{\"a\":{\"b\":\"hello_vayu_gc_test\"}}"
+N = 300
+i = 0
+last = ""
+while i < N {
+  doc = json.parse(sample)
+  a_val = doc["a"]
+  last = a_val["b"]
+  i = i + 1
+}
+print(last)

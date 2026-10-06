@@ -1,4 +1,3 @@
-// Vayu :: compiler/backend/codegen_c.cpp
 //
 // Lowering the AST to C.
 //
@@ -25,6 +24,7 @@
 
 #include <cstdio>
 #include <functional>
+#include <iostream>
 #include <set>
 #include <sstream>
 #include <string>
@@ -564,9 +564,10 @@ std::string Gen::ex(const Expr* e) {
 
     case ExprKind::Assign: {
       std::string v = fresh();
-      if (e->op == Tok::ASSIGN)
+      if (e->op == Tok::ASSIGN) {
         return "({ VyValue " + v + " = " + ex(e->b) + "; " +
                emit_assign(e->a, v) + "; " + v + "; })";
+      }
       // Compound: the interpreter evaluates the value, then the current
       // target, then applies the operator and rebinds.
       std::string cur = fresh();
@@ -589,16 +590,22 @@ std::string Gen::ex(const Expr* e) {
 
     case ExprKind::Index: {
       std::string b = fresh(), i = fresh(), o = fresh();
-      return "({ VyValue " + b + " = " + ex(e->a) + "; VyValue " + i + " = " +
-             ex(e->b) + "; VyValue " + o + "; if (vy_h_index(" + b + ", " + i +
-             ", &" + o + ")) vy_throw_value(vy_h_err_value()); " + o + "; })";
+      // Pin base and index via mutation guard: intermediate objects on the C
+      // stack are not GC roots, so a collection triggered by vy_str_lit (or
+      // any other allocation inside ex(e->b)) would free them. The mutation
+      // counter is nestable so chained calls are safe.
+      return "({ vy_gc_begin_mutation(); VyValue " + b + " = " + ex(e->a) +
+             "; VyValue " + i + " = " + ex(e->b) + "; VyValue " + o +
+             "; if (vy_h_index(" + b + ", " + i + ", &" + o + ")) { vy_gc_end_mutation(); vy_throw_value(vy_h_err_value()); } " +
+             "vy_gc_end_mutation(); " + o + "; })";
     }
 
     case ExprKind::Member: {
       std::string b = fresh(), o = fresh();
-      return "({ VyValue " + b + " = " + ex(e->a) + "; VyValue " + o +
-             "; if (vy_h_member(" + b + ", " + quote_c(e->name) + ", &" + o +
-             ")) vy_throw_value(vy_h_err_value()); " + o + "; })";
+      return "({ vy_gc_begin_mutation(); VyValue " + b + " = " + ex(e->a) +
+             "; VyValue " + o + "; if (vy_h_member(" + b + ", " + quote_c(e->name) +
+             ", &" + o + ")) { vy_gc_end_mutation(); vy_throw_value(vy_h_err_value()); } " +
+             "vy_gc_end_mutation(); " + o + "; })";
     }
 
     case ExprKind::Slice:    return emit_slice(e);
@@ -754,10 +761,10 @@ std::string Gen::emit_closure(const Expr* e) {
   // a name it does not define itself would silently miscompile, so it is
   // rejected with a clear message instead.
   std::string cname = "vy_anon_" + std::to_string(tmp_++);
-  // Match VyFnPtr exactly: (VyValue* argv, int argc). Parameters are read
+  // Match VyFnPtr exactly: (VyFunc* fn, VyValue* argv, int argc). Parameters are read
   // positionally out of argv, so the emitted body is ABI-compatible with
   // everything else that stores a VyFunc.
-  std::string sig = "static VyValue " + cname + "(VyValue* _argv, int _argc)";
+  std::string sig = "static VyValue " + cname + "(struct VyFunc* _fn, VyValue* _argv, int _argc)";
 
   // Emit the body into a scratch buffer with its own scope chain, then append
   // it to the module's deferred-definition list.
@@ -788,6 +795,7 @@ std::string Gen::emit_closure(const Expr* e) {
          std::to_string(i) + "];");
   block(e->body, false);
   if (fn_has_return_) line(ret_label_ + ": ;");
+  line("  vy_gc_roots_restore(_roots_mark);");
   line("  return _ret; }");
   body_buf.swap(out);
   indent_ = 0;
@@ -796,6 +804,7 @@ std::string Gen::emit_closure(const Expr* e) {
   line(sig + " {");
   indent_++;
   line("VyValue _ret = vy_nil();");
+  line("size_t _roots_mark = vy_gc_roots_mark();");
   emit_root_prologue();
   cur_roots_.swap(outer_roots);
   out += body_buf;
@@ -1440,6 +1449,7 @@ void Gen::emit_function(const Stmt* s) {
   fn_has_return_ = false;
   block(s->body, false);
   if (fn_has_return_) line(ret_label_ + ": ;");
+  line("  vy_gc_roots_restore(_roots_mark);");
   line("  return _ret; }");
   body_buf.swap(out);
   indent_ = 0;
@@ -1448,6 +1458,7 @@ void Gen::emit_function(const Stmt* s) {
   line(sig.str() + " {");
   indent_++;
   line("VyValue _ret = vy_nil();");
+  line("size_t _roots_mark = vy_gc_roots_mark();");
   emit_root_prologue();
   cur_roots_.swap(outer_roots);   // done: locals are rooted by the prologue
   out += body_buf;
@@ -1524,6 +1535,7 @@ std::string Gen::run() {
     fn_has_return_ = false;
     block(prog_.statements, false);
     if (fn_has_return_) line(ret_label_ + ": ;");
+    line("  vy_gc_roots_restore(_roots_mark);");
     line("  return _ret; }");
     std::string body = out;
     out.swap(saved);
@@ -1533,6 +1545,7 @@ std::string Gen::run() {
     line("static VyValue vy_main(void) {");
     indent_++;
     line("VyValue _ret = vy_nil();");
+    line("size_t _roots_mark = vy_gc_roots_mark();");
     emit_root_prologue();
     cur_roots_.swap(outer_roots);
     out += body;

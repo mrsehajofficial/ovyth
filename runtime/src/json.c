@@ -226,7 +226,9 @@ static VyValue parse_value(J* j) {
 
 VyValue vy_json_parse(const char* text, size_t len) {
   J j = {.p = text, .end = text + len, .depth = 0, .failed = 0, .err = {0}};
+  vy_gc_begin_mutation();
   VyValue v = parse_value(&j);
+  vy_gc_end_mutation();
   if (j.failed) return vy_nil();
   skip_ws(&j);
   if (j.p != j.end) return vy_nil();
@@ -235,7 +237,10 @@ VyValue vy_json_parse(const char* text, size_t len) {
 
 int vy_json_valid(const char* text, size_t len) {
   J j = {.p = text, .end = text + len, .depth = 0, .failed = 0, .err = {0}};
+  vy_gc_begin_mutation();
   VyValue v = parse_value(&j);
+  vy_gc_end_mutation();
+  (void)v;
   if (j.failed) return 0;
   skip_ws(&j);
   return j.p == j.end;

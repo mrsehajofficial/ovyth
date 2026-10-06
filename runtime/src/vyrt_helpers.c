@@ -357,16 +357,27 @@ int vy_h_http(const char* method, VyValue url, VyValue headers, VyValue json_bod
 // in a VyFunc only needs to record the arity; the call goes through a cast of
 // the stored pointer. (The interpreter's closures carry a different, AST-based
 // payload in `upvals`; the native backend never produces those.)
-VyFunc* vy_h_make_func(int arity, VyFnPtr fn) {
+VyFunc* vy_h_make_closure(int arity, VyFnPtr fn, void* upvals, int num_upvals) {
   VyFunc* f = (VyFunc*)calloc(1, sizeof(VyFunc));
   if (!f) return NULL;
   f->call = fn;
   f->arity = arity;
   f->variadic = 0;
   f->name = vy_str_new("closure", 7);
-  f->upvals = NULL;
+  f->upvals = upvals;
+  if (upvals && num_upvals > 0) {
+    VyValue** slots = (VyValue**)upvals;
+    for (int i = 0; i < num_upvals; i++) {
+      if (slots[i]) vy_gc_register_root(slots[i]);
+    }
+  }
   return f;
 }
+
+VyFunc* vy_h_make_func(int arity, VyFnPtr fn) {
+  return vy_h_make_closure(arity, fn, NULL, 0);
+}
+
 VyValue vy_h_make_func_value(const char* name, int arity, VyFnPtr fn) {
   VyFunc* f = vy_h_make_func(arity, fn);
   if (!f) return vy_nil();
@@ -384,7 +395,7 @@ VyValue vy_h_call(VyValue callee, VyValue args[], int n, VyValue** slot, int* ar
   VyFnPtr fn = callee.fn->call;
   if (slot) *slot = args;
   if (argc) *argc = n;
-  return fn(args, n);
+  return fn(callee.fn, args, n);
 }
 
 /* ------------------------------------------------------------------ misc */

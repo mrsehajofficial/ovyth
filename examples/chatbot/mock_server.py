@@ -1,47 +1,74 @@
 #!/usr/bin/env python3
-"""Minimal OpenAI-compatible mock for testing the Vayu chatbot without a network.
-
-Serves POST /v1/chat, echoes the last user message back as a canned reply.
-Usage:  python3 mock_server.py [port]
-Then:    AI_API_KEY=test AI_API_URL=http://127.0.0.1:8642/v1/chat \\
-        AI_MODEL=mock-model vyc run chatbot.vy
 """
+Vayu :: examples/chatbot/mock_server.py
+A mock OpenAI-compatible API server for testing the chatbot without an API key.
+
+Run this in one terminal:
+    python3 examples/chatbot/mock_server.py
+
+Then run the chatbot:
+    AI_API_URL=http://localhost:8765 AI_API_KEY=dummy vyc run examples/chatbot/chatbot.vy
+"""
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
-import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
+responses = [
+    {"role": "assistant", "content": "Hello! I'm a mock AI assistant. How can I help you?"},
+    {"role": "assistant", "content": "That's interesting! Tell me more."},
+    {"role": "assistant", "content": "I understand. Let me process that for you."},
+    {"role": "assistant", "content": "Here's what I found:\n\n1. First point\n2. Second point\n3. Third point"},
+]
 
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass  # keep stdout clean
-
+class ChatHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length) or b"{}")
-        messages = body.get("messages", [])
-        user = ""
-        for m in messages:
-            if m.get("role") == "user":
-                user = m.get("content", "")
-        reply = f"you said: {user!r}"
-        payload = {
-            "model": body.get("model", "mock-model"),
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": reply},
-                    "finish_reason": "stop",
-                }
-            ],
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.end_headers()
+            return
+        
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        data = json.loads(body)
+        
+        # Get last user message
+        messages = data.get("messages", [])
+        last_msg = messages[-1]["content"] if messages else "Hello"
+        
+        # Generate response
+        response_idx = len(messages) % len(responses)
+        reply = responses[response_idx]["content"]
+        
+        output = {
+            "id": "mock-123",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": data.get("model", "mock-model"),
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": reply
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": len(last_msg.split()),
+                "completion_tokens": len(reply.split()),
+                "total_tokens": len(last_msg.split()) + len(reply.split())
+            }
         }
-        out = json.dumps(payload).encode()
+        
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
         self.end_headers()
-        self.wfile.write(out)
-
+        self.wfile.write(json.dumps(output).encode())
+    
+    def log_message(self, format, *args):
+        pass  # Suppress logging
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8642
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    server = HTTPServer(("localhost", 8765), ChatHandler)
+    print("Mock server running at http://localhost:8765")
+    print("Press Ctrl+C to stop")
+    server.serve_forever()

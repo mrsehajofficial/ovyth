@@ -6,6 +6,8 @@
 // LLVM backend reuses the same behaviour instead of reimplementing it.
 #pragma once
 
+#include <deque>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,12 +42,15 @@ class Interp {
   };
 
   // --- environment ------------------------------------------------------
-  struct Env {
-    Env* parent = nullptr;
+  struct Env : public std::enable_shared_from_this<Env> {
+    std::shared_ptr<Env> parent;
     std::unordered_map<std::string, VyValue> vars;
-    explicit Env(Env* p) : parent(p) {}
+    Env* prev_env = nullptr;
+    Env* next_env = nullptr;
+    explicit Env(std::shared_ptr<Env> p = nullptr);
+    ~Env();
     VyValue* find(const std::string& n) {
-      for (Env* e = this; e; e = e->parent) {
+      for (Env* e = this; e; e = e->parent.get()) {
         auto it = e->vars.find(n);
         if (it != e->vars.end()) return &it->second;
       }
@@ -53,40 +58,49 @@ class Interp {
     }
   };
 
+  struct Root {
+    VyValue* slot = nullptr;
+    Root(VyValue v = vy_nil());
+    ~Root();
+    VyValue get() const { return *slot; }
+    void set(VyValue v) { *slot = v; }
+    operator VyValue() const { return *slot; }
+  };
+
   struct FnDef {
     const ast::Stmt* decl = nullptr;
-    Env* closure = nullptr;
+    std::shared_ptr<Env> closure;
     std::string name;
   };
 
   struct ClosureObj {
     const ast::Expr* expr = nullptr;
-    Env* env = nullptr;
+    std::shared_ptr<Env> env;
     std::string name;
   };
 
   // --- statements / expressions -----------------------------------------
   // public: the builtin table evaluates its arguments through this
-  VyValue eval(const ast::Expr* e, Env& env);
+  VyValue eval(const ast::Expr* e, std::shared_ptr<Env> env);
 
  private:
-  void exec_block(const ast::StmtList& body, Env& env);
-  void exec_stmt(const ast::Stmt* s, Env& env);
+  void exec_block(const ast::StmtList& body, std::shared_ptr<Env> env);
+  void exec_stmt(const ast::Stmt* s, std::shared_ptr<Env> env);
 
-  VyValue call_value(VyValue callee, const ast::Expr* site, Env& env,
+  VyValue call_value(VyValue callee, const ast::Expr* site, std::shared_ptr<Env> env,
                      const std::vector<VyValue>& args,
                      const std::vector<ast::NamedArg>& named);
-  VyValue call_function(const FnDef& fn, const ast::ExprList& arg_exprs, Env& env);
+  VyValue call_function(const FnDef& fn, const ast::ExprList& arg_exprs, std::shared_ptr<Env> env);
   VyValue call_closure(const ClosureObj& cl, const std::vector<VyValue>& args);
-  VyValue call_builtin(const std::string& qualified, const ast::Expr* site, Env& env,
+  VyValue call_builtin(const std::string& qualified, const ast::Expr* site, std::shared_ptr<Env> env,
                        const ast::ExprList& args,
                        const std::vector<ast::NamedArg>& named, bool* handled);
 
   VyValue index_get(VyValue base, VyValue idx);
   VyValue member_get(VyValue base, const std::string& name, const ast::Expr* site);
-  VyValue interpolate(const ast::Expr* e, Env& env);
+  VyValue interpolate(const ast::Expr* e, std::shared_ptr<Env> env);
 
-  void assign_to(ast::Expr* target, VyValue value, Env& env);
+  void assign_to(ast::Expr* target, VyValue value, std::shared_ptr<Env> env);
 
   // --- helpers ------------------------------------------------------------
   static VyValue str_of(VyValue v) { return vy_str(vy_render(v)); }
@@ -99,9 +113,13 @@ class Interp {
   void close_root();
   std::vector<VyValue*> root_slots_;
 
+  static void gc_scan();
+  static std::deque<VyValue> root_stack_;
+  static Env* active_envs_head_;
+
   const ast::Program& prog_;
   std::string file_;
-  Env* globals_;
+  std::shared_ptr<Env> globals_;
   std::unordered_map<std::string, FnDef> functions_;
   Signal signal_;
   int exit_code_ = 0;

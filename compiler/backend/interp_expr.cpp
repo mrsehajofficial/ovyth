@@ -14,7 +14,7 @@ static const int kMaxCallDepth = 2000;
 // ---------------------------------------------------------------------------
 // evaluation
 // ---------------------------------------------------------------------------
-VyValue Interp::eval(const Expr* e, Env& env) {
+VyValue Interp::eval(const Expr* e, std::shared_ptr<Env> env) {
   switch (e->kind) {
     case ExprKind::IntLit:   return vy_int(e->ival);
     case ExprKind::FloatLit: return vy_float(e->fval);
@@ -24,7 +24,7 @@ VyValue Interp::eval(const Expr* e, Env& env) {
       return vy_str(vy_str_new(e->sval.data(), e->sval.size()));
 
     case ExprKind::Identifier: {
-      VyValue* slot = env.find(e->name);
+      VyValue* slot = env ? env->find(e->name) : nullptr;
       if (slot) return *slot;
       if (functions_.count(e->name)) return vy_nil();  // bare name, rare
       throw Throw{vy_s(std::string("unknown name '") + e->name + "'")};
@@ -35,31 +35,23 @@ VyValue Interp::eval(const Expr* e, Env& env) {
      * run at any allocation). `root` is a shadow-stack slot the GC scans. */
     case ExprKind::ListLit: {
       VyList* l = vy_list_new();
-      VyValue root = vy_list(l);
-      VyValue* slot = open_root();
-      *slot = root;
+      Root root(vy_list(l));
       for (auto* x : e->items) {
         VyValue v = eval(x, env);
         vy_list_push(l, v);
-        *slot = root;  // re-assert: eval() may have moved the stack
       }
-      close_root();
-      return root;
+      return root.get();
     }
 
     case ExprKind::MapLit: {
       VyMap* m = vy_map_new();
-      VyValue root = vy_map(m);
-      VyValue* slot = open_root();
-      *slot = root;
+      Root root(vy_map(m));
       for (auto& f : e->fields) {
-        VyValue k = eval(f.first, env);
+        Root k(eval(f.first, env));
         VyValue v = eval(f.second, env);
-        *slot = root;
-        vy_map_set(m, k, v);
+        vy_map_set(m, k.get(), v);
       }
-      close_root();
-      return root;
+      return root.get();
     }
 
     case ExprKind::Interp:
@@ -81,58 +73,58 @@ VyValue Interp::eval(const Expr* e, Env& env) {
     case ExprKind::Binary: {
       // short-circuit and lazy cases first
       if (e->op == Tok::KW_IN) {
-        VyValue needle = eval(e->a, env);
+        Root needle(eval(e->a, env));
         VyValue hay = eval(e->b, env);
-        return vy_bool(vy_in(needle, hay));
+        return vy_bool(vy_in(needle.get(), hay));
       }
-      VyValue l = eval(e->a, env);
+      Root l(eval(e->a, env));
       VyValue r = eval(e->b, env);
       switch (e->op) {
-        case Tok::PLUS:         return vy_add(l, r);
-        case Tok::MINUS:        return vy_sub(l, r);
-        case Tok::STAR:         return vy_mul(l, r);
-        case Tok::SLASH:        return vy_div(l, r);
-        case Tok::PERCENT:      return vy_mod(l, r);
-        case Tok::DOUBLE_STAR: return vy_pow(l, r);
-        case Tok::AMP:          return vy_bitand(l, r);
-        case Tok::PIPE:         return vy_bitor(l, r);
-        case Tok::CARET:        return vy_bitxor(l, r);
-        case Tok::SHL:          return vy_lshift(l, r);
-        case Tok::SHR:          return vy_rshift(l, r);
-        case Tok::EQUAL:        return vy_bool(vy_eq(l, r));
-        case Tok::BANG_EQUAL:   return vy_bool(!vy_eq(l, r));
-        case Tok::LESS:         return vy_bool(vy_cmp(l, r) < 0);
-        case Tok::GREATER:      return vy_bool(vy_cmp(l, r) > 0);
-        case Tok::LESS_EQUAL:   return vy_bool(vy_cmp(l, r) <= 0);
-        case Tok::GREATER_EQUAL:return vy_bool(vy_cmp(l, r) >= 0);
+        case Tok::PLUS:         return vy_add(l.get(), r);
+        case Tok::MINUS:        return vy_sub(l.get(), r);
+        case Tok::STAR:         return vy_mul(l.get(), r);
+        case Tok::SLASH:        return vy_div(l.get(), r);
+        case Tok::PERCENT:      return vy_mod(l.get(), r);
+        case Tok::DOUBLE_STAR: return vy_pow(l.get(), r);
+        case Tok::AMP:          return vy_bitand(l.get(), r);
+        case Tok::PIPE:         return vy_bitor(l.get(), r);
+        case Tok::CARET:        return vy_bitxor(l.get(), r);
+        case Tok::SHL:          return vy_lshift(l.get(), r);
+        case Tok::SHR:          return vy_rshift(l.get(), r);
+        case Tok::EQUAL:        return vy_bool(vy_eq(l.get(), r));
+        case Tok::BANG_EQUAL:   return vy_bool(!vy_eq(l.get(), r));
+        case Tok::LESS:         return vy_bool(vy_cmp(l.get(), r) < 0);
+        case Tok::GREATER:      return vy_bool(vy_cmp(l.get(), r) > 0);
+        case Tok::LESS_EQUAL:   return vy_bool(vy_cmp(l.get(), r) <= 0);
+        case Tok::GREATER_EQUAL:return vy_bool(vy_cmp(l.get(), r) >= 0);
         default:
           throw Throw{vy_s(std::string("unsupported operator '") + tok_name(e->op) + "'")};
       }
     }
 
     case ExprKind::Logical: {
-      VyValue l = eval(e->a, env);
-      if (e->op == Tok::KW_AND) return vy_bool(vy_truthy(l) && vy_truthy(eval(e->b, env)));
-      return vy_bool(vy_truthy(l) || vy_truthy(eval(e->b, env)));
+      Root l(eval(e->a, env));
+      if (e->op == Tok::KW_AND) return vy_bool(vy_truthy(l.get()) && vy_truthy(eval(e->b, env)));
+      return vy_bool(vy_truthy(l.get()) || vy_truthy(eval(e->b, env)));
     }
 
     case ExprKind::Ternary:
       return vy_truthy(eval(e->a, env)) ? eval(e->b, env) : eval(e->c, env);
 
     case ExprKind::Assign: {
-      VyValue v = eval(e->b, env);
+      Root v(eval(e->b, env));
       if (e->op == Tok::ASSIGN) {
-        assign_to(e->a, v, env);
-        return v;
+        assign_to(e->a, v.get(), env);
+        return v.get();
       }
       VyValue cur = eval(e->a, env);
       VyValue out = vy_nil();
       switch (e->op) {
-        case Tok::PLUS_EQUAL:    out = vy_add(cur, v); break;
-        case Tok::MINUS_EQUAL:   out = vy_sub(cur, v); break;
-        case Tok::STAR_EQUAL:    out = vy_mul(cur, v); break;
-        case Tok::SLASH_EQUAL:   out = vy_div(cur, v); break;
-        case Tok::PERCENT_EQUAL: out = vy_mod(cur, v); break;
+        case Tok::PLUS_EQUAL:    out = vy_add(cur, v.get()); break;
+        case Tok::MINUS_EQUAL:   out = vy_sub(cur, v.get()); break;
+        case Tok::STAR_EQUAL:    out = vy_mul(cur, v.get()); break;
+        case Tok::SLASH_EQUAL:   out = vy_div(cur, v.get()); break;
+        case Tok::PERCENT_EQUAL: out = vy_mod(cur, v.get()); break;
         default: break;
       }
       assign_to(e->a, out, env);
@@ -140,29 +132,29 @@ VyValue Interp::eval(const Expr* e, Env& env) {
     }
 
     case ExprKind::Index: {
-      VyValue base = eval(e->a, env);
+      Root base(eval(e->a, env));
       VyValue idx = eval(e->b, env);
-      return index_get(base, idx);
+      return index_get(base.get(), idx);
     }
 
     case ExprKind::Slice: {
-      VyValue base = eval(e->a, env);
-      int64_t n = (vy_tagof(base) == VY_STRING) ? base.str->len
-                  : (vy_tagof(base) == VY_LIST)   ? base.list->len
+      Root base(eval(e->a, env));
+      int64_t n = (vy_tagof(base.get()) == VY_STRING) ? base.get().str->len
+                  : (vy_tagof(base.get()) == VY_LIST)   ? base.get().list->len
                                                  : -1;
-      if (n < 0) throw Throw{vy_s(std::string("cannot slice ") + vy_type_name(base))};
-      VyValue lo = e->b ? eval(e->b, env) : vy_int(0);
+      if (n < 0) throw Throw{vy_s(std::string("cannot slice ") + vy_type_name(base.get()))};
+      Root lo(e->b ? eval(e->b, env) : vy_int(0));
       VyValue hi = e->c ? eval(e->c, env) : vy_int(n);
-      int64_t a = lo.i, b = hi.i;
+      int64_t a = lo.get().i, b = hi.i;
       if (a < 0) a += n;
       if (b < 0) b += n;
       if (a < 0) a = 0;
       if (b > n) b = n;
       if (b < a) b = a;
-      if (vy_tagof(base) == VY_STRING)
-        return vy_str(vy_str_slice(base.str, a, b));
+      if (vy_tagof(base.get()) == VY_STRING)
+        return vy_str(vy_str_slice(base.get().str, a, b));
       VyList* out = vy_list_new();
-      for (int64_t i = a; i < b; i++) vy_list_push(out, vy_list_get(base.list, i));
+      for (int64_t i = a; i < b; i++) vy_list_push(out, vy_list_get(base.get().list, i));
       return vy_list(out);
     }
 
@@ -173,43 +165,41 @@ VyValue Interp::eval(const Expr* e, Env& env) {
 
     case ExprKind::ListComp: {
       VyList* out = vy_list_new();
-      VyValue root = vy_list(out);
-      VyValue* slot = open_root();
-      *slot = root;
-      std::function<void(size_t)> recurse = [&](size_t gi) {
+      Root root(vy_list(out));
+      std::function<void(size_t, std::shared_ptr<Env>)> recurse =
+          [&](size_t gi, std::shared_ptr<Env> cur_env) {
         if (gi == e->generators.size()) {
-          VyValue v = eval(e->items[0], env);
-          *slot = root;
+          VyValue v = eval(e->items[0], cur_env);
           vy_list_push(out, v);
           return;
         }
         const Generator& g = e->generators[gi];
-        VyValue it = eval(g.iterable, env);
-        *slot = root;
-        if (vy_tagof(it) == VY_LIST) {
-          for (uint32_t i = 0; i < it.list->len; i++) {
-            env.vars[g.var] = vy_list_get(it.list, i);
-            if (g.cond && !vy_truthy(eval(g.cond, env))) continue;
-            recurse(gi + 1);
+        Root it(eval(g.iterable, cur_env));
+        if (vy_tagof(it.get()) == VY_LIST) {
+          for (uint32_t i = 0; i < it.get().list->len; i++) {
+            auto inner = std::make_shared<Env>(cur_env);
+            inner->vars[g.var] = vy_list_get(it.get().list, i);
+            if (g.cond && !vy_truthy(eval(g.cond, inner))) continue;
+            recurse(gi + 1, inner);
           }
-        } else if (vy_tagof(it) == VY_STRING) {
-          VyValue chars = vy_str_chars(it.str);
-          for (uint32_t i = 0; i < chars.list->len; i++) {
-            env.vars[g.var] = chars.list->items[i];
-            if (g.cond && !vy_truthy(eval(g.cond, env))) continue;
-            recurse(gi + 1);
+        } else if (vy_tagof(it.get()) == VY_STRING) {
+          Root chars(vy_str_chars(it.get().str));
+          for (uint32_t i = 0; i < chars.get().list->len; i++) {
+            auto inner = std::make_shared<Env>(cur_env);
+            inner->vars[g.var] = chars.get().list->items[i];
+            if (g.cond && !vy_truthy(eval(g.cond, inner))) continue;
+            recurse(gi + 1, inner);
           }
         }
       };
-      // the comprehension's loop variables are visible to later generators,
-      // which is why this reuses the caller's env
-      recurse(0);
-      close_root();
-      return root;
+      recurse(0, env);
+      return root.get();
     }
 
     case ExprKind::Closure: {
-      auto* cl = new ClosureObj{e, &env, "closure"};
+      // Capture the current environment by shared_ptr so the closure can
+      // read outer locals even after the enclosing scope exits.
+      auto* cl = new ClosureObj{e, env, "closure"};
       VyFunc* f = (VyFunc*)calloc(1, sizeof(VyFunc));
       f->name = vy_str_cstr("closure");
       f->arity = (int)e->params.size();
@@ -244,7 +234,7 @@ VyValue Interp::eval(const Expr* e, Env& env) {
       // knows the global builtins.
       VyValue callee = vy_nil();
       if (e->a && e->a->kind == ExprKind::Identifier) {
-        VyValue* slot = env.find(e->a->name);
+        VyValue* slot = env ? env->find(e->a->name) : nullptr;
         if (slot) callee = *slot;
       }
       // Forward the named arguments: `call_value` re-evaluates both the
@@ -264,12 +254,14 @@ VyValue Interp::eval(const Expr* e, Env& env) {
 // ---------------------------------------------------------------------------
 VyValue Interp::call_closure(const ClosureObj& cl, const std::vector<VyValue>& args) {
   const Expr* e = cl.expr;
-  Env local(cl.env);
+  // Create a new scope whose parent is the captured environment, so the
+  // closure body can read outer locals from the lexical scope it closed over.
+  auto local = std::make_shared<Env>(cl.env);
   for (size_t i = 0; i < e->params.size(); i++) {
     VyValue v = i < args.size() ? args[i] : vy_nil();
     if (i >= args.size() && e->params[i].default_value)
-      v = eval(e->params[i].default_value, *cl.env);
-    local.vars[e->params[i].name] = v;
+      v = eval(e->params[i].default_value, cl.env);
+    local->vars[e->params[i].name] = v;
   }
   Signal saved = signal_;
   signal_ = Signal{};
@@ -279,13 +271,14 @@ VyValue Interp::call_closure(const ClosureObj& cl, const std::vector<VyValue>& a
   return out;
 }
 
-VyValue Interp::call_function(const FnDef& fn, const ExprList& arg_exprs, Env& env) {
+VyValue Interp::call_function(const FnDef& fn, const ExprList& arg_exprs,
+                               std::shared_ptr<Env> env) {
   const Stmt* decl = fn.decl;
   if (++depth_ > kMaxCallDepth) {
     depth_--;
     throw Throw{vy_s("maximum call depth exceeded (" + std::to_string(kMaxCallDepth) + ")")};
   }
-  Env local(fn.closure);
+  auto local = std::make_shared<Env>(fn.closure);
   for (size_t i = 0; i < decl->params.size(); i++) {
     VyValue v;
     if (i < arg_exprs.size()) {
@@ -295,7 +288,7 @@ VyValue Interp::call_function(const FnDef& fn, const ExprList& arg_exprs, Env& e
     } else {
       v = vy_nil();
     }
-    local.vars[decl->params[i].name] = v;
+    local->vars[decl->params[i].name] = v;
   }
   Signal saved = signal_;
   signal_ = Signal{};
@@ -306,7 +299,7 @@ VyValue Interp::call_function(const FnDef& fn, const ExprList& arg_exprs, Env& e
   return out;
 }
 
-VyValue Interp::call_value(VyValue callee, const Expr* site, Env& env,
+VyValue Interp::call_value(VyValue callee, const Expr* site, std::shared_ptr<Env> env,
                             const std::vector<VyValue>& args,
                             const std::vector<NamedArg>& named) {
   (void)named;
@@ -334,11 +327,11 @@ VyValue Interp::call_value(VyValue callee, const Expr* site, Env& env,
           throw Throw{vy_s(std::string("'") + decl->name + "' has no parameter named '" + na.name + "'")};
       }
       if (++depth_ > kMaxCallDepth) { depth_--; throw Throw{vy_s("stack overflow")}; }
-      Env local(it->second.closure);
+      auto local = std::make_shared<Env>(it->second.closure);
       for (size_t k = 0; k < decl->params.size(); k++) {
         if (i > k && vy_isnil(byname[k]) && decl->params[k].default_value)
           byname[k] = eval(decl->params[k].default_value, env);
-        local.vars[decl->params[k].name] = byname[k];
+        local->vars[decl->params[k].name] = byname[k];
       }
       Signal saved = signal_;
       signal_ = Signal{};
@@ -357,13 +350,13 @@ VyValue Interp::call_value(VyValue callee, const Expr* site, Env& env,
       std::vector<VyValue> pos;
       for (auto* a : call->args) pos.push_back(eval(a, env));
       if (++depth_ > kMaxCallDepth) { depth_--; throw Throw{vy_s("stack overflow")}; }
-      Env local(it->second.closure);
+      auto local = std::make_shared<Env>(it->second.closure);
       const Stmt* decl = it->second.decl;
       for (size_t i = 0; i < decl->params.size(); i++) {
         VyValue v = i < pos.size() ? pos[i] : vy_nil();
         if (i >= pos.size() && decl->params[i].default_value)
           v = eval(decl->params[i].default_value, env);
-        local.vars[decl->params[i].name] = v;
+        local->vars[decl->params[i].name] = v;
       }
       Signal saved = signal_;
       signal_ = Signal{};

@@ -66,6 +66,7 @@ VyValue vy_h_err_value(void);
 /* ------------------------------------------------------------ closures */
 // Wraps a generated C function in a VyFunc. arity is the parameter count.
 VyFunc* vy_h_make_func(int arity, VyFnPtr fn);
+VyFunc* vy_h_make_closure(int arity, VyFnPtr fn, void* upvals, int num_upvals);
 VyValue vy_h_make_func_value(const char* name, int arity, VyFnPtr fn);
 
 /* Calls a VyValue that is known to hold a VyFunc, passing `args` (count `n`).

@@ -12,33 +12,66 @@ using namespace ast;
 
 // ---------------------------------------------------------------------------
 Interp::Interp(const Program& program, std::string filename)
-    : prog_(program), file_(std::move(filename)), globals_(new Env(nullptr)) {}
+    : prog_(program), file_(std::move(filename)), globals_(std::make_shared<Env>(nullptr)) {}
 
 Interp::~Interp() {}
 
-// The shadow stack lives in a deque-like chunked buffer so a VyValue* handed
-// out stays valid even when the vector reallocates.
-static std::deque<VyValue>* g_root_pool = nullptr;
+std::deque<VyValue> Interp::root_stack_;
+Interp::Env* Interp::active_envs_head_ = nullptr;
+
+Interp::Env::Env(std::shared_ptr<Env> p) : parent(std::move(p)) {
+  if (active_envs_head_) active_envs_head_->prev_env = this;
+  next_env = active_envs_head_;
+  prev_env = nullptr;
+  active_envs_head_ = this;
+}
+
+Interp::Env::~Env() {
+  if (prev_env) prev_env->next_env = next_env;
+  else active_envs_head_ = next_env;
+  if (next_env) next_env->prev_env = prev_env;
+}
+
+Interp::Root::Root(VyValue v) {
+  root_stack_.push_back(v);
+  slot = &root_stack_.back();
+}
+
+Interp::Root::~Root() {
+  root_stack_.pop_back();
+}
+
+void Interp::gc_scan() {
+  for (Env* e = active_envs_head_; e; e = e->next_env) {
+    for (const auto& pair : e->vars) {
+      vy_gc_mark_value(pair.second);
+    }
+  }
+  for (VyValue v : root_stack_) {
+    vy_gc_mark_value(v);
+  }
+}
 
 VyValue* Interp::open_root() {
-  if (!g_root_pool) g_root_pool = new std::deque<VyValue>();
-  g_root_pool->emplace_back();
-  VyValue* slot = &g_root_pool->back();
-  vy_gc_register_root(slot);
+  root_stack_.push_back(vy_nil());
+  VyValue* slot = &root_stack_.back();
   root_slots_.push_back(slot);
   return slot;
 }
 
 void Interp::close_root() {
-  while (!root_slots_.empty()) {
-    VyValue* slot = root_slots_.back();
+  if (!root_slots_.empty()) {
     root_slots_.pop_back();
-    vy_gc_unregister_root(slot);
-    // the deque may have popped the slot we just released; rebuild lazily
+    root_stack_.pop_back();
   }
 }
 
 int Interp::run() {
+  struct GcGuard {
+    GcGuard() { vy_gc_set_scanner(&Interp::gc_scan); }
+    ~GcGuard() { vy_gc_set_scanner(nullptr); }
+  } gc_guard;
+
   // hoist function declarations so order in the file does not matter
   for (auto* s : prog_.statements) {
     if (s && s->kind == StmtKind::FuncDecl) {
@@ -66,7 +99,7 @@ int Interp::run() {
   globals_->vars["time"] = vy_map(time_ns);
 
   try {
-    exec_block(prog_.statements, *globals_);
+    exec_block(prog_.statements, globals_);
   } catch (Throw& t) {
     VyStr* s = vy_repr(t.value);
     fprintf(stderr, "\nvayu: uncaught error: %s\n", vy_str_data(s));
@@ -77,48 +110,34 @@ int Interp::run() {
   return exit_code_;
 }
 
-void Interp::exec_block(const StmtList& body, Env& env) {
+void Interp::exec_block(const StmtList& body, std::shared_ptr<Env> env) {
   for (auto* s : body) {
     exec_stmt(s, env);
     if (signal_.flow != Flow::Normal) return;
   }
 }
 
-void Interp::exec_stmt(const Stmt* s, Env& env) {
+void Interp::exec_stmt(const Stmt* s, std::shared_ptr<Env> env) {
   if (!s) return;
   switch (s->kind) {
     case StmtKind::VarDecl: {
-      // multi-assignment `a, b = f()`: evaluate all value expressions before
-      // binding, and keep every partial result reachable while the next one is
-      // evaluated (the collector may run at any allocation).
       size_t n = s->names.size();
-      std::vector<VyValue> tmp(n);
+      std::vector<Root> tmp;
+      tmp.reserve(n);
       for (size_t i = 0; i < n; i++) {
-        VyValue* slot = open_root();
-        *slot = tmp[i];
-        tmp[i] = (i < s->values.size() && s->values[i]) ? eval(s->values[i], env) : vy_nil();
+        tmp.emplace_back((i < s->values.size() && s->values[i]) ? eval(s->values[i], env) : vy_nil());
       }
       // unpack: `a, b = [1, 2]` puts a single iterable on the right.
-      if (n > 1 && s->values.size() == 1 && vy_tagof(tmp[0]) == VY_LIST) {
-        VyList* l = tmp[0].list;
+      if (n > 1 && s->values.size() == 1 && vy_tagof(tmp[0].get()) == VY_LIST) {
+        VyList* l = tmp[0].get().list;
         for (size_t i = 0; i < n; i++) {
-          VyValue* slot = open_root();
-          *slot = tmp[i];
-          tmp[i] = i < l->len ? vy_list_get(l, (int64_t)i) : vy_nil();
+          tmp[i].set(i < l->len ? vy_list_get(l, (int64_t)i) : vy_nil());
         }
       }
-      while (!root_slots_.empty()) {
-        vy_gc_unregister_root(root_slots_.back());
-        root_slots_.pop_back();
-      }
-      // Python-like rebinding: a name that already exists anywhere up the
-      // scope chain is updated *in place*; only genuinely new names are bound
-      // locally in this block. Without this, `for i in ... { total = total + i }`
-      // would shadow the outer `total` and the accumulation would be lost.
       for (size_t i = 0; i < n; i++) {
-        VyValue* slot = env.find(s->names[i]);
-        if (slot) *slot = tmp[i];
-        else env.vars[s->names[i]] = tmp[i];
+        VyValue* slot = env ? env->find(s->names[i]) : nullptr;
+        if (slot) *slot = tmp[i].get();
+        else if (env) env->vars[s->names[i]] = tmp[i].get();
       }
       return;
     }
@@ -151,7 +170,7 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
     case StmtKind::FuncDecl: {
       FnDef def;
       def.decl = s;
-      def.closure = &env;
+      def.closure = env;
       def.name = s->name;
       functions_[s->name] = def;
       return;  // hoisted; the name already exists
@@ -164,10 +183,10 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
 
     case StmtKind::If: {
       if (vy_truthy(eval(s->expr, env))) {
-        Env inner(&env);
+        auto inner = std::make_shared<Env>(env);
         exec_block(s->body, inner);
       } else if (!s->else_body.empty()) {
-        Env inner(&env);
+        auto inner = std::make_shared<Env>(env);
         exec_block(s->else_body, inner);
       }
       return;
@@ -176,7 +195,7 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
     case StmtKind::While: {
       for (;;) {
         if (!vy_truthy(eval(s->expr, env))) break;
-        Env inner(&env);
+        auto inner = std::make_shared<Env>(env);
         exec_block(s->body, inner);
         if (signal_.flow == Flow::Break) { signal_ = Signal{}; break; }
         if (signal_.flow == Flow::Continue) { signal_ = Signal{}; continue; }
@@ -186,18 +205,18 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
     }
 
     case StmtKind::For: {
-      VyValue it = eval(s->expr, env);
-      switch (vy_tagof(it)) {
+      Root it(eval(s->expr, env));
+      switch (vy_tagof(it.get())) {
         case VY_LIST: {
-          VyList* l = it.list;
+          VyList* l = it.get().list;
           for (uint32_t i = 0; i < l->len; i++) {
-            Env inner(&env);
+            auto inner = std::make_shared<Env>(env);
             if (s->iter_vars.size() == 1) {
-              inner.vars[s->iter_vars[0]] = vy_list_get(l, i);
+              inner->vars[s->iter_vars[0]] = vy_list_get(l, i);
             } else {
               VyValue pair = vy_list_get(l, i);
               for (size_t k = 0; k < s->iter_vars.size(); k++)
-                inner.vars[s->iter_vars[k]] =
+                inner->vars[s->iter_vars[k]] =
                     vy_list_get(pair.list, (int64_t)k);
             }
             exec_block(s->body, inner);
@@ -208,10 +227,10 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
           return;
         }
         case VY_STRING: {
-          VyValue chars = vy_str_chars(it.str);
-          for (uint32_t i = 0; i < chars.list->len; i++) {
-            Env inner(&env);
-            inner.vars[s->iter_vars[0]] = chars.list->items[i];
+          Root chars(vy_str_chars(it.get().str));
+          for (uint32_t i = 0; i < chars.get().list->len; i++) {
+            auto inner = std::make_shared<Env>(env);
+            inner->vars[s->iter_vars[0]] = chars.get().list->items[i];
             exec_block(s->body, inner);
             if (signal_.flow == Flow::Break) { signal_ = Signal{}; break; }
             if (signal_.flow == Flow::Continue) { signal_ = Signal{}; continue; }
@@ -220,10 +239,10 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
           return;
         }
         case VY_MAP: {
-          VyValue keys = vy_map_keys(it.map);
-          for (uint32_t i = 0; i < keys.list->len; i++) {
-            Env inner(&env);
-            inner.vars[s->iter_vars[0]] = keys.list->items[i];
+          Root keys(vy_map_keys(it.get().map));
+          for (uint32_t i = 0; i < keys.get().list->len; i++) {
+            auto inner = std::make_shared<Env>(env);
+            inner->vars[s->iter_vars[0]] = keys.get().list->items[i];
             exec_block(s->body, inner);
             if (signal_.flow == Flow::Break) { signal_ = Signal{}; break; }
             if (signal_.flow == Flow::Continue) { signal_ = Signal{}; continue; }
@@ -232,12 +251,12 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
           return;
         }
         default:
-          throw Throw{vy_s(std::string("cannot loop over ") + vy_type_name(it))};
+          throw Throw{vy_s(std::string("cannot loop over ") + vy_type_name(it.get()))};
       }
     }
 
     case StmtKind::Block: {
-      Env inner(&env);
+      auto inner = std::make_shared<Env>(env);
       exec_block(s->body, inner);
       return;
     }
@@ -252,7 +271,7 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
       // catch variable.
       jmp_buf* target = vy_try_push();
       if (setjmp(*target) == 0) {
-        Env inner(&env);
+        auto inner = std::make_shared<Env>(env);
         bool user_throw = false;
         VyValue user_val = vy_nil();
         try {
@@ -267,16 +286,14 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
           return;  // try body completed normally
         }
         // user throw: keep the value reachable while the catch block runs
-        VyValue* slot = open_root();
-        *slot = user_val;
-        if (!s->catch_var.empty()) inner.vars[s->catch_var] = user_val;
+        Root slot(user_val);
+        if (!s->catch_var.empty()) inner->vars[s->catch_var] = user_val;
         exec_block(s->else_body, inner);
-        close_root();
       } else {
         // setjmp returned non-zero: a C-level raise() longjmp'd here.
         vy_try_pop();
-        Env inner(&env);
-        if (!s->catch_var.empty()) inner.vars[s->catch_var] = vy_caught;
+        auto inner = std::make_shared<Env>(env);
+        if (!s->catch_var.empty()) inner->vars[s->catch_var] = vy_caught;
         exec_block(s->else_body, inner);
       }
       return;
@@ -295,32 +312,33 @@ void Interp::exec_stmt(const Stmt* s, Env& env) {
   }
 }
 
-void Interp::assign_to(Expr* target, VyValue value, Env& env) {
+void Interp::assign_to(Expr* target, VyValue value, std::shared_ptr<Env> env) {
+  Root val_root(value);
   switch (target->kind) {
     case ExprKind::Identifier: {
-      VyValue* slot = env.find(target->name);
-      if (slot) *slot = value;
-      else env.vars[target->name] = value;
+      VyValue* slot = env ? env->find(target->name) : nullptr;
+      if (slot) *slot = val_root.get();
+      else if (env) env->vars[target->name] = val_root.get();
       return;
     }
     case ExprKind::Index: {
-      VyValue base = eval(target->a, env);
+      Root base(eval(target->a, env));
       VyValue idx = eval(target->b, env);
-      if (vy_tagof(base) == VY_LIST) {
-        vy_list_set(base.list, idx.i, value);
+      if (vy_tagof(base.get()) == VY_LIST) {
+        vy_list_set(base.get().list, idx.i, val_root.get());
         return;
       }
-      if (vy_tagof(base) == VY_MAP) {
-        vy_map_set(base.map, idx, value);
+      if (vy_tagof(base.get()) == VY_MAP) {
+        vy_map_set(base.get().map, idx, val_root.get());
         return;
       }
-      throw Throw{vy_s(std::string("cannot index-assign into ") + vy_type_name(base))};
+      throw Throw{vy_s(std::string("cannot index-assign into ") + vy_type_name(base.get()))};
     }
     case ExprKind::Member: {
-      VyValue base = eval(target->a, env);
-      if (vy_tagof(base) != VY_MAP)
-        throw Throw{vy_s(std::string("cannot set field '") + target->name + "' on " + vy_type_name(base))};
-      vy_map_set(base.map, vy_s(target->name), value);
+      Root base(eval(target->a, env));
+      if (vy_tagof(base.get()) != VY_MAP)
+        throw Throw{vy_s(std::string("cannot set field '") + target->name + "' on " + vy_type_name(base.get()))};
+      vy_map_set(base.get().map, vy_s(target->name), val_root.get());
       return;
     }
     default:
@@ -331,24 +349,24 @@ void Interp::assign_to(Expr* target, VyValue value, Env& env) {
 // ---------------------------------------------------------------------------
 // expressions
 // ---------------------------------------------------------------------------
-VyValue Interp::interpolate(const Expr* e, Env& env) {
+VyValue Interp::interpolate(const Expr* e, std::shared_ptr<Env> env) {
   size_t n = e->items.size();
   size_t m = e->parts.size();
-  VyStr* acc = vy_str_new("", 0);
+  Root acc(vy_str(vy_str_new("", 0)));
   size_t li = 0;
   for (size_t i = 0; i < m; i++) {
     if (li < n) {
       const std::string& t = e->items[li++]->sval;
-      acc = vy_str_concat(acc, vy_str_new(t.data(), t.size()));
+      acc.set(vy_str(vy_str_concat(acc.get().str, vy_str_new(t.data(), t.size()))));
     }
     VyValue v = eval(e->parts[i], env);
-    acc = vy_str_concat(acc, vy_render(v));
+    acc.set(vy_str(vy_str_concat(acc.get().str, vy_render(v))));
   }
   for (; li < n; li++) {
     const std::string& t = e->items[li]->sval;
-    acc = vy_str_concat(acc, vy_str_new(t.data(), t.size()));
+    acc.set(vy_str(vy_str_concat(acc.get().str, vy_str_new(t.data(), t.size()))));
   }
-  return vy_str(acc);
+  return acc.get();
 }
 
 VyValue Interp::index_get(VyValue base, VyValue idx) {

@@ -70,6 +70,14 @@ void vy_gc_unregister_root(VyValue* slot) {
   }
 }
 
+size_t vy_gc_roots_mark(void) { return g.roots_len; }
+void   vy_gc_roots_restore(size_t mark) {
+  if (mark <= g.roots_len) g.roots_len = mark;
+}
+
+static VyGcScanner g_scanner = NULL;
+void vy_gc_set_scanner(VyGcScanner s) { g_scanner = s; }
+
 /* Collect only when it is safe to do so.
  *
  * The runtime mutates containers in place: map_rehash swaps `entries` and then
@@ -278,6 +286,10 @@ static void sweep(void) {
   }
 }
 
+void vy_gc_mark_value(VyValue v) {
+  mark_value(v);
+}
+
 void vy_gc_collect_ex(VyValue* extra, int n) {
   if (t_in_gc) return;
   t_in_gc = 1;
@@ -287,6 +299,7 @@ void vy_gc_collect_ex(VyValue* extra, int n) {
     if (g.roots[i]) mark_value(*g.roots[i]);
   for (int i = 0; i < n; i++)
     if (extra) mark_value(extra[i]);
+  if (g_scanner) g_scanner();
   mark_loop();
   sweep();
   /* trigger next time the heap roughly doubles past the live set, so a
