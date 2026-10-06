@@ -171,3 +171,44 @@ The suite follows the project's performance spec (sections 34–37):
   `0.00ms`;
 * missing toolchains (Rust, Go) produce **omitted columns, never estimates**.
 
+---
+
+## 7. AI Pipeline Benchmarks
+
+Vayu is designed for automation and AI tooling workloads. The `benchmarks/bench_ai.vy` suite measures:
+
+| Operation | Iterations | Notes |
+|---|---|---|
+| JSON parse | 50 | Full OpenAI chat completion response |
+| Nested index access | 200 | `doc["choices"][0]["message"]["content"]` |
+| Context assembly | 50 | RAG-style chunk joining |
+| Document chunking | 50 | Word-based splitting with sliding window |
+| Hash map operations | 100 | Insert + read (agent state pattern) |
+| Multi-parse | 50 | Tool result parsing |
+| String scanning | 200 | JSON structural character detection |
+
+### Results
+
+All operations complete in under 1ms on this machine (4-core x86-64). The key achievement is **stability** — before the GC fixes in v0.1.1, these workloads would crash at 200+ iterations due to use-after-free during garbage collection of intermediate temporaries in nested index chains.
+
+```
+json_parse:     0ms for 50 parses (result_len=261)
+json_access:    0ms for 200 accesses
+context_build:  0ms for 50 assemblies (ctx_len=755)
+chunk_pipeline: 0ms for 50 docs (total_chunks=250)
+hash_map_str:   0ms for 100 ops (sum=2450)
+multi_parse:    0ms for 50 tool_jsons
+string_scan:    0ms for 200 scans
+```
+
+### How to run
+
+```bash
+# Run Vayu version
+./build/vyc benchmarks/bench_ai.vy --release -o /tmp/bench_vayu && /tmp/bench_vayu
+
+# Compare with C reference
+bash benchmarks/compare_ai.sh
+```
+
+

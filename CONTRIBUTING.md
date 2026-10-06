@@ -32,6 +32,8 @@ make examples   # run every example through the interpreter
 | `compiler/tools/` | `vyc fmt` and `vyc init` |
 | `runtime/` | the C runtime compiled programs link against |
 | `tests/interp/` | language tests, run through **both** backends |
+| `examples/` | runnable examples (chatbot, rag, tool_agent) |
+| `benchmarks/` | performance benchmarks and comparison scripts |
 | `docs/` | the usage guide and the performance notes |
 
 ## The one rule that matters
@@ -49,12 +51,12 @@ Adding a feature to only one backend fails the suite. This is deliberate — a n
 
 ```bash
 # 1. write the program
-cat > tests/interp/015_my_feature.vy <<'EOF'
+cat > tests/interp/016_my_feature.vy <<'EOF'
 print("answer:", 6 * 7)
 EOF
 
 # 2. record what it should print as the golden file
-build/vyc run tests/interp/015_my_feature.vy > tests/interp/015_my_feature.want
+build/vyc run tests/interp/016_my_feature.vy > tests/interp/016_my_feature.want
 
 # 3. check both backends agree
 bash tests/interp.sh
