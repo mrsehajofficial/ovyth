@@ -897,6 +897,15 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
              "; vy_bool(vy_tagof(" + o + ") == VY_STRING && vy_json_valid(" + o +
              ".str->bytes, " + o + ".str->len)); })";
     }
+    if (name == "extract") {
+      // Fast JSON field extraction without full AST build
+      std::string json_val = args.empty() ? "vy_nil()" : args[0];
+      std::string path_val = args.size() < 2 ? "vy_nil()" : args[1];
+      return "({ VyValue _v = " + json_val + "; VyValue _p = " + path_val + "; "
+             "VyValue _r = vy_nil(); if (vy_tagof(_v) == VY_STRING && vy_tagof(_p) == VY_STRING) { "
+             "_r = vy_json_extract_field(_v.str->bytes, _v.str->len, _p.str->bytes); } "
+             "_r; })";
+    }
   }
   if (ns == "http") {
     std::string url = args.empty() ? "vy_nil()" : args[0];

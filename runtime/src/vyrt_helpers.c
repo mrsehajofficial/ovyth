@@ -214,7 +214,8 @@ VyValue vy_h_json_parse(VyValue s, int* threw) {
     snprintf(tmp, sizeof(tmp), "invalid JSON: %.*s", (int)n, s.str->bytes);
     fail(tmp, strlen(tmp)); return vy_h_err_value();
   }
-  return vy_json_parse(s.str->bytes, s.str->len);
+  /* Use fast parser that reuses buffers */
+  return vy_json_parse_fast(s.str->bytes, s.str->len, NULL);
 }
 
 /* ---------------------------------------------------------- number cast */

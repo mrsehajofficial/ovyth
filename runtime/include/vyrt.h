@@ -561,6 +561,9 @@ size_t   vy_arena_peak(VyArena* a);
 /* Drop-in replacement for vy_json_parse with optional arena for temporaries. */
 VyValue vy_json_parse_fast(const char* text, size_t len, VyArena* arena);
 
+/* Fast field extraction without building full AST. */
+VyValue vy_json_extract_field(const char* json, size_t len, const char* key);
+
 /* Typed field accessors -- avoid building intermediate VyValues. */
 int     vy_json_get_str  (VyValue obj, const char* key, const char** out_data, size_t* out_len);
 int     vy_json_get_int  (VyValue obj, const char* key, int64_t* out);

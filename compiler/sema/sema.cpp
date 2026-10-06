@@ -409,7 +409,7 @@ Ty Sema::check_call(Expr* e) {
   }
 
   if (qualified == "json.parse" || qualified == "json.stringify" ||
-      qualified == "json.valid") {
+      qualified == "json.valid" || qualified == "json.extract") {
     return Ty::Any;
   }
 

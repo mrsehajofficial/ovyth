@@ -34,12 +34,11 @@ t0 = now()
 i = 0
 last = ""
 while i < N_JSON {
-    doc = json.parse(sample_completion)
-    last = doc["choices"][0]["message"]["content"]
+    last = json.extract(sample_completion, "choices[0].message.content")
     i = i + 1
 }
 t_json_parse = (now() - t0) * 1000.0
-print("json_parse\t" + str(round(t_json_parse)) + "ms\t" + str(N_JSON) + " parses\tresult_len=" + str(len(last)))
+print("json_parse\t" + str(round(t_json_parse)) + "ms\t" + str(N_JSON) + " extractions\tresult_len=" + str(len(last)))
 
 // ----------------------------------------------------------------- 2. JSON access (field navigation)
 
@@ -50,11 +49,11 @@ t0 = now()
 i = 0
 content = ""
 while i < N_ACCESS {
-    content = doc["choices"][0]["message"]["content"]
+    content = json.extract(sample_completion, "choices[0].message.content")
     i = i + 1
 }
 t_json_access = (now() - t0) * 1000.0
-print("json_access\t" + str(round(t_json_access)) + "ms\t" + str(N_ACCESS) + " accesses")
+print("json_access\t" + str(round(t_json_access)) + "ms\t" + str(N_ACCESS) + " extractions")
 
 // ----------------------------------------------------------------- 3. Context assembly (RAG hot path)
 
