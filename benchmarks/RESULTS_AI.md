@@ -9,39 +9,33 @@
 
 case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
 ------------------  ----------  --------  --------  ----------  ----------
-json_parse              1000ms     133ms     600ms   7.5x slower   1.7x slower
-json_access             5000ms       0ms     192ms           ?   26.0x slower
-context_build           3000ms     157ms     485ms  19.1x slower   6.2x slower
+json_parse              1000ms     126ms     636ms   7.9x slower   1.6x slower
+json_access             5000ms       0ms     162ms           ?   30.9x slower
+context_build           1000ms     157ms     487ms   6.4x slower   2.1x slower
 chunk_pipeline              0ms       0ms       4ms           ?  0.0x faster
-hash_map_str                0ms       6ms      13ms  0.0x faster  0.0x faster
-multi_parse               1000ms       5ms     168ms  200.0x slower   6.0x slower
-string_scan                 0ms       0ms     317ms           ?  0.0x faster
+hash_map_str                0ms       5ms      14ms  0.0x faster  0.0x faster
+multi_parse               1000ms       4ms     177ms  250.0x slower   5.6x slower
+string_scan                 0ms       0ms     314ms           ?  0.0x faster
 ```
 
-## Key Improvements
+## Key Optimizations Applied
 
-Added `json.extract(json_string, path)` function for fast field extraction:
-- Path syntax: `"choices[0].message.content"` 
-- Avoids building full AST - parses only what's needed
+### 1. Fast JSON Extraction (`json.extract`)
+- Path syntax: `"choices[0].message.content"`
+- Parses only needed fields without building full AST
 - Recursive support for nested objects and arrays
-- **56x faster than before** (was 19x slower than Python, now 1.7x slower)
+- **Result: 1.6x slower than Python** (was 19x)
 
-## Analysis
+### 2. String Builder for Join (`join()`)
+- O(n) instead of O(n²) for repeated concatenation
+- Uses `VyStrBuilder` to avoid per-element allocations
+- **Result: context_build 2.1x slower than Python** (was 6x)
 
-### Where Vayu wins (vs Python)
-- `chunk_pipeline`: ~equal (both too fast to distinguish at 0ms)
-- `hash_map_str`: ~equal (Vayu 0ms vs Python 13ms, but Vayu has process startup overhead)
-- `string_scan`: ~equal
+## What Still Needs Work
 
-### Where Vayu is slower
-- **json_parse**: 1000ms vs Python 600ms (1.7x slower) - great improvement!
-- **context_build**: 3000ms vs Python 485ms (6.2x slower) - list construction + string joining allocates temporaries
-- **json_access**: 5000ms vs Python 192ms (26x slower) - still GC-heavy for repeated accesses
-- **multi_parse**: 1000ms vs Python 168ms (6x slower)
-
-### Where C dominates
-- All cases: C is 7x-200x faster than Vayu
-- Root cause: Vayu's tagged union + GC overhead is significant for tight loops
+- **json_access**: 30x slower - repeated nested indexing is GC-heavy
+- **multi_parse**: 5.6x slower - could use arena allocation
+- **C gap**: C is 7x-250x faster due to zero GC overhead
 
 ## Notes
 - Vayu numbers are whole-process wall clock (~4ms startup included)

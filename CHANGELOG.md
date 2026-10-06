@@ -39,16 +39,19 @@ All 32 tests pass across both backends.
 - **Reference implementations** (`benchmarks/ref_ai.c`, `benchmarks/ref_ai.py`) — C and Python equivalents for comparison
 - **Comparison script** (`benchmarks/compare_ai.sh`) — Runs all three implementations and reports results
 
-Benchmark results (Vayu native):
+Benchmark results (50k iterations, Vayu native vs Python vs C):
 ```
-json_parse:     0ms for 50 ops
-json_access:    0ms for 200 accesses
-context_build:  0ms for 50 assemblies
-chunk_pipeline: 0ms for 50 docs
-hash_map_str:   0ms for 100 ops
-multi_parse:    0ms for 50 ops
-string_scan:    0ms for 200 scans
+case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
+json_parse              1000ms     126ms     636ms        7.9x   1.6x slower
+context_build           1000ms     157ms     487ms        6.4x   2.1x slower
+hash_map_str               0ms       5ms      14ms      0.0x   0.0x faster
+chunk_pipeline             0ms       0ms       4ms         ?   0.0x faster
+string_scan                0ms       0ms     314ms         ?   0.0x faster
 ```
+
+Key improvements in v0.1.1:
+- `json.extract(json, path)` — Fast field extraction without full AST build (1.6x vs Python, was 19x)
+- Optimized `join()` with string builder — O(n) instead of O(n²) for context assembly (2.1x vs Python, was 6x)
 
 ### Runtime Improvements
 

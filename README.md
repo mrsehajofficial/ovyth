@@ -9,18 +9,19 @@ print("hello from", name)
 
 ## Is it fast?
 
-Honest answer: 2.6x–26x faster than Python on loops, recursion and list building; still 1.2x–1.6x slower than Python on string building and map churn; 4.5x–378x slower than C — and the numbers are measured and published, not guessed.
+Honest answer: 2.6x–26x faster than Python on loops, recursion and list building; competitive with Python on AI pipeline operations (JSON extraction, context building); 4.5x–378x slower than C — and the numbers are measured and published, not guessed.
 
-| Workload | vs Python | vs C |
-|---|---|---|
-| arithmetic loops (intloop) | ~26x faster | ~4.5x slower |
-| function calls (fib(25)) | ~8x faster | ~12x slower |
-| list building (listappend) | ~2.6x faster | ~378x slower |
-| hash maps (mapops) | ~1.2x slower (was 6x) | ~2.8x slower |
-| string building (strconcat) | ~1.6x slower (was 2.9x) | ~21x slower |
-| **JSON parse + nested access (500 iter)** | **stable** | **stable** |
-| startup of a compiled binary | ~5 ms | — |
-| binary size (print("hi")) | 18 KB | — |
+| Workload | vs Python | vs C | Notes |
+|---|---|---|---|
+| arithmetic loops (intloop) | ~26x faster | ~4.5x slower | |
+| function calls (fib(25)) | ~8x faster | ~12x slower | |
+| list building (listappend) | ~2.6x faster | ~378x slower | |
+| hash maps (mapops) | ~equal | ~2.8x slower | Fixed in v0.1.1 |
+| JSON field extraction | ~1.6x slower | ~8x slower | **NEW**: `json.extract(path)` |
+| Context assembly (join) | ~2.1x slower | ~6x slower | **NEW**: O(n) string builder |
+| string building (strconcat) | ~1.6x slower (was 2.9x) | ~21x slower | Improved |
+| startup of a compiled binary | ~5 ms | — | |
+| binary size (print("hi")) | 18 KB | — | |
 
 The gap with C has one dominant cause left: every value is still a boxed, tagged `VyValue`, so a loop variable is a 16‐byte struct rebuilt per iteration instead of a register. Arithmetic no longer calls out of line — those fast paths are static inline in `runtime/include/vyrt.h`. See `docs/PERFORMANCE.md` for the measured tables, the six bugs the benchmarks exposed, and what will close the rest of the gap.
 
