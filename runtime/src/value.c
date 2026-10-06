@@ -98,11 +98,14 @@ VyValue vy_mul_slow(VyValue a, VyValue b) {
     return vy_str(vy_str_repeat(b.str, a.i));
   if (vy_tagof(a) == VY_LIST && vy_tagof(b) == VY_INT) {
     VyList* l = a.list;
+    vy_gc_begin_mutation();
     VyList* out = vy_list_new_cap(l->len * (size_t)(b.i > 0 ? b.i : 0) + 4);
     for (int64_t i = 0; i < b.i; i++)
       for (uint32_t j = 0; j < l->len; j++) vy_list_push(out, l->items[j]);
+    vy_gc_end_mutation();
     return vy_list(out);
   }
+
   vy_type_error("two numbers", a);
   return vy_nil();
 }

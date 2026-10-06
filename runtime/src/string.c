@@ -188,6 +188,7 @@ VyStr* vy_str_pad(VyStr* s, int64_t width, int64_t fill, int left) {
 
 VyStr* vy_str_replace(VyStr* s, VyStr* from, VyStr* to) {
   if (!from->len) return vy_str_new(s->bytes, s->len);
+  vy_gc_begin_mutation();
   VyList* parts = vy_list_new();
   int64_t pos = 0;
   for (;;) {
@@ -208,6 +209,7 @@ VyStr* vy_str_replace(VyStr* s, VyStr* from, VyStr* to) {
     memcpy(r->bytes + off, parts->items[i].str->bytes, parts->items[i].str->len);
     off += parts->items[i].str->len;
   }
+  vy_gc_end_mutation();
   return r;
 }
 
@@ -220,8 +222,13 @@ static uint32_t utf8_width(unsigned char c) {
 }
 
 VyValue vy_str_split(VyStr* s, VyStr* sep) {
+  vy_gc_begin_mutation();
   VyList* out = vy_list_new();
-  if (!sep->len) return vy_str_chars(s);  /* split("") -> characters */
+  if (!sep->len) {
+    VyValue res = vy_str_chars(s);
+    vy_gc_end_mutation();
+    return res;
+  }
   int64_t pos = 0;
   for (;;) {
     int64_t at = vy_str_find(s, sep, pos);
@@ -230,10 +237,12 @@ VyValue vy_str_split(VyStr* s, VyStr* sep) {
     pos = at + (int64_t)sep->len;
   }
   vy_list_push(out, vy_str_val_n(s->bytes + pos, s->len - (size_t)pos));
+  vy_gc_end_mutation();
   return vy_list(out);
 }
 
 VyValue vy_str_chars(VyStr* s) {
+  vy_gc_begin_mutation();
   VyList* out = vy_list_new_cap(s->len);
   for (uint32_t i = 0; i < s->len;) {
     uint32_t w = utf8_width((unsigned char)s->bytes[i]);
@@ -241,15 +250,19 @@ VyValue vy_str_chars(VyStr* s) {
     vy_list_push(out, vy_str_val_n(s->bytes + i, w));
     i += w;
   }
+  vy_gc_end_mutation();
   return vy_list(out);
 }
 
 VyValue vy_str_bytes(VyStr* s) {
+  vy_gc_begin_mutation();
   VyList* out = vy_list_new_cap(s->len);
   for (uint32_t i = 0; i < s->len; i++)
     vy_list_push(out, vy_int((unsigned char)s->bytes[i]));
+  vy_gc_end_mutation();
   return vy_list(out);
 }
+
 
 /* --------------------------------------------------------------- builder
  * A plain growable byte buffer: appends copy only the new bytes, and the

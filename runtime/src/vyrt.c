@@ -320,31 +320,38 @@ void vy_map_clear(VyMap* m) {
 }
 
 VyList* vy_map_pairs(VyMap* m) {
+  vy_gc_begin_mutation();
   VyList* out = vy_list_new_cap(m && m->len ? m->len * 2 : 4);
-  if (!m) return out;
+  if (!m) { vy_gc_end_mutation(); return out; }
   for (uint32_t i = 0; i < m->cap; i++) {
     if (slot_empty(&m->entries[i])) continue;
     vy_list_push(out, m->entries[i].key);
     vy_list_push(out, m->entries[i].val);
   }
+  vy_gc_end_mutation();
   return out;
 }
 
 VyValue vy_map_keys(VyMap* m) {
+  vy_gc_begin_mutation();
   VyList* out = vy_list_new_cap(m && m->len ? m->len : 4);
-  if (!m) return vy_list(out);
+  if (!m) { vy_gc_end_mutation(); return vy_list(out); }
   for (uint32_t i = 0; i < m->cap; i++)
     if (!slot_empty(&m->entries[i])) vy_list_push(out, m->entries[i].key);
+  vy_gc_end_mutation();
   return vy_list(out);
 }
 
 VyValue vy_map_values(VyMap* m) {
+  vy_gc_begin_mutation();
   VyList* out = vy_list_new_cap(m && m->len ? m->len : 4);
-  if (!m) return vy_list(out);
+  if (!m) { vy_gc_end_mutation(); return vy_list(out); }
   for (uint32_t i = 0; i < m->cap; i++)
     if (!slot_empty(&m->entries[i])) vy_list_push(out, m->entries[i].val);
+  vy_gc_end_mutation();
   return vy_list(out);
 }
+
 
 /* --------------------------------------------------------- panics */
 
