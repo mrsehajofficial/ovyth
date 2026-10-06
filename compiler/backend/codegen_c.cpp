@@ -901,6 +901,18 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
       // Fast JSON field extraction without full AST build
       std::string json_val = args.empty() ? "vy_nil()" : args[0];
       std::string path_val = args.size() < 2 ? "vy_nil()" : args[1];
+      
+      // Compile-time optimization: if path is a string literal, embed it directly
+      // This avoids creating a VyValue for the path at runtime
+      if (args.size() >= 2 && e->args[1] && e->args[1]->kind == ExprKind::StringLit) {
+        const std::string& path_str = e->args[1]->sval;
+        return "({ VyValue _v = " + json_val + "; "
+               "VyValue _r = vy_nil(); if (vy_tagof(_v) == VY_STRING) { "
+               "_r = vy_json_extract_field(_v.str->bytes, _v.str->len, \"" + 
+               path_str + "\"); } "
+               "_r; })";
+      }
+      
       return "({ VyValue _v = " + json_val + "; VyValue _p = " + path_val + "; "
              "VyValue _r = vy_nil(); if (vy_tagof(_v) == VY_STRING && vy_tagof(_p) == VY_STRING) { "
              "_r = vy_json_extract_field(_v.str->bytes, _v.str->len, _p.str->bytes); } "

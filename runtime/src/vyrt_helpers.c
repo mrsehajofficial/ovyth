@@ -449,6 +449,8 @@ VyValue vy_h_gc(VyValue mode) {
     return vy_str(vy_str_new(tmp, strlen(tmp)));
   }
   if (!strcmp(what, "reset")) { vy_heap_reset_stats(); return vy_nil(); }
+  if (!strcmp(what, "disable")) { vy_gc_disable(1); return vy_nil(); }
+  if (!strcmp(what, "enable"))  { vy_gc_disable(0); return vy_nil(); }
   vy_gc_collect();
   return vy_nil();
 }
