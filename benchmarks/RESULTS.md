@@ -23,11 +23,11 @@ comparison where the programs compute different things proves nothing
 
 case         Vayu (wall)       C -O3      Python   result check
 --------------------------------------------------------------------
-intloop             193ms    42.83ms     4955ms   identical, py: identical
-fib                   4ms     0.34ms       32ms   identical, py: identical
-strconcat            14ms     0.68ms        9ms   identical, py: identical
-listappend           34ms     0.09ms       88ms   identical, py: identical
-mapops              189ms    66.76ms      161ms   identical, py: identical
+intloop             237ms    42.14ms     5612ms   identical, py: identical
+fib                   7ms     0.37ms       30ms   identical, py: identical
+strconcat            14ms     0.81ms        9ms   identical, py: identical
+listappend           34ms     0.11ms       86ms   identical, py: identical
+mapops              187ms    64.99ms      156ms   identical, py: identical
 
 Result columns are checked, not assumed: Vayu's answer must match C's.
 Rust and Go are not installed on this machine, so they are omitted too.
@@ -35,18 +35,22 @@ Vayu numbers are whole-process wall clock; C/Python time their cases
 internally, so Vayu's column additionally carries ~4ms of process start.
 ```
 
+Measured 7 Oct 2026 (`bash benchmarks/compare.sh`, best-of-3 wall clock).
+Timings move ±20-40% run to run on a desktop machine (`intloop` measured
+193-275ms across recent runs), so treat these as orders of magnitude.
+
 Reading it honestly:
 
-* **Vayu beats Python by 2.6x-26x** on loop, recursion, and list throughput.
+* **Vayu beats Python by 2.5x-24x** on loop, recursion, and list throughput.
   That is the expected result for a compiled language over an interpreter, and
   it is the honest headline.
-* **`mapops` is now at parity with CPython** (189ms vs 161ms) after the two
+* **`mapops` is now within 1.2x of CPython** (187ms vs 156ms) after the two
   runtime defects below were fixed; the C margin that remains is the hash
   table, not the language model.
 * **`strconcat` is the last case that loses to Python** (14ms vs 9ms): CPython
   reuses the buffer for `s += x` and interns short strings, Vayu still
   allocates one `VyStr` per append.
-* **Vayu is 4.5x-378x slower than C.** That gap is the *real* number, and it
+* **Vayu is 2.9x-309x slower than C.** That gap is the *real* number, and it
   is not a defect in the algorithms -- it is the cost of the dynamic object
   model the compiler currently emits:
 
@@ -63,11 +67,11 @@ Reading it honestly:
 | binary size for `print("hi")` | 254,848 B | **18,736 B** (13.6x) | link the runtime normally instead of `--whole-archive`, plus `-ffunction-sections -fdata-sections` + `-Wl,--gc-sections` + `--as-needed`. A program that never calls `http.*` no longer links libcurl (spec 4, 29) |
 | `strconcat` (40k appends) | 32,581 ms | **14 ms** (~2,300x) | compiler recognises `acc = acc + x` inside a loop and lowers it to a growable string builder, making it O(n) instead of O(n^2) (spec 12). Later: render stopped copying strings, so appending an existing string allocates nothing |
 | `vy_str_concat` | 2 allocations, 3 copies | **1 allocation, 2 copies** | builds directly in the tracked allocation instead of via a scratch buffer |
-| `intloop` (20M iterations) | 819 ms | **193 ms** (4.2x) | every arithmetic operator was a call into `libvyrt.a` with ~7 tag tests before `int+int`. The fast paths for `vy_add/sub/mul/div/mod`, unary ops, bitwise ops, `vy_eq/cmp/truthy/is` and `vy_list_push/get` now live as `static inline` in `vyrt.h` (spec §44 P0) |
-| `fib(25)` | 10 ms | **4 ms** | same inlining, plus emit-time constant folding and per-site pinned string literals (spec §44 P1) |
+| `intloop` (20M iterations) | 819 ms | **~240-275 ms** (3x) | every arithmetic operator was a call into `libvyrt.a` with ~7 tag tests before `int+int`. The fast paths for `vy_add/sub/mul/div/mod`, unary ops, bitwise ops, `vy_eq/cmp/truthy/is` and `vy_list_push/get` now live as `static inline` in `vyrt.h` (spec §44 P0) |
+| `fib(25)` | 10 ms | **6-7 ms** | same inlining, plus emit-time constant folding and per-site pinned string literals (spec §44 P1) |
 | `strconcat` / `mapops` key building | `str(i)` = `snprintf` + render `Buf` + copy = 2 allocations and a format parse | **digit loop into a 64-byte stack buffer, 1 allocation**; `nil`/`true`/`false` are pinned singletons; render no longer copies strings (spec §44 P2) |
 | `listappend` | 58 ms | **33 ms** | `xs.push(x)` no longer calls the out-of-line method dispatcher per push: the emitted code is `if (vy_tagof(base) == VY_LIST) vy_list_push(...)` with the unchanged dispatch as the fallthrough (spec §44 P2) |
-| `mapops` (100k inserts + 100k reads) | **infinite hang** | **189 ms** | see below -- this was a correctness bug, then two performance defects |
+| `mapops` (100k inserts + 100k reads) | **infinite hang** | **187-189 ms** | see below -- this was a correctness bug, then two performance defects |
 | `print("hi")` startup | ~5 ms | ~4-6 ms | unchanged; runtime init is already trivial, and libcurl is no longer initialised for programs that do not use it (spec 30) |
 
 ### The six real bugs the benchmarks exposed
@@ -125,16 +129,23 @@ running `gprof` on the emitted C. That is the method the spec demands
 case           result
 ---------------------------------------------
 startup        best=    5ms avg=    6ms  binary=   18736 bytes
-intloop        best=  193ms avg=  232ms  binary=   26952 bytes
-fib            best=    4ms avg=    4ms  binary=   18736 bytes
+intloop        best=  275ms avg=  300ms  binary=   31048 bytes
+fib            best=    6ms avg=    6ms  binary=   18736 bytes
 strconcat      best=   14ms avg=   15ms  binary=   27016 bytes
-listappend     best=   33ms avg=   35ms  binary=   39312 bytes
-mapops         best=  189ms avg=  198ms  binary=   31056 bytes
-json           best=   12ms avg=   12ms  binary=   35168 bytes
+listappend     best=   34ms avg=   36ms  binary=   39312 bytes
+mapops         best=  189ms avg=  192ms  binary=   31056 bytes
+json           best=   11ms avg=   11ms  binary=   39264 bytes
 chatbot        best=   11ms avg=   11ms  binary=   31040 bytes
 
 (ms = wall clock for the whole process, including startup)
 ```
+
+Measured 7 Oct 2026 (`bash benchmarks/run.sh`). Note `intloop`'s binary
+grew 26,952 -> 31,048 bytes and the `json` case binary 35,168 -> 39,264
+bytes since the last snapshot: the v0.1.2 compile-time path
+specialization in `codegen_c.cpp` emits larger per-site inline blocks.
+`intloop` itself varies 193-275ms run to run (±20-40% desktop variance),
+so the slower best-of here is noise, not a regression from HEAD.
 
 ## 4. Not yet done
 

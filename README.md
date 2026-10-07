@@ -9,21 +9,28 @@ print("hello from", name)
 
 ## Is it fast?
 
-Honest answer: 2.6x–26x faster than Python on loops, recursion and list building; competitive with Python on AI pipeline operations (JSON extraction, context building); 4.5x–378x slower than C — and the numbers are measured and published, not guessed.
+Honest answer: 2.5x–24x faster than Python on loops, recursion and list building; within ~1.2x of Python on hash maps, 1.6x–19x slower on AI pipeline operations (JSON extraction, context building); 2.9x–309x slower than C — and the numbers are measured and published, not guessed.
 
 | Workload | vs Python | vs C | Notes |
 |---|---|---|---|
-| arithmetic loops (intloop) | ~26x faster | ~4.5x slower | |
-| function calls (fib(25)) | ~8x faster | ~12x slower | |
-| list building (listappend) | ~2.6x faster | ~378x slower | |
-| hash maps (mapops) | ~equal | ~2.8x slower | Fixed in v0.1.1 |
-| JSON field extraction | ~1.6x slower | ~8x slower | **NEW**: `json.extract(path)` |
-| Context assembly (join) | ~2.1x slower | ~6x slower | **NEW**: O(n) string builder |
-| string building (strconcat) | ~1.6x slower (was 2.9x) | ~21x slower | Improved |
+| arithmetic loops (intloop) | ~24x faster | ~5.6x slower | |
+| function calls (fib(25)) | ~4.3x faster | ~19x slower | |
+| list building (listappend) | ~2.5x faster | ~309x slower | |
+| hash maps (mapops) | ~1.2x slower | ~2.9x slower | Fixed in v0.1.1, re-measured 7 Oct 2026 |
+| JSON field extraction (`json.extract`) | ~1.7x slower | ~8x slower | `json.extract(path)`, no full AST |
+| JSON repeated access (500k extracts) | ~19x slower | — (C caches) | different algorithms, see PERFORMANCE.md §7 |
+| Context assembly (join) | ~2.1–4.3x slower | ~7–14x slower | O(n) string builder, 1s timer variance |
+| string building (strconcat) | ~1.6x slower | ~17x slower | |
 | startup of a compiled binary | ~5 ms | — | |
 | binary size (print("hi")) | 18 KB | — | |
 
-The gap with C has one dominant cause left: every value is still a boxed, tagged `VyValue`, so a loop variable is a 16‐byte struct rebuilt per iteration instead of a register. Arithmetic no longer calls out of line — those fast paths are static inline in `runtime/include/vyrt.h`. See `docs/PERFORMANCE.md` for the measured tables, the six bugs the benchmarks exposed, and what will close the rest of the gap.
+Fresh numbers: `bash benchmarks/compare.sh` + `compare_ai.sh --release`,
+7 Oct 2026 (best-of-3 wall clock; desktop variance ±20-40%). The AI cases
+use a 1-second timer so sub-second cases print `0ms` ("below granularity",
+not "instant") — see `docs/PERFORMANCE.md` §7 and
+`benchmarks/RESULTS_AI.md` before quoting them.
+
+The gap with C has one dominant cause left: every value is still a boxed, tagged `VyValue`, so a loop variable is a 16‐byte struct rebuilt per iteration instead of a register. Arithmetic no longer calls out of line — those fast paths are static inline in `runtime/include/vyrt.h`. Fresh ratios (7 Oct 2026): intloop ~5.6x, fib ~19x, strconcat ~17x, listappend ~309x, mapops ~2.9x behind C. See `docs/PERFORMANCE.md` for the measured tables, the six bugs the benchmarks exposed, and what will close the rest of the gap.
 
 ## Setup
 
@@ -40,7 +47,7 @@ Then build the compiler and runtime:
 ```bash
 make            # builds build/vyc and build/libvyrt.a
 make test       # runs the full test suite (do this once — it should pass)
-./build/vyc version   # -> vyc 0.1.0 (Vayu)
+./build/vyc version   # -> vyc 0.1.3 (Vayu)
 ```
 
 That's the whole install — Vayu has no package manager and no dependencies to fetch.

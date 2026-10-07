@@ -3,6 +3,153 @@
 Notable changes to Vayu. Versions follow [semantic
 versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
+## 0.1.3 (benchmark re-check, 7 Oct 2026)
+
+Re-ran all three benchmark suites on Linux x86-64 and corrected every
+published number. No code changed -- this is a docs-and-numbers sync.
+
+### Core suite (`compare.sh` / `run.sh`) -- ratios drifted, tables updated
+
+Fresh best-of-3 wall clock (`intloop` varies 193-275ms run to run,
+±20-40% desktop noise):
+
+```
+case         Vayu (wall)       C -O3      Python   result check
+--------------------------------------------------------------------
+intloop             237ms    42.14ms     5612ms   identical, py: identical
+fib                   7ms     0.37ms       30ms   identical, py: identical
+strconcat            14ms     0.81ms        9ms   identical, py: identical
+listappend           34ms     0.11ms       86ms   identical, py: identical
+mapops              187ms    64.99ms      156ms   identical, py: identical
+```
+
+- vs Python is now **2.5x-24x** (was 2.6x-26x): `fib` re-measures at
+  4.3x, not 8x; `mapops` at 1.2x slower, not parity.
+- vs C is now **2.9x-309x** (was 4.5x-378x): `fib` ~19x (was 12x),
+  `listappend` ~309x (was 378x), `strconcat` ~17x (was 21x),
+  `intloop` ~5.6x (was 4.5x), `mapops` ~2.9x (was 2.8x).
+- `run.sh`: `intloop` best 275ms (was 193ms -- run-to-run noise, not a
+  regression); `intloop` binary 26,952 -> 31,048 bytes and `json`
+  35,168 -> 39,264 bytes from the v0.1.2 inline path specialization.
+- Updated: `README.md` headline + table, `docs/PERFORMANCE.md` §§1-5,
+  `benchmarks/RESULTS.md` §§1-3.
+
+### AI suite (`compare_ai.sh --release`) -- two bad claims corrected
+
+- **Corrected: "context assembly 1000ms -> 0ms (~100% faster)".**
+  Fresh runs show `context_build` at 1000-2000ms vs Python ~465-487ms
+  (2.1-4.3x slower). The `0ms` was the 1-second timer quantizing a
+  sub-second case, not a speedup. `RESULTS_AI.md`, `PERFORMANCE.md` §7
+  and the 0.1.2 entry below now say so.
+- **Corrected: the HEAD `RESULTS_AI.md` table's `0ms` wins** for
+  `json_parse`/`context_build`/`multi_parse`. Repeat runs of the same
+  binary flip 0/1000/2000ms; honest readings are `json_parse` ~1.7x
+  slower, `json_access` 3000ms stable (~19x slower, was 30.9x --
+  the v0.1.2 `memcmp` + path-specialization win is real),
+  `multi_parse` 0-6.6x slower.
+- **Disclosed: the AI comparison is not like-for-like.** Vayu
+  re-extracts from the JSON string, Python does dict lookups after one
+  parse, C's `json_access` times a cached-length loop (~0ms). Documented
+  in `RESULTS_AI.md` and `PERFORMANCE.md` §7; like-for-like AI cases
+  with a millisecond timer are open work.
+- Fresh AI table (7 Oct 2026): `json_parse` 0ms / 122ms / 581ms,
+  `json_access` 3000ms / 0ms / 156ms, `context_build` 2000ms / 145ms /
+  465ms, `chunk_pipeline` 0/0/4ms, `hash_map_str` 0/5/13ms,
+  `multi_parse` 1000ms / 4ms / 152ms, `string_scan` 0/0/262ms --
+  with the timer-granularity warning attached.
+
+### Docs touched
+
+- `benchmarks/RESULTS.md` -- fresh `compare.sh`/`run.sh` tables, variance
+  note, binary-size growth explained.
+- `benchmarks/RESULTS_AI.md` -- fresh table, timer warning, not-like-for-like
+  caveat, corrected optimization results.
+- `README.md` -- headline (2.5x-24x / 1.2x-19x AI / 2.9x-309x), expanded
+  workload table, AI timer pointer, fresh vs-C ratios.
+- `docs/PERFORMANCE.md` -- §§1-3, §5, §7 rewritten with fresh numbers.
+
+---
+
+## 0.1.2
+
+### Performance Optimizations (AI/RAG Pipeline)
+
+Significant performance improvements for AI orchestration workloads:
+
+- **json.extract() optimization** (`runtime/src/json_extract.c`):
+  - Eliminated per-key VyStr allocation during JSON field extraction
+  - Direct pointer comparison (`memcmp`) for key matching instead of string allocation
+  - Stack-allocated reusable buffer for temporary key parsing
+  - **Result: ~40% faster** on repeated extraction (`json_access`
+    5000ms → 3000ms for 500k extractions, re-measured 7 Oct 2026;
+    single extraction ~1.7x slower than Python)
+
+- **Compile-time path specialization** (`compiler/backend/codegen_c.cpp`):
+  - Compiler detects string literal paths and embeds them directly in generated C
+  - Avoids creating VyValue for path string at runtime
+  - Reduces overhead in tight loops (part of the `json_access` win above)
+
+- **String builder for join()** (`runtime/include/vy_sb.h`):
+  - O(n) instead of O(n²) for repeated concatenation
+  - Uses `VyStrBuilder` with geometric growth to avoid per-element allocations
+  - **Result: no measurable change with the 1s `bench_ai.vy` timer**
+    (`context_build` 1000ms before, 1000-2000ms after on re-check --
+    the earlier "1000ms → 0ms / ~100% faster" was timer quantization,
+    corrected 7 Oct 2026; needs a ms timer to quantify)
+
+- **GC mitigation** (`runtime/src/vyrt_helpers.c`):
+  - Added `gc.disable()` / `gc.enable()` for controlled garbage collection
+  - Arena allocator for request-scoped allocations with O(1) teardown
+  - Reusable buffers in hot paths
+
+### Benchmarks (v0.1.2, re-measured 7 Oct 2026)
+
+```
+=== Vayu vs C vs Python -- AI pipeline benchmark ===
+
+case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
+------------------  ----------  --------  --------  ----------  ----------
+json_parse                 0ms     122ms     581ms  0.0x faster  0.0x faster
+json_access             3000ms       0ms     156ms           ?  19.2x slower
+context_build           2000ms     145ms     465ms  13.8x slower  4.3x slower
+chunk_pipeline             0ms       0ms       4ms           ?  0.0x faster
+hash_map_str               0ms       5ms      13ms  0.0x faster  0.0x faster
+multi_parse             1000ms       4ms     152ms  250.0x slower  6.6x slower
+string_scan                0ms       0ms     262ms           ?  0.0x faster
+```
+
+> `bench_ai.vy` reports whole seconds: `0ms` = below the 1s timer
+> granularity (not "instant"), and near-second cases flip 0/1000/2000ms
+> run to run. Honest readings: `json_parse` ~1.7x slower than Python when
+> it reports 1000ms; `json_access` 3000ms stable (~19x slower); 
+> `context_build` 1000-2000ms (2.1-4.3x slower); `multi_parse` flips
+> 0-1000ms (0-6.6x slower). The three implementations also do different
+> work per case (not like-for-like) -- see the Unreleased section above
+> and `benchmarks/RESULTS_AI.md`.
+
+### GC Runtime Stability (v0.1.1 fixes maintained)
+
+Fixed critical garbage collection bugs that caused segfaults during high-iteration JSON parsing with nested index access (common in AI/RAG workloads):
+
+- **Added GC root scanner API** (`runtime/src/gc.c`, `runtime/include/vyrt.h`)
+  - `vy_gc_set_scanner()` — register dynamic root scanners during collection
+  - `vy_gc_mark_value()` — mark values as roots
+  - `vy_gc_roots_mark()` / `vy_gc_roots_restore()` — LIFO stack frames for root management
+
+- **Native codegen protection** (`compiler/backend/codegen_c.cpp`)
+  - Compound expressions with nested index chains now emit `vy_gc_begin_mutation()` / `vy_gc_end_mutation()` guards
+  - Prevents GC from collecting intermediates during operations like `doc["choices"][0]["message"]["content"]`
+
+- **Interpreter RAII root tracking** (`compiler/backend/interp*.cpp`)
+  - Subexpressions and temporaries are now properly tracked
+  - Fixes crashes in list comprehensions, binary operations, and nested assignments
+
+- **Added regression test** `tests/interp/016_gc_stress.vy` — 2000 iterations with deep nesting passes
+
+All 32 tests pass across both backends.
+
+---
+
 ## 0.1.1
 
 ### GC Runtime Fixes
@@ -38,20 +185,6 @@ All 32 tests pass across both backends.
 - **AI Pipeline Benchmark** (`benchmarks/bench_ai.vy`) — Measures JSON parse, nested access, context assembly, chunking, hash maps, multi-parse, and string scanning
 - **Reference implementations** (`benchmarks/ref_ai.c`, `benchmarks/ref_ai.py`) — C and Python equivalents for comparison
 - **Comparison script** (`benchmarks/compare_ai.sh`) — Runs all three implementations and reports results
-
-Benchmark results (50k iterations, Vayu native vs Python vs C):
-```
-case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
-json_parse              1000ms     126ms     636ms        7.9x   1.6x slower
-context_build           1000ms     157ms     487ms        6.4x   2.1x slower
-hash_map_str               0ms       5ms      14ms      0.0x   0.0x faster
-chunk_pipeline             0ms       0ms       4ms         ?   0.0x faster
-string_scan                0ms       0ms     314ms         ?   0.0x faster
-```
-
-Key improvements in v0.1.1:
-- `json.extract(json, path)` — Fast field extraction without full AST build (1.6x vs Python, was 19x)
-- Optimized `join()` with string builder — O(n) instead of O(n²) for context assembly (2.1x vs Python, was 6x)
 
 ### Runtime Improvements
 
