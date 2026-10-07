@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 
 typedef struct {
     const char* p;
@@ -489,5 +490,88 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
         }
     }
     
+    return vy_nil();
+}
+
+/* Fast numeric field accessor - finds "key":<number> and extracts as double
+ * Returns 1 on success, 0 on not found/error. */
+int vy_json_get_float(VyValue obj, const char* key, double* out) {
+    if (vy_tagof(obj) != VY_STRING) return 0;
+    const char* json = obj.str->bytes;
+    size_t len = obj.str->len;
+    
+    const char* p = json;
+    const char* end = json + len;
+    size_t key_len = strlen(key);
+    
+    while (p < end) {
+        // Look for "key":
+        if (*p == '\"' && (size_t)(end - p) > key_len + 2 && 
+            memcmp(p + 1, key, key_len) == 0 && p[key_len + 1] == '\"') {
+            p += key_len + 2; // skip "key"
+            // skip whitespace
+            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+            if (p < end && *p == ':') {
+                p++;
+                // skip whitespace
+                while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+                // parse number
+                char* num_end;
+                double d = strtod(p, &num_end);
+                if (num_end != p) {
+                    *out = d;
+                    return 1;
+                }
+            }
+        }
+        p++;
+    }
+    return 0;
+}
+
+int vy_json_get_int(VyValue obj, const char* key, int64_t* out) {
+    double d;
+    if (!vy_json_get_float(obj, key, &d)) return 0;
+    *out = (int64_t)d;
+    return 1;
+}
+
+int vy_json_get_str(VyValue obj, const char* key, const char** out_data, size_t* out_len) {
+    if (vy_tagof(obj) != VY_STRING) return 0;
+    const char* json = obj.str->bytes;
+    size_t len = obj.str->len;
+    
+    const char* p = json;
+    const char* end = json + len;
+    size_t key_len = strlen(key);
+    
+    while (p < end) {
+        if (*p == '\"' && (size_t)(end - p) > key_len + 2 && 
+            memcmp(p + 1, key, key_len) == 0 && p[key_len + 1] == '\"') {
+            p += key_len + 2;
+            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+            if (p < end && *p == ':') {
+                p++;
+                while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+                if (p < end && *p == '\"') {
+                    p++;
+                    const char* start = p;
+                    while (p < end && *p != '\"') {
+                        if (*p == '\\') { p++; if (p >= end) break; }
+                        p++;
+                    }
+                    *out_data = start;
+                    *out_len = p - start;
+                    return 1;
+                }
+            }
+        }
+        p++;
+    }
+    return 0;
+}
+
+VyValue vy_json_get_array(VyValue obj, const char* key) {
+    // For now just return nil - would need full parsing
     return vy_nil();
 }

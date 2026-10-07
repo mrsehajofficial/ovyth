@@ -214,6 +214,78 @@ typedef struct VyPair {
   VyValue val;
 } VyPair;
 
+/* ---------------------------------------------------------- specialized arrays */
+
+/* Specialized homogeneous arrays - contiguous native buffers for
+ * known element types. These avoid boxing and provide cache-friendly
+ * access patterns. NOT GC-tracked; must be freed explicitly. */
+typedef struct VyInt64Array {
+  int64_t* data;
+  uint32_t len;
+  uint32_t cap;
+} VyInt64Array;
+
+typedef struct VyFloat64Array {
+  double* data;
+  uint32_t len;
+  uint32_t cap;
+} VyFloat64Array;
+
+typedef struct VyStringArray {
+  VyStr** data;
+  uint32_t len;
+  uint32_t cap;
+} VyStringArray;
+
+/* Forward declarations for slow paths */
+void vy_i64a_push_slow(VyInt64Array* a, int64_t v);
+int64_t vy_i64a_get_slow(VyInt64Array* a, int64_t i);
+void vy_i64a_free(VyInt64Array* a);
+
+void vy_f64a_push_slow(VyFloat64Array* a, double v);
+double vy_f64a_get_slow(VyFloat64Array* a, int64_t i);
+void vy_f64a_free(VyFloat64Array* a);
+
+void vy_stra_push_slow(VyStringArray* a, VyStr* v);
+VyStr* vy_stra_get_slow(VyStringArray* a, int64_t i);
+void vy_stra_free(VyStringArray* a);
+
+/* Int64Array operations */
+VyInt64Array* vy_i64a_new_cap(uint32_t cap);
+static inline VyInt64Array* vy_i64a_new(void) { return vy_i64a_new_cap(4); }
+static inline void vy_i64a_push(VyInt64Array* a, int64_t v) {
+  if (a && a->len < a->cap) { a->data[a->len++] = v; return; }
+  vy_i64a_push_slow(a, v);
+}
+static inline int64_t vy_i64a_get(VyInt64Array* a, int64_t i) {
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) return a->data[i];
+  return vy_i64a_get_slow(a, i);
+}
+
+/* Float64Array operations */
+VyFloat64Array* vy_f64a_new_cap(uint32_t cap);
+static inline VyFloat64Array* vy_f64a_new(void) { return vy_f64a_new_cap(4); }
+static inline void vy_f64a_push(VyFloat64Array* a, double v) {
+  if (a && a->len < a->cap) { a->data[a->len++] = v; return; }
+  vy_f64a_push_slow(a, v);
+}
+static inline double vy_f64a_get(VyFloat64Array* a, int64_t i) {
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) return a->data[i];
+  return vy_f64a_get_slow(a, i);
+}
+
+/* StringArray operations */
+VyStringArray* vy_stra_new_cap(uint32_t cap);
+static inline VyStringArray* vy_stra_new(void) { return vy_stra_new_cap(4); }
+static inline void vy_stra_push(VyStringArray* a, VyStr* v) {
+  if (a && a->len < a->cap) { a->data[a->len++] = v; return; }
+  vy_stra_push_slow(a, v);
+}
+static inline VyStr* vy_stra_get(VyStringArray* a, int64_t i) {
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) return a->data[i];
+  return vy_stra_get_slow(a, i);
+}
+
 /* `hdr` first -- see the VyList note above: the GC tracks &m->hdr as the
  * block base, so it must sit at offset 0. */
 struct VyMap {

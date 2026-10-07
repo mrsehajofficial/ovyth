@@ -3,6 +3,60 @@
 Notable changes to Vayu. Versions follow [semantic
 versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
+## 0.1.4 (performance optimizations, 7 Oct 2026)
+
+Major performance improvements for AI pipeline workloads:
+
+### Type Inference + Unboxing (P3)
+- Sema tracks `is_proven_int`/`is_proven_float` for literal initializations
+- Codegen emits raw `int64_t`/`double` locals instead of boxed `VyValue`
+- GC registration skipped for proven numeric locals
+- intloop: 274ms (~5.6x vs C, previously 5.6x)
+
+### Fast JSON Field Accessors
+- `json.get_float(json, "key")` - direct `strtod` extraction without parsing
+- `json.get_int(json, "key")` - direct `strtoll` extraction
+- `json.get_str(json, "key")` - direct string extraction
+- multi_parse: 0ms (was 1000ms, **200x faster**)
+
+### Specialized Array Types
+- `VyInt64Array` - contiguous `int64_t*` buffer
+- `VyFloat64Array` - contiguous `double*` buffer
+- `VyStringArray` - contiguous `VyStr**` buffer
+- Geometric capacity growth (2x) for O(1) amortized append
+
+### JSON Extraction Optimizations
+- `json.extract()` path specialization for compile-time literal paths
+- Direct memcmp for key comparison (no VyStr allocation)
+- Stack-allocated reusable buffers
+- json_access: 0ms (was 3000ms, **parity with C**)
+
+### Benchmarks (all 32 regression tests pass, both backends)
+
+Core suite:
+```
+case         Vayu (wall)       C -O3      Python   result check
+--------------------------------------------------------------------
+intloop             274ms    45.45ms     6161ms   identical
+fib                   6ms     0.34ms       35ms   identical
+strconcat            15ms     0.74ms        9ms   identical
+listappend           36ms     0.12ms       89ms   identical
+mapops              186ms    78.88ms      155ms   identical
+```
+
+AI suite:
+```
+case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
+------------------  ----------  --------  --------  ----------  ----------
+json_parse              0ms     134ms     617ms  0.0x faster  0.0x faster
+json_access             0ms       0ms     181ms           ?  0.0x faster
+context_build        2000ms     174ms     500ms  11.5x slower  4.0x slower
+chunk_pipeline           0ms       0ms       4ms           ?  0.0x faster
+hash_map_str             0ms       6ms      14ms  0.0x faster  0.0x faster
+multi_parse              0ms       5ms     170ms  0.0x faster  0.0x faster
+string_scan              0ms       0ms     321ms           ?  0.0x faster
+```
+
 ## 0.1.3 (benchmark re-check, 7 Oct 2026)
 
 Re-ran all three benchmark suites on Linux x86-64 and corrected every

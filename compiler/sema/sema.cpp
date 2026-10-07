@@ -156,16 +156,12 @@ Ty Sema::check_stmt(Stmt* s) {
                             " but the value is " + ty_name(inferred));
         }
         if (t == Ty::Error) t = Ty::Unknown;
-        
-        // Track proven types for numeric literals - enables register allocation
+
+        // Track proven types for all pure-int expressions - enables raw C arithmetic
         bool proven_int = false, proven_float = false;
         if (!unpack && i < s->values.size() && s->values[i]) {
-          Expr* val = s->values[i];
-          if (val->kind == ExprKind::IntLit) {
-            proven_int = true;
-          } else if (val->kind == ExprKind::FloatLit) {
-            proven_float = true;
-          }
+          proven_int  = is_proven_int_expr(s->values[i]);
+          proven_float = !proven_int && s->values[i]->kind == ExprKind::FloatLit;
         }
         define(s->names[i], t, proven_int, proven_float);
         vt.push_back(t);
@@ -173,6 +169,7 @@ Ty Sema::check_stmt(Stmt* s) {
       }
       return Ty::Nil;
     }
+
 
     case StmtKind::ExprStmt:
       check_expr(s->expr);
@@ -492,6 +489,32 @@ Ty Sema::check_call(Expr* e) {
 
   Ty base = check_expr(callee);
   return base == Ty::Func ? Ty::Any : base;
+}
+
+// Check if an expression is a pure integer literal or combination thereof
+// (no side effects, no float promotion) - enables raw int64_t lowering
+bool Sema::is_proven_int_expr(Expr* e) {
+  if (!e) return false;
+  switch (e->kind) {
+    case ExprKind::IntLit:
+      return true;
+    case ExprKind::Unary:
+      if (e->op == Tok::MINUS) return is_proven_int_expr(e->a);
+      return false;
+    case ExprKind::Binary: {
+      // Only ops that preserve int->int
+      switch (e->op) {
+        case Tok::PLUS: case Tok::MINUS: case Tok::STAR: case Tok::PERCENT:
+        case Tok::AMP: case Tok::PIPE: case Tok::CARET:
+        case Tok::SHL: case Tok::SHR:
+          return is_proven_int_expr(e->a) && is_proven_int_expr(e->b);
+        default:
+          return false;
+      }
+    }
+    default:
+      return false;
+  }
 }
 
 Ty Sema::check_expr(Expr* e) {

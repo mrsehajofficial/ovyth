@@ -139,6 +139,116 @@ void vy_list_sort(VyList* l) {
   if (l && l->len > 1) qsort(l->items, l->len, sizeof(VyValue), cmp_for_sort);
 }
 
+/* ---------------------------------------------------------- specialized arrays */
+
+/* Int64Array */
+VyInt64Array* vy_i64a_new_cap(uint32_t cap) {
+  if (cap < 4) cap = 4;
+  VyInt64Array* a = (VyInt64Array*)calloc(1, sizeof(VyInt64Array));
+  if (!a) oom(sizeof(VyInt64Array));
+  a->cap = cap;
+  a->len = 0;
+  a->data = (int64_t*)calloc(cap, sizeof(int64_t));
+  if (!a->data) oom((size_t)cap * sizeof(int64_t));
+  return a;
+}
+
+void vy_i64a_push_slow(VyInt64Array* a, int64_t v) {
+  if (!a) return;
+  uint32_t cap = a->cap ? a->cap : 4;
+  while (cap < a->len + 1) cap *= 2;
+  int64_t* items = (int64_t*)realloc(a->data, cap * sizeof(int64_t));
+  if (!items) oom((size_t)cap * sizeof(int64_t));
+  a->data = items;
+  a->cap = cap;
+  a->data[a->len++] = v;
+}
+
+int64_t vy_i64a_get_slow(VyInt64Array* a, int64_t i) {
+  if (!a) return 0;
+  if (i < 0) i += a->len;
+  if (i < 0 || i >= (int64_t)a->len) return 0;
+  return a->data[i];
+}
+
+void vy_i64a_free(VyInt64Array* a) {
+  if (!a) return;
+  free(a->data);
+  free(a);
+}
+
+/* Float64Array */
+VyFloat64Array* vy_f64a_new_cap(uint32_t cap) {
+  if (cap < 4) cap = 4;
+  VyFloat64Array* a = (VyFloat64Array*)calloc(1, sizeof(VyFloat64Array));
+  if (!a) oom(sizeof(VyFloat64Array));
+  a->cap = cap;
+  a->len = 0;
+  a->data = (double*)calloc(cap, sizeof(double));
+  if (!a->data) oom((size_t)cap * sizeof(double));
+  return a;
+}
+
+void vy_f64a_push_slow(VyFloat64Array* a, double v) {
+  if (!a) return;
+  uint32_t cap = a->cap ? a->cap : 4;
+  while (cap < a->len + 1) cap *= 2;
+  double* items = (double*)realloc(a->data, cap * sizeof(double));
+  if (!items) oom((size_t)cap * sizeof(double));
+  a->data = items;
+  a->cap = cap;
+  a->data[a->len++] = v;
+}
+
+double vy_f64a_get_slow(VyFloat64Array* a, int64_t i) {
+  if (!a) return 0.0;
+  if (i < 0) i += a->len;
+  if (i < 0 || i >= (int64_t)a->len) return 0.0;
+  return a->data[i];
+}
+
+void vy_f64a_free(VyFloat64Array* a) {
+  if (!a) return;
+  free(a->data);
+  free(a);
+}
+
+/* StringArray */
+VyStringArray* vy_stra_new_cap(uint32_t cap) {
+  if (cap < 4) cap = 4;
+  VyStringArray* a = (VyStringArray*)calloc(1, sizeof(VyStringArray));
+  if (!a) oom(sizeof(VyStringArray));
+  a->cap = cap;
+  a->len = 0;
+  a->data = (VyStr**)calloc(cap, sizeof(VyStr*));
+  if (!a->data) oom((size_t)cap * sizeof(VyStr*));
+  return a;
+}
+
+void vy_stra_push_slow(VyStringArray* a, VyStr* v) {
+  if (!a) return;
+  uint32_t cap = a->cap ? a->cap : 4;
+  while (cap < a->len + 1) cap *= 2;
+  VyStr** items = (VyStr**)realloc(a->data, cap * sizeof(VyStr*));
+  if (!items) oom((size_t)cap * sizeof(VyStr*));
+  a->data = items;
+  a->cap = cap;
+  a->data[a->len++] = v;
+}
+
+VyStr* vy_stra_get_slow(VyStringArray* a, int64_t i) {
+  if (!a) return NULL;
+  if (i < 0) i += a->len;
+  if (i < 0 || i >= (int64_t)a->len) return NULL;
+  return a->data[i];
+}
+
+void vy_stra_free(VyStringArray* a) {
+  if (!a) return;
+  free(a->data);
+  free(a);
+}
+
 /* ----------------------------------------------------------------- maps */
 
 /* An empty slot is an all-zero VyPair. Note this is NOT the same as "the key

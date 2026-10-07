@@ -258,9 +258,11 @@ class Gen {
       if (std::string* c = lookup(name)) return *c + " = " + rhs;
       std::string c = ident(name, tmp_++);
       scopes_.back()[name] = c;
-      if (is_proven_int) proven_ints_.insert(name);
-      if (is_proven_float) proven_floats_.insert(name);
-      return c + " = " + rhs;
+      if (is_proven_int) proven_ints_.insert(c);   // track by C name
+      if (is_proven_float) proven_floats_.insert(c);
+      // Emit the C declaration inline and push to prologue list
+      cur_roots_.push_back("@int:" + c);  // sentinel: raw int64_t
+      return "int64_t " + c + " = " + rhs;
     }
     // Regular VyValue - needs GC registration
     if (std::string* c = lookup(name)) return *c + " = " + rhs;
@@ -284,36 +286,22 @@ class Gen {
     std::string decls, regs;
     bool first = true;
     for (size_t i = 0; i < cur_roots_.size(); i++) {
+      const std::string& slot = cur_roots_[i];
+      // Sentinels emitted inline by bind() for proven int/float vars.
+      // "@int:cvar" means we already emitted `int64_t cvar = ...;` at the
+      // binding site; nothing more needed here.
+      if (slot.size() > 5 && slot.substr(0, 5) == "@int:") continue;
+      if (slot.size() > 7 && slot.substr(0, 7) == "@float:") continue;
       // Roots declared at their use site (the string-builder result) are
       // already emitted; redeclaring them would shadow the live slot.
-      if (inline_roots_.count(cur_roots_[i])) continue;
-      // Skip proven Int/Float - they use raw C types, not VyValue
-      std::string var_name = cur_roots_[i];
-      // Find the Vayu name for this C variable
-      bool is_proven = false;
-      for (const auto& name : proven_ints_) {
-        if (scopes_.back().count(name) && scopes_.back()[name] == var_name) {
-          is_proven = true;
-          break;
-        }
-      }
-      if (!is_proven) {
-        for (const auto& name : proven_floats_) {
-          if (scopes_.back().count(name) && scopes_.back()[name] == var_name) {
-            is_proven = true;
-            break;
-          }
-        }
-      }
-      if (is_proven) continue;
-      
+      if (inline_roots_.count(slot)) continue;
       if (!first) { decls += " "; regs += " "; }
       first = false;
-      decls += "VyValue " + cur_roots_[i] + " = vy_nil();";
-      regs += "vy_gc_register_root(&" + cur_roots_[i] + ");";
+      decls += "VyValue " + slot + " = vy_nil();";
+      regs += "vy_gc_register_root(&" + slot + ");";
     }
-    line(decls);
-    line(regs);
+    if (!decls.empty()) line(decls);
+    if (!regs.empty()) line(regs);
   }
 
   bool fail(const std::string& m) {
@@ -329,6 +317,13 @@ class Gen {
   std::string emit_assign(const Expr* target, const std::string& val);
   std::string emit_call(const Expr* e);
   std::string emit_closure(const Expr* e);
+
+  // Proven-int fast path: returns true when `e` is statically known to be
+  // a pure int64_t expression with no side effects that could allocate.
+  // ex_int() returns the raw C int64_t expression; never empty when
+  // is_int_expr() is true.
+  bool is_int_expr(const Expr* e) const;
+  std::string ex_int(const Expr* e);  // raw int64_t C expression
 
   // ------------------------------------------------------------ statements
   void stmt(const Stmt* s);
@@ -482,6 +477,69 @@ static bool fold_const_unary(const Expr* e, std::string& out) {
   }
 }
 
+// ---------------------------------------------------------------- proven-int helpers
+// Returns true when `e` is provably a pure int64_t expression:
+//   - IntLit
+//   - Identifier whose C name is in proven_ints_
+//   - Binary(+,-,*,%,&,|,^,<<,>>) of two such expressions
+// Does NOT include SLASH (might be int/int but we still want vy_div's
+// zero-check semantics in the general case; fold_const_binop handles literals).
+bool Gen::is_int_expr(const Expr* e) const {
+  if (!e) return false;
+  if (e->kind == ExprKind::IntLit) return true;
+  if (e->kind == ExprKind::Identifier) {
+    // Look up the C variable name and check if it's proven int.
+    for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
+      auto it = scopes_[i].find(e->name);
+      if (it != scopes_[i].end()) {
+        return proven_ints_.count(it->second) > 0;
+      }
+    }
+    return false;
+  }
+  if (e->kind == ExprKind::Unary && e->op == Tok::MINUS)
+    return is_int_expr(e->a);
+  if (e->kind != ExprKind::Binary) return false;
+  // Ops that keep int->int:
+  switch (e->op) {
+    case Tok::PLUS: case Tok::MINUS: case Tok::STAR: case Tok::PERCENT:
+    case Tok::AMP: case Tok::PIPE: case Tok::CARET:
+    case Tok::SHL: case Tok::SHR:
+      return is_int_expr(e->a) && is_int_expr(e->b);
+    default: return false;
+  }
+}
+
+// Returns a raw int64_t C expression. Only call when is_int_expr() is true.
+std::string Gen::ex_int(const Expr* e) {
+  if (e->kind == ExprKind::IntLit)
+    return std::to_string(e->ival) + "LL";
+  if (e->kind == ExprKind::Identifier) {
+    for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
+      auto it = scopes_[i].find(e->name);
+      if (it != scopes_[i].end()) return it->second;
+    }
+    return "0LL";
+  }
+  if (e->kind == ExprKind::Unary && e->op == Tok::MINUS)
+    return "(-(int64_t)(" + ex_int(e->a) + "))";
+  // Binary case:
+  std::string ai = ex_int(e->a);
+  std::string bi = ex_int(e->b);
+  switch (e->op) {
+    case Tok::PLUS:    return "(" + ai + ")+(" + bi + ")";
+    case Tok::MINUS:   return "(" + ai + ")-(" + bi + ")";
+    case Tok::STAR:    return "(" + ai + ")*(" + bi + ")";
+    case Tok::PERCENT: return "(" + bi + ")?(" + ai + ")%(" + bi + "):(vy_zero_error(),0LL)";
+    case Tok::AMP:     return "(" + ai + ")&(" + bi + ")";
+    case Tok::PIPE:    return "(" + ai + ")|(" + bi + ")";
+    case Tok::CARET:   return "(" + ai + ")^(" + bi + ")";
+    case Tok::SHL:     return "(" + ai + ")<<(" + bi + ")";
+    case Tok::SHR:     return "(" + ai + ")>>(" + bi + ")";
+    default: return "0LL";
+  }
+}
+
 // ---------------------------------------------------------------- literals
 std::string Gen::ex(const Expr* e) {
   if (!e) return "vy_nil()";
@@ -559,6 +617,31 @@ std::string Gen::ex(const Expr* e) {
         std::string n = fresh(), h = fresh();
         return "({ VyValue " + n + " = " + ex(e->a) + "; VyValue " + h + " = " +
                ex(e->b) + "; vy_bool(vy_in(" + n + ", " + h + ")); })";
+      }
+      // Proven-int fast path: both operands are statically Int.
+      // Emit raw int64_t arithmetic; no VyValue temporaries, no tag checks.
+      if (is_int_expr(e->a) && is_int_expr(e->b)) {
+        std::string ai = ex_int(e->a);
+        std::string bi = ex_int(e->b);
+        switch (e->op) {
+          case Tok::PLUS:          return "vy_int((" + ai + ") + (" + bi + "))";
+          case Tok::MINUS:         return "vy_int((" + ai + ") - (" + bi + "))";
+          case Tok::STAR:          return "vy_int((" + ai + ") * (" + bi + "))";
+          case Tok::PERCENT:       return "vy_int((" + bi + ") ? (" + ai + ") % (" + bi + ") : (vy_zero_error(),0LL))";
+          case Tok::AMP:           return "vy_int((" + ai + ") & (" + bi + "))";
+          case Tok::PIPE:          return "vy_int((" + ai + ") | (" + bi + "))";
+          case Tok::CARET:         return "vy_int((" + ai + ") ^ (" + bi + "))";
+          case Tok::SHL:           return "vy_int((" + ai + ") << (" + bi + "))";
+          case Tok::SHR:           return "vy_int((" + ai + ") >> (" + bi + "))";
+          case Tok::EQUAL:         return "vy_bool((" + ai + ") == (" + bi + "))";
+          case Tok::BANG_EQUAL:    return "vy_bool((" + ai + ") != (" + bi + "))";
+          case Tok::LESS:          return "vy_bool((" + ai + ") < (" + bi + "))";
+          case Tok::GREATER:       return "vy_bool((" + ai + ") > (" + bi + "))";
+          case Tok::LESS_EQUAL:    return "vy_bool((" + ai + ") <= (" + bi + "))";
+          case Tok::GREATER_EQUAL: return "vy_bool((" + ai + ") >= (" + bi + "))";
+          // SLASH falls through to VyValue path (div-by-zero handled by vy_div)
+          default: break;
+        }
       }
       std::string a = fresh(), b = fresh();
       const std::string pre = "({ VyValue " + a + " = " + ex(e->a) + "; VyValue " +
@@ -1197,6 +1280,26 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
              "VyValue _r = vy_nil(); if (vy_tagof(_v) == VY_STRING && vy_tagof(_p) == VY_STRING) { "
              "_r = vy_json_extract_field(_v.str->bytes, _v.str->len, _p.str->bytes); } "
              "_r; })";
+    }
+    if (name == "get_float") {
+      // Fast numeric field accessor - avoids building full VyValue
+      if (args.size() >= 2 && e->args[1] && e->args[1]->kind == ExprKind::StringLit) {
+        const std::string& key = e->args[1]->sval;
+        return "({ VyValue _v = " + args[0] + "; double _d = 0; "
+               "vy_json_get_float(_v, \"" + key + "\", &_d) ? vy_float(_d) : vy_nil(); })";
+      }
+      return "({ VyValue _v = " + args[0] + "; VyValue _k = " + args[1] + "; "
+             "double _d = 0; vy_json_get_float(_v, _k.str->bytes, &_d) ? vy_float(_d) : vy_nil(); })";
+    }
+    if (name == "get_int") {
+      // Fast integer field accessor
+      if (args.size() >= 2 && e->args[1] && e->args[1]->kind == ExprKind::StringLit) {
+        const std::string& key = e->args[1]->sval;
+        return "({ VyValue _v = " + args[0] + "; int64_t _i = 0; "
+               "vy_json_get_int(_v, \"" + key + "\", &_i) ? vy_int(_i) : vy_nil(); })";
+      }
+      return "({ VyValue _v = " + args[0] + "; VyValue _k = " + args[1] + "; "
+             "int64_t _i = 0; vy_json_get_int(_v, _k.str->bytes, &_i) ? vy_int(_i) : vy_nil(); })";
     }
   }
   if (ns == "http") {

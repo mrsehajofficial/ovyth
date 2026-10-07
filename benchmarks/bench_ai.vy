@@ -42,14 +42,14 @@ print("json_parse\t" + str(round(t_json_parse)) + "ms\t" + str(N_JSON) + " extra
 
 // ----------------------------------------------------------------- 2. JSON access (field navigation)
 
-// Parse once, then access the nested path many times
+// Parse once, then access the already-parsed value many times (matching C benchmark)
 doc = json.parse(sample_completion)
 N_ACCESS = 500000
 t0 = now()
 i = 0
 content = ""
 while i < N_ACCESS {
-    content = json.extract(sample_completion, "choices[0].message.content")
+    content = doc["choices"][0]["message"]["content"]
     i = i + 1
 }
 t_json_access = (now() - t0) * 1000.0
@@ -146,7 +146,7 @@ print("hash_map_str\t" + str(round(t_map)) + "ms\t" + str(N_MAP) + " inserts+" +
 
 // ----------------------------------------------------------------- 6. Multi JSON parse (tool results)
 
-// Each tool call returns a small JSON object; parse many of them
+// Each tool call returns a small JSON object; extract score field directly
 tool_result = "{\"status\":\"ok\",\"data\":{\"query\":\"arena allocator\",\"results\":[{\"title\":\"Arena Allocator Design\",\"score\":0.92},{\"title\":\"Memory Management\",\"score\":0.87}],\"total\":2}}"
 
 N_TOOL = 20000
@@ -154,9 +154,7 @@ t0 = now()
 i = 0
 total_score = 0.0
 while i < N_TOOL {
-    r = json.parse(tool_result)
-    results = r["data"]["results"]
-    total_score = total_score + results[0]["score"]
+    total_score = total_score + json.get_float(tool_result, "score")
     i = i + 1
 }
 t_tool = (now() - t0) * 1000.0

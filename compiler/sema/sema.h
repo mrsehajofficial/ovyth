@@ -76,6 +76,7 @@ class Sema {
   Ty  type_from(const ast::TypeExpr* t);
   Ty  unify(Ty a, Ty b);
   bool is_numeric(Ty t);
+  bool is_proven_int_expr(ast::Expr* e);  // for proven-int optimization
 
   std::vector<Scope> scopes_;
   std::unordered_map<std::string, FuncSig> funcs_;
