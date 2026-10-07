@@ -29,6 +29,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace vy {
@@ -207,12 +208,23 @@ class Gen {
   std::vector<LoopLabels> loops_;
   std::vector<std::unordered_map<std::string, std::string>> scopes_;
   std::vector<std::string> anon_defs_;  // closure bodies to emit at module scope
+  std::vector<std::string> anon_names_;  // their C names, in creation order
   std::vector<std::string> pending_fns_; // user function bodies
   std::vector<std::string> cur_roots_;  // live local slots in the current function
   BuilderInfo sb_;                     // active string-builder accumulation
   std::string last_empty_str_;         // last `x = ""` emitted (builder hint)
   std::set<std::string> inline_roots_; // roots already declared at their use site
   int loop_depth_ = 0;                 // nesting, for builder ownership
+  // Closure boxes: names currently shared through a 1-element box list.
+  // box_of_[name] is the box VyValue expression in the enclosing scope;
+  // box_writes_ marks names whose assignments must store through the box.
+  // Saved/restored around closure bodies (which get their own box set).
+  std::unordered_map<std::string, std::string> box_of_;
+  std::set<std::string> box_writes_;
+
+  // Proven numeric types: names that are proven Int/Float and can use raw registers
+  std::unordered_set<std::string> proven_ints_;
+  std::unordered_set<std::string> proven_floats_;
 
   // ---------------------------------------------------------------- output
   void line(const std::string& s) {
@@ -239,7 +251,18 @@ class Gen {
   // Assign `name = rhs`. Because every function declares its locals up front
   // (and registers them as GC roots there), this always emits an assignment --
   // never a declaration.
-  std::string bind(const std::string& name, const std::string& rhs) {
+  // For proven Int/Float, we use raw C types instead of VyValue and skip GC registration.
+  std::string bind(const std::string& name, const std::string& rhs, bool is_proven_int = false, bool is_proven_float = false) {
+    if (is_proven_int || is_proven_float) {
+      // Use raw C type, no GC registration needed
+      if (std::string* c = lookup(name)) return *c + " = " + rhs;
+      std::string c = ident(name, tmp_++);
+      scopes_.back()[name] = c;
+      if (is_proven_int) proven_ints_.insert(name);
+      if (is_proven_float) proven_floats_.insert(name);
+      return c + " = " + rhs;
+    }
+    // Regular VyValue - needs GC registration
     if (std::string* c = lookup(name)) return *c + " = " + rhs;
     std::string c = ident(name, tmp_++);
     scopes_.back()[name] = c;
@@ -264,6 +287,26 @@ class Gen {
       // Roots declared at their use site (the string-builder result) are
       // already emitted; redeclaring them would shadow the live slot.
       if (inline_roots_.count(cur_roots_[i])) continue;
+      // Skip proven Int/Float - they use raw C types, not VyValue
+      std::string var_name = cur_roots_[i];
+      // Find the Vayu name for this C variable
+      bool is_proven = false;
+      for (const auto& name : proven_ints_) {
+        if (scopes_.back().count(name) && scopes_.back()[name] == var_name) {
+          is_proven = true;
+          break;
+        }
+      }
+      if (!is_proven) {
+        for (const auto& name : proven_floats_) {
+          if (scopes_.back().count(name) && scopes_.back()[name] == var_name) {
+            is_proven = true;
+            break;
+          }
+        }
+      }
+      if (is_proven) continue;
+      
       if (!first) { decls += " "; regs += " "; }
       first = false;
       decls += "VyValue " + cur_roots_[i] + " = vy_nil();";
@@ -728,8 +771,14 @@ std::string Gen::emit_listcomp(const Expr* e) {
 // --------------------------------------------------------------- assignment
 std::string Gen::emit_assign(const Expr* target, const std::string& val) {
   switch (target->kind) {
-    case ExprKind::Identifier:
+    case ExprKind::Identifier: {
+      // A name shared with a closure through a box: store through the box so
+      // both sides observe the write. box_of_[name] is the box VyValue.
+      auto bit = box_of_.find(target->name);
+      if (bit != box_of_.end() && box_writes_.count(target->name))
+        return "(vy_list_set((" + bit->second + ").list, 0, " + val + "), " + val + ")";
       return bind(target->name, val);
+    }
     case ExprKind::Index: {
       std::string b = fresh(), i = fresh();
       const std::string B = b, I = i, V = val;
@@ -755,15 +804,167 @@ std::string Gen::emit_assign(const Expr* target, const std::string& val) {
 }
 
 // ---------------------------------------------------------------- closures
+//
+// Closure capture: a closure that reads an outer local shares it with the
+// enclosing scope through a 1-element box list. At the capture point the
+// compiler emits: box = [outer_local]; every read/write of that name inside
+// the closure body goes through box[0]; every read/write of that name in the
+// enclosing scope AFTER the capture point also goes through box[0]. The box
+// travels in VyFunc.upvals (vy_h_make_closure), so the closure body reads
+// `_fn->upvals[i]` and both sides observe each other's writes -- exactly
+// matching the interpreter, which shares the parent Env.
+//
+// Capture semantics (matches the interpreter):
+//   - shared, not snapshot: writes through the closure are visible outside
+//     and vice versa (verified by tests/interp/017_closures.vy).
+//   - params and locals defined inside the body are NOT captures.
+//   - a closure with no free variables emits exactly the old shape
+//     (vy_h_make_func, no upvals) -- zero cost for non-capturing code.
+//   - capture is per closure-creation: each evaluation of the closure
+//     expression boxes the CURRENT value, so loop-created closures each get
+//     their own box.
+//
+// Free-variable analysis: walk the body, collect every Identifier that is
+// not a param, not defined in the body, and not a global (user function,
+// builtin namespace). Anything left that resolves in an enclosing scope is
+// a capture. Assignments to a captured name inside the body are rewritten
+// to box writes; assignments in the enclosing scope after capture are
+// rewritten at capture time by rebinding the scope entry to the box read.
+static void collect_free_vars_expr(const Expr* e,
+                                   const std::set<std::string>& bound,
+                                   std::set<std::string>& free_vars);
+static void collect_free_vars_block(const StmtList& body,
+                                    std::set<std::string>& bound,
+                                    std::set<std::string>& free_vars);
+
+static void collect_free_vars_expr(const Expr* e,
+                                   const std::set<std::string>& bound,
+                                   std::set<std::string>& free_vars) {
+  if (!e) return;
+  switch (e->kind) {
+    case ExprKind::Identifier: {
+      if (!bound.count(e->name)) free_vars.insert(e->name);
+      return;
+    }
+    case ExprKind::Closure: {
+      // Nested closure: its params are bound inside it; recurse with them.
+      std::set<std::string> inner = bound;
+      for (const auto& p : e->params) inner.insert(p.name);
+      for (const Stmt* s : e->body) {
+        if (s && (s->kind == StmtKind::VarDecl)) {
+          for (const auto& n : s->names) inner.insert(n);
+        }
+      }
+      collect_free_vars_block(e->body, inner, free_vars);
+      for (const auto& p : e->params)
+        if (p.default_value) collect_free_vars_expr(p.default_value, bound, free_vars);
+      return;
+    }
+    case ExprKind::ListComp: {
+      std::set<std::string> inner = bound;
+      for (const auto& g : e->generators) {
+        collect_free_vars_expr(g.iterable, inner, free_vars);
+        inner.insert(g.var);
+        if (g.cond) collect_free_vars_expr(g.cond, inner, free_vars);
+      }
+      if (!e->items.empty()) collect_free_vars_expr(e->items[0], inner, free_vars);
+      return;
+    }
+    default: break;
+  }
+  collect_free_vars_expr(e->a, bound, free_vars);
+  collect_free_vars_expr(e->b, bound, free_vars);
+  collect_free_vars_expr(e->c, bound, free_vars);
+  for (const Expr* x : e->items) collect_free_vars_expr(x, bound, free_vars);
+  for (const Expr* x : e->parts) collect_free_vars_expr(x, bound, free_vars);
+  for (const auto& f : e->fields) {
+    collect_free_vars_expr(f.first, bound, free_vars);
+    collect_free_vars_expr(f.second, bound, free_vars);
+  }
+  for (const Expr* x : e->args) collect_free_vars_expr(x, bound, free_vars);
+  for (const auto& na : e->named_args) collect_free_vars_expr(na.value, bound, free_vars);
+}
+
+static void collect_free_vars_stmt(const Stmt* s,
+                                   std::set<std::string>& bound,
+                                   std::set<std::string>& free_vars) {
+  if (!s) return;
+  switch (s->kind) {
+    case StmtKind::VarDecl:
+      for (size_t i = 0; i < s->values.size(); i++)
+        collect_free_vars_expr(s->values[i], bound, free_vars);
+      for (const auto& n : s->names) bound.insert(n);
+      return;
+    case StmtKind::FuncDecl:
+      bound.insert(s->name);
+      return;
+    case StmtKind::Return:
+      collect_free_vars_expr(s->expr, bound, free_vars);
+      return;
+    case StmtKind::ExprStmt:
+      collect_free_vars_expr(s->expr, bound, free_vars);
+      return;
+    case StmtKind::Assign:
+      collect_free_vars_expr(s->expr, bound, free_vars);
+      collect_free_vars_expr(s->expr2, bound, free_vars);
+      collect_free_vars_expr(s->expr3, bound, free_vars);
+      return;
+    case StmtKind::If:
+      collect_free_vars_expr(s->expr, bound, free_vars);
+      collect_free_vars_block(s->body, bound, free_vars);
+      collect_free_vars_block(s->else_body, bound, free_vars);
+      return;
+    case StmtKind::While:
+      collect_free_vars_expr(s->expr, bound, free_vars);
+      collect_free_vars_block(s->body, bound, free_vars);
+      return;
+    case StmtKind::For:
+      collect_free_vars_expr(s->expr, bound, free_vars);
+      for (const auto& v : s->iter_vars) bound.insert(v);
+      collect_free_vars_block(s->body, bound, free_vars);
+      return;
+    case StmtKind::Block:
+      collect_free_vars_block(s->body, bound, free_vars);
+      return;
+    case StmtKind::Try:
+      collect_free_vars_block(s->body, bound, free_vars);
+      if (!s->catch_var.empty()) bound.insert(s->catch_var);
+      collect_free_vars_block(s->else_body, bound, free_vars);
+      return;
+    default:
+      return;
+  }
+}
+
+static void collect_free_vars_block(const StmtList& body,
+                                    std::set<std::string>& bound,
+                                    std::set<std::string>& free_vars) {
+  for (const Stmt* s : body) collect_free_vars_stmt(s, bound, free_vars);
+}
+
 std::string Gen::emit_closure(const Expr* e) {
-  // A native closure is a top-level C function with no captured environment:
-  // the runtime's VyFnPtr signature has no upvalue slot. A closure that reads
-  // a name it does not define itself would silently miscompile, so it is
-  // rejected with a clear message instead.
+  // Free-variable analysis: params + body-defined locals are bound; anything
+  // else the body reads that is neither a user function nor a resolvable
+  // global is a capture. Globals (userfns_, namespace roots) are NOT
+  // captures -- they resolve at module scope in the emitted C.
+  std::set<std::string> bound;
+  for (const auto& p : e->params) bound.insert(p.name);
+  std::set<std::string> free_vars;
+  collect_free_vars_block(e->body, bound, free_vars);
+  std::vector<std::string> captures;
+  for (const auto& n : free_vars) {
+    if (userfns_.count(n)) continue;                       // global function
+    if (n == "http" || n == "json" || n == "str" || n == "math" || n == "time")
+      continue;                                            // namespace root
+    std::string* c = lookup(n);
+    if (!c) continue;  // unknown name: leave for the body's own error path
+    captures.push_back(n);
+  }
+
   std::string cname = "vy_anon_" + std::to_string(tmp_++);
   // Match VyFnPtr exactly: (VyFunc* fn, VyValue* argv, int argc). Parameters are read
   // positionally out of argv, so the emitted body is ABI-compatible with
-  // everything else that stores a VyFunc.
+  // everything else that stores a VyFunc. Captures read from _fn->upvals.
   std::string sig = "static VyValue " + cname + "(struct VyFunc* _fn, VyValue* _argv, int _argc)";
 
   // Emit the body into a scratch buffer with its own scope chain, then append
@@ -776,6 +977,34 @@ std::string Gen::emit_closure(const Expr* e) {
   ret_label_ = lbl("Lret");
 
   push_scope();
+  // Save the enclosing box set: the body gets its own. A nested closure that
+  // captures a name already boxed by an outer closure must share the SAME
+  // box -- handled at ITS capture point via box_of_.
+  auto saved_box_of = box_of_;
+  auto saved_box_writes = box_writes_;
+  box_writes_.clear();
+  // Captured names read box[0] through the upval array: upvals[i] IS the box
+  // VyValue (a 1-element list), so the read is vy_list_get(box.list, 0).
+  // Writes go through emit_assign -> box_writes_ -> vy_list_set(box,0,v).
+  // Nested capture of an already-boxed name shares the box: if the name is
+  // in box_of_, the inner closure captures the BOX, not the rebound read.
+  std::unordered_map<std::string, size_t> cap_index;
+  // box_expr[i]: the expression evaluating to the box VyValue at the inner
+  // capture point (= the outer box, shared -- never box-the-box).
+  std::vector<std::string> box_expr;
+  for (size_t i = 0; i < captures.size(); i++) {
+    cap_index[captures[i]] = i;
+    auto it = saved_box_of.find(captures[i]);
+    if (it != saved_box_of.end())
+      box_expr.push_back(it->second);   // already boxed outside: share it
+    else {
+      std::string* c = lookup(captures[i]);
+      box_expr.push_back(c ? *c : "vy_nil()");
+    }
+    scopes_.back()[captures[i]] =
+        "vy_list_get(((VyValue*)_fn->upvals)[" + std::to_string(i) + "].list, 0)";
+    box_writes_.insert(captures[i]);
+  }
   for (size_t i = 0; i < e->params.size(); i++)
     scopes_.back()[e->params[i].name] = ident(e->params[i].name, i);
 
@@ -815,9 +1044,60 @@ std::string Gen::emit_closure(const Expr* e) {
   indent_ = saved_indent;
   ret_label_ = saved_ret;
   anon_defs_.push_back(body);
+  anon_names_.push_back(cname);
+  box_writes_ = saved_box_writes;   // body's box set dies with its scope
 
-  // Build the VyFunc. `vy_h_make_func` takes the arity and the fn pointer.
-  return "vy_func(vy_h_make_func(" + std::to_string(e->params.size()) + ", " + cname + "))";
+  // No captures: exactly the old shape -- zero cost for non-capturing code.
+  if (captures.empty()) {
+    box_of_ = saved_box_of;
+    return "vy_func(vy_h_make_func(" + std::to_string(e->params.size()) + ", " + cname + "))";
+  }
+
+  // Capturing: share each outer local through a 1-element box list.
+  // At the capture point emit: box = [outer]; then rebind the enclosing
+  // scope's entry for that name to box[0], so later reads/writes on BOTH
+  // sides go through the same slot. The closure body reads _fn->upvals[i]
+  // (the box list); box reads are vy_list_get(box.list, 0).
+  //
+  // GC: the box list is heap-allocated and reachable from the VyValue local
+  // holding it (a registered root) plus the VyFunc.upvals slot (registered
+  // by vy_h_make_closure). No new GC machinery needed.
+  //
+  // Rebinding is safe: `bind()` created the C local on first assignment, and
+  // every later assignment goes through `lookup()` -> the rebound expression.
+  // The C local itself stays alive (still a root) but is no longer read.
+  //
+  // box_expr[i] (computed before the body): the box VyValue for capture i --
+  // either the CURRENT value (fresh box) or the already-shared outer box
+  // (nested capture shares, never boxes-the-box).
+  std::string uv = fresh();
+  std::string s = "({ VyList* " + uv + "_l = vy_list_new(); ";
+  for (size_t i = 0; i < captures.size(); i++)
+    s += "vy_list_push(" + uv + "_l, " + box_expr[i] + "); ";
+  // The box must be a rooted local, not a bare temporary: the collector can
+  // fire on any allocation between here and the closure call.
+  std::string boxv = fresh();
+  s += "VyValue " + boxv + " = vy_list(" + uv + "_l); ";
+  // upvals[i] IS the box VyValue; the body indexes [0] at each access.
+  std::string ua = fresh();
+  s += "VyValue* " + ua + " = (VyValue*)calloc(" +
+       std::to_string(captures.size()) + ", sizeof(VyValue)); ";
+  for (size_t i = 0; i < captures.size(); i++)
+    s += ua + "[" + std::to_string(i) + "] = " + boxv + "; ";
+  // Rebind the enclosing scope: from here on, `name` reads box[0].
+  // (The C local keeps its old value but is no longer referenced.)
+  for (size_t i = 0; i < captures.size(); i++) {
+    std::string* c = lookup(captures[i]);
+    if (c) *c = "vy_list_get(" + boxv + ".list, 0)";
+  }
+  // Writes to a captured name in the enclosing scope after this point must
+  // store through the box -- handled in emit_assign via box_writes_.
+  for (const auto& n : captures) box_writes_.insert(n);
+  // Nested closures capturing the same name share THIS box.
+  for (const auto& n : captures) box_of_[n] = boxv;
+  s += "vy_func(vy_h_make_closure(" + std::to_string(e->params.size()) + ", " +
+       cname + ", " + ua + ", " + std::to_string(captures.size()) + ")); })";
+  return s;
 }
 
 
@@ -1537,10 +1817,24 @@ std::string Gen::run() {
     pending_fns_.clear();
 
     // Closure bodies discovered while lowering anything above.
+    // Forward-declare every anon function first: a nested closure's creation
+    // site lives INSIDE its enclosing closure's body, which is emitted before
+    // the inner body -- without a declaration that is a C compile error
+    // (`use of undeclared identifier 'vy_anon_N'`). Signatures are
+    // ABI-uniform, so one declaration shape covers all anon functions.
+    {
+      std::set<std::string> seen;
+      for (const auto& nm : anon_names_) {
+        if (seen.insert(nm).second)
+          line("static VyValue " + nm +
+               "(struct VyFunc* _fn, VyValue* _argv, int _argc);");
+      }
+    }
     while (!anon_defs_.empty()) {
       out += anon_defs_.back();
       anon_defs_.pop_back();
     }
+    anon_names_.clear();
   }
 
   // ---- program body ----
@@ -1561,7 +1855,18 @@ std::string Gen::run() {
     std::string body = out;
     out.swap(saved);
     pop_scope();
+    // Same forward-declaration discipline as the functions phase: nested
+    // closures reference inner bodies defined later in this same drain.
+    {
+      std::set<std::string> seen;
+      for (const auto& nm : anon_names_) {
+        if (seen.insert(nm).second)
+          line("static VyValue " + nm +
+               "(struct VyFunc* _fn, VyValue* _argv, int _argc);");
+      }
+    }
     while (!anon_defs_.empty()) { out += anon_defs_.back(); anon_defs_.pop_back(); }
+    anon_names_.clear();
 
     line("static VyValue vy_main(void) {");
     indent_++;

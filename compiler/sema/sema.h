@@ -30,6 +30,14 @@ struct Scope {
   bool is_function = false;
 };
 
+// Type refinement: tracks whether a variable is *proven* to be Int/Float
+// (not just possibly), so the codegen can lower it to a raw register.
+struct TyInfo {
+  Ty ty = Ty::Unknown;
+  bool is_proven_int = false;   // definitely Int, never widened to Float
+  bool is_proven_float = false; // definitely Float
+};
+
 class Sema {
  public:
   // Returns true when the program is free of errors.
@@ -40,6 +48,9 @@ class Sema {
 
   // Inferred type of a top-level variable, for `vyc --types`.
   std::unordered_map<std::string, Ty> globals;
+  
+  // Proven type info for codegen optimization.
+  std::unordered_map<std::string, TyInfo> proven_types;
 
  private:
   void error(const ast::Pos& pos, const std::string& msg);
@@ -58,6 +69,9 @@ class Sema {
 
   bool lookup(const std::string& name, Ty* out);
   void  define(const std::string& name, Ty t);
+  
+  // Define with proven type info
+  void define(const std::string& name, Ty t, bool proven_int, bool proven_float);
 
   Ty  type_from(const ast::TypeExpr* t);
   Ty  unify(Ty a, Ty b);

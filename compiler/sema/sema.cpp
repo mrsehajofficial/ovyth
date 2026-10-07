@@ -55,6 +55,17 @@ void Sema::define(const std::string& name, Ty t) {
   scopes_.back().vars[name] = t;
 }
 
+void Sema::define(const std::string& name, Ty t, bool proven_int, bool proven_float) {
+  define(name, t);
+  if (proven_int || proven_float) {
+    TyInfo info;
+    info.ty = t;
+    info.is_proven_int = proven_int;
+    info.is_proven_float = proven_float;
+    proven_types[name] = info;
+  }
+}
+
 Ty Sema::type_from(const TypeExpr* t) {
   if (!t) return Ty::Unknown;
   switch (t->kind) {
@@ -145,7 +156,18 @@ Ty Sema::check_stmt(Stmt* s) {
                             " but the value is " + ty_name(inferred));
         }
         if (t == Ty::Error) t = Ty::Unknown;
-        define(s->names[i], t);
+        
+        // Track proven types for numeric literals - enables register allocation
+        bool proven_int = false, proven_float = false;
+        if (!unpack && i < s->values.size() && s->values[i]) {
+          Expr* val = s->values[i];
+          if (val->kind == ExprKind::IntLit) {
+            proven_int = true;
+          } else if (val->kind == ExprKind::FloatLit) {
+            proven_float = true;
+          }
+        }
+        define(s->names[i], t, proven_int, proven_float);
         vt.push_back(t);
         if (scopes_.size() == 1) globals[s->names[i]] = t;
       }
