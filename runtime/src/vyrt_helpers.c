@@ -367,9 +367,9 @@ VyFunc* vy_h_make_closure(int arity, VyFnPtr fn, void* upvals, int num_upvals) {
   f->name = vy_str_new("closure", 7);
   f->upvals = upvals;
   if (upvals && num_upvals > 0) {
-    VyValue** slots = (VyValue**)upvals;
+    VyValue* slots = (VyValue*)upvals;
     for (int i = 0; i < num_upvals; i++) {
-      if (slots[i]) vy_gc_register_root(slots[i]);
+      vy_gc_register_root(&slots[i]);
     }
   }
   return f;

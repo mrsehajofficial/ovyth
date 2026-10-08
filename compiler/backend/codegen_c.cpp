@@ -253,6 +253,9 @@ class Gen {
   // never a declaration.
   // For proven Int/Float, we use raw C types instead of VyValue and skip GC registration.
   std::string bind(const std::string& name, const std::string& rhs, bool is_proven_int = false, bool is_proven_float = false) {
+    if (box_writes_.count(name) && box_of_.count(name)) {
+      return "vy_list_set((" + box_of_[name] + ").list, 0, " + rhs + ")";
+    }
     if (is_proven_int || is_proven_float) {
       // Use raw C type, no GC registration needed
       if (std::string* c = lookup(name)) return *c + " = " + rhs;
@@ -857,9 +860,17 @@ std::string Gen::emit_assign(const Expr* target, const std::string& val) {
     case ExprKind::Identifier: {
       // A name shared with a closure through a box: store through the box so
       // both sides observe the write. box_of_[name] is the box VyValue.
+      std::cerr << "[DBG emit_assign] target=" << target->name
+                << " box_of_ size=" << box_of_.size()
+                << " box_writes_ size=" << box_writes_.size()
+                << " box_of_ has=" << (box_of_.count(target->name) ? "yes" : "no")
+                << " box_writes_ has=" << (box_writes_.count(target->name) ? "yes" : "no") << "\n";
       auto bit = box_of_.find(target->name);
-      if (bit != box_of_.end() && box_writes_.count(target->name))
+      if (bit != box_of_.end() && box_writes_.count(target->name)) {
+        std::cerr << "[DBG emit_assign] -> USING vy_list_set for " << target->name << "\n";
         return "(vy_list_set((" + bit->second + ").list, 0, " + val + "), " + val + ")";
+      }
+      std::cerr << "[DBG emit_assign] -> USING bind for " << target->name << "\n";
       return bind(target->name, val);
     }
     case ExprKind::Index: {
@@ -1066,27 +1077,23 @@ std::string Gen::emit_closure(const Expr* e) {
   auto saved_box_of = box_of_;
   auto saved_box_writes = box_writes_;
   box_writes_.clear();
-  // Captured names read box[0] through the upval array: upvals[i] IS the box
-  // VyValue (a 1-element list), so the read is vy_list_get(box.list, 0).
-  // Writes go through emit_assign -> box_writes_ -> vy_list_set(box,0,v).
-  // Nested capture of an already-boxed name shares the box: if the name is
-  // in box_of_, the inner closure captures the BOX, not the rebound read.
-  std::unordered_map<std::string, size_t> cap_index;
-  // box_expr[i]: the expression evaluating to the box VyValue at the inner
-  // capture point (= the outer box, shared -- never box-the-box).
-  std::vector<std::string> box_expr;
+  box_of_.clear();
+  std::cerr << "[DBG closure] captures.size=" << captures.size() << "\n";
   for (size_t i = 0; i < captures.size(); i++) {
-    cap_index[captures[i]] = i;
-    auto it = saved_box_of.find(captures[i]);
-    if (it != saved_box_of.end())
-      box_expr.push_back(it->second);   // already boxed outside: share it
-    else {
-      std::string* c = lookup(captures[i]);
-      box_expr.push_back(c ? *c : "vy_nil()");
-    }
+    std::cerr << "[DBG closure] capture[" << i << "]=" << captures[i] << "\n";
     scopes_.back()[captures[i]] =
         "vy_list_get(((VyValue*)_fn->upvals)[" + std::to_string(i) + "].list, 0)";
     box_writes_.insert(captures[i]);
+    // The box VyValue in this closure's body is the upvals slot.
+    box_of_[captures[i]] = "((VyValue*)_fn->upvals)[" + std::to_string(i) + "]";
+  }
+  std::cerr << "[DBG closure] after setup: box_of_ size=" << box_of_.size()
+            << " box_writes_ size=" << box_writes_.size() << "\n";
+  for (const auto& kv : box_of_) {
+    std::cerr << "[DBG closure]   box_of_[" << kv.first << "]=" << kv.second << "\n";
+  }
+  for (const auto& n : box_writes_) {
+    std::cerr << "[DBG closure]   box_writes_ has " << n << "\n";
   }
   for (size_t i = 0; i < e->params.size(); i++)
     scopes_.back()[e->params[i].name] = ident(e->params[i].name, i);
@@ -1128,56 +1135,42 @@ std::string Gen::emit_closure(const Expr* e) {
   ret_label_ = saved_ret;
   anon_defs_.push_back(body);
   anon_names_.push_back(cname);
-  box_writes_ = saved_box_writes;   // body's box set dies with its scope
+  box_of_ = saved_box_of;
+  box_writes_ = saved_box_writes;
 
   // No captures: exactly the old shape -- zero cost for non-capturing code.
   if (captures.empty()) {
-    box_of_ = saved_box_of;
     return "vy_func(vy_h_make_func(" + std::to_string(e->params.size()) + ", " + cname + "))";
   }
 
   // Capturing: share each outer local through a 1-element box list.
-  // At the capture point emit: box = [outer]; then rebind the enclosing
-  // scope's entry for that name to box[0], so later reads/writes on BOTH
-  // sides go through the same slot. The closure body reads _fn->upvals[i]
-  // (the box list); box reads are vy_list_get(box.list, 0).
-  //
-  // GC: the box list is heap-allocated and reachable from the VyValue local
-  // holding it (a registered root) plus the VyFunc.upvals slot (registered
-  // by vy_h_make_closure). No new GC machinery needed.
-  //
-  // Rebinding is safe: `bind()` created the C local on first assignment, and
-  // every later assignment goes through `lookup()` -> the rebound expression.
-  // The C local itself stays alive (still a root) but is no longer read.
-  //
-  // box_expr[i] (computed before the body): the box VyValue for capture i --
-  // either the CURRENT value (fresh box) or the already-shared outer box
-  // (nested capture shares, never boxes-the-box).
-  std::string uv = fresh();
-  std::string s = "({ VyList* " + uv + "_l = vy_list_new(); ";
-  for (size_t i = 0; i < captures.size(); i++)
-    s += "vy_list_push(" + uv + "_l, " + box_expr[i] + "); ";
-  // The box must be a rooted local, not a bare temporary: the collector can
-  // fire on any allocation between here and the closure call.
-  std::string boxv = fresh();
-  s += "VyValue " + boxv + " = vy_list(" + uv + "_l); ";
-  // upvals[i] IS the box VyValue; the body indexes [0] at each access.
+  // For each captured variable, if it is not yet boxed in the enclosing scope,
+  // allocate a GC-rooted local for the box, initialize it with the variable's
+  // current value, and rebind the variable to read/write through the box.
+  // Then pass each capture's box VyValue into the upvals array.
   std::string ua = fresh();
+  std::string s = "({ ";
+  for (size_t i = 0; i < captures.size(); i++) {
+    const std::string& n = captures[i];
+    if (!box_of_.count(n)) {
+      std::string bx = ident("box_" + n, tmp_++);
+      cur_roots_.push_back(bx);
+      std::string* c = lookup(n);
+      std::string init_val = c ? *c : "vy_nil()";
+      if (proven_ints_.count(init_val)) init_val = "vy_int(" + init_val + ")";
+      else if (proven_floats_.count(init_val)) init_val = "vy_float(" + init_val + ")";
+      s += bx + " = vy_list(vy_list_new()); ";
+      s += "vy_list_push(" + bx + ".list, " + init_val + "); ";
+      box_of_[n] = bx;
+      box_writes_.insert(n);
+      if (c) *c = "vy_list_get(" + bx + ".list, 0)";
+    }
+  }
   s += "VyValue* " + ua + " = (VyValue*)calloc(" +
        std::to_string(captures.size()) + ", sizeof(VyValue)); ";
-  for (size_t i = 0; i < captures.size(); i++)
-    s += ua + "[" + std::to_string(i) + "] = " + boxv + "; ";
-  // Rebind the enclosing scope: from here on, `name` reads box[0].
-  // (The C local keeps its old value but is no longer referenced.)
   for (size_t i = 0; i < captures.size(); i++) {
-    std::string* c = lookup(captures[i]);
-    if (c) *c = "vy_list_get(" + boxv + ".list, 0)";
+    s += ua + "[" + std::to_string(i) + "] = " + box_of_[captures[i]] + "; ";
   }
-  // Writes to a captured name in the enclosing scope after this point must
-  // store through the box -- handled in emit_assign via box_writes_.
-  for (const auto& n : captures) box_writes_.insert(n);
-  // Nested closures capturing the same name share THIS box.
-  for (const auto& n : captures) box_of_[n] = boxv;
   s += "vy_func(vy_h_make_closure(" + std::to_string(e->params.size()) + ", " +
        cname + ", " + ua + ", " + std::to_string(captures.size()) + ")); })";
   return s;
@@ -1828,6 +1821,10 @@ void Gen::emit_function(const Stmt* s) {
   auto saved_scopes = scopes_;
   auto saved_ret = ret_label_;
   auto saved_fn = cur_fn_;
+  auto saved_box_of = box_of_;
+  auto saved_box_writes = box_writes_;
+  box_of_.clear();
+  box_writes_.clear();
   std::string saved_out;
   saved_out.swap(out);
   int saved_indent = indent_;
@@ -1874,6 +1871,8 @@ void Gen::emit_function(const Stmt* s) {
   scopes_ = saved_scopes;
   ret_label_ = saved_ret;
   cur_fn_ = saved_fn;
+  box_of_ = saved_box_of;
+  box_writes_ = saved_box_writes;
   pending_fns_.push_back(body);
 }
 
