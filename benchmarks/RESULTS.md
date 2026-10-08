@@ -67,10 +67,10 @@ Reading it honestly:
 | binary size for `print("hi")` | 254,848 B | **18,736 B** (13.6x) | link the runtime normally instead of `--whole-archive`, plus `-ffunction-sections -fdata-sections` + `-Wl,--gc-sections` + `--as-needed`. A program that never calls `http.*` no longer links libcurl (spec 4, 29) |
 | `strconcat` (40k appends) | 32,581 ms | **14 ms** (~2,300x) | compiler recognises `acc = acc + x` inside a loop and lowers it to a growable string builder, making it O(n) instead of O(n^2) (spec 12). Later: render stopped copying strings, so appending an existing string allocates nothing |
 | `vy_str_concat` | 2 allocations, 3 copies | **1 allocation, 2 copies** | builds directly in the tracked allocation instead of via a scratch buffer |
-| `intloop` (20M iterations) | 819 ms | **~240-275 ms** (3x) | every arithmetic operator was a call into `libvyrt.a` with ~7 tag tests before `int+int`. The fast paths for `vy_add/sub/mul/div/mod`, unary ops, bitwise ops, `vy_eq/cmp/truthy/is` and `vy_list_push/get` now live as `static inline` in `vyrt.h` (spec §44 P0) |
+| `intloop` (20M iterations) | 819 ms | **~240-275 ms** (3x) | every arithmetic operator was a call into `libvyrt.a` with ~7 tag tests before `int+int`. The fast paths for `vy_add/sub/mul/div/mod`, unary ops, bitwise ops, `vy_eq/cmp/truthy/is` and `vy_list_push/get` now live as `static inline` in `vyrt.h` (spec §44 P0). Proven int/float locals now emit as raw `int64_t`/`double` |
 | `fib(25)` | 10 ms | **6-7 ms** | same inlining, plus emit-time constant folding and per-site pinned string literals (spec §44 P1) |
 | `strconcat` / `mapops` key building | `str(i)` = `snprintf` + render `Buf` + copy = 2 allocations and a format parse | **digit loop into a 64-byte stack buffer, 1 allocation**; `nil`/`true`/`false` are pinned singletons; render no longer copies strings (spec §44 P2) |
-| `listappend` | 58 ms | **33 ms** | `xs.push(x)` no longer calls the out-of-line method dispatcher per push: the emitted code is `if (vy_tagof(base) == VY_LIST) vy_list_push(...)` with the unchanged dispatch as the fallthrough (spec §44 P2) |
+| `listappend` | 58 ms | **33 ms** | `xs.push(x)` no longer calls the out-of-line method dispatcher per push: the emitted code is `if (vy_tagof(base) == VY_LIST) vy_list_push(...)` with the unchanged dispatch as the fallthrough (spec §44 P2). List literals of proven int/float now use specialized arrays |
 | `mapops` (100k inserts + 100k reads) | **infinite hang** | **187-189 ms** | see below -- this was a correctness bug, then two performance defects |
 | `print("hi")` startup | ~5 ms | ~4-6 ms | unchanged; runtime init is already trivial, and libcurl is no longer initialised for programs that do not use it (spec 30) |
 
@@ -151,20 +151,9 @@ so the slower best-of here is noise, not a regression from HEAD.
 
 Stated plainly rather than implied:
 
-* **§5/§6 static typing with native representation.** Every value is still a
-  tagged `VyValue`. Arithmetic no longer *calls* out (spec §44 P0 removed that),
-  but `i` in `intloop` is still a 16-byte struct rebuilt and re-tagged per
-  iteration instead of living in a register. This is the single largest
-  remaining gap and it needs a real type-inference pass feeding an unboxed
-  lowering, not a bolt-on.
-* **§8/§19 function inlining.** The emitter still does not inline user
-  functions; `-O3` on the generated C folds what it can see, and the call body
-  is now all inline ops, so the win available here is smaller than it was.
-* **Small-string interning** would close the last Python loss (`strconcat`,
-  14ms vs 9ms).
-* **§35 Rust and Go columns.** Not installed on this machine; omitted rather
-  than estimated.
+* **§5/§6 static typing with native representation.** Proven int/float locals are now emitted as raw `int64_t`/`double` (no boxing, no GC registration), and list literals of proven numeric types use specialized array types. However, values flowing through lists, maps, and function parameters are still boxed — the full type-inference pass to reach every value remains the largest remaining gap.
+* **§8/§19 function inlining.** The emitter still does not inline user functions; `-O3` on the generated C folds what it can see, and the call body is now all inline ops, so the win available here is smaller than it was.
+* **Small-string interning** would close the last Python loss (`strconcat`, 14ms vs 9ms).
+* **§35 Rust and Go columns.** Not installed on this machine; omitted rather than estimated.
 * **§38 PGO**, and **§25/§26 async and concurrency.** Not started.
-* Closures do not capture their environment (the native `VyFnPtr` has no
-  upvalue slot); a closure that reads an enclosing local is rejected with a
-  clear error rather than miscompiled.
+* Closures do not capture their environment (the native `VyFnPtr` has no upvalue slot); a closure that reads an enclosing local is rejected with a clear error rather than miscompiled.

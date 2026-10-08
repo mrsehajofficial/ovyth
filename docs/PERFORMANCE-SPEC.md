@@ -1197,11 +1197,20 @@ Stage P2b -- the runtime bugs a micro-benchmark decomposition found
 
 Stage P3 -- unboxed specialisation (spec 5, 6, 7 -- the "next level")
 
-  - type-inference pass over Vayu IR; locals with a known int/float type are
-    emitted as raw int64_t/double in the generated C, guarded on function
-    entry, boxed only where they reach genuinely dynamic code
-  - this is the stage that moves intloop from ~19x toward C's 43ms range;
-    it is a real pass, not a bolt-on -- do it only after P0-P2 are measured
+  Status: PARTIALLY LANDED.
+
+  - Sema tracks `is_proven_int`/`is_proven_float` for literal initializations
+  - Codegen emits raw `int64_t`/`double` locals instead of boxed `VyValue` for
+    proven types
+  - GC registration skipped for proven numeric locals
+  - Fast arithmetic paths on raw locals (add/sub/mul/div/mod, comparisons, bitwise)
+  - Specialized array types: `VyInt64Array`, `VyFloat64Array`, `VyStringArray`
+    with contiguous buffers and tag-guarded fast paths
+  - List literals of proven int/float now emit specialized arrays
+
+  What remains: values flowing through lists, maps, and function parameters
+  are still boxed. Full type-inference to reach every value is the larger
+  remaining task.
 
   Verify + target: intloop within ~3-5x of C; no behavioural change (both
   backends must agree per tests/interp.sh).

@@ -249,6 +249,12 @@ print(m["a"], m.has("b"), m.count())
 print(m.keys(), m.values())
 ```
 
+For better performance, lists containing only integers, floats, or strings are
+compiled to specialized array types (`Int64Array`, `Float64Array`, `StringArray`)
+with contiguous element buffers. This is transparent: they print and iterate
+like ordinary lists, and all list operations work the same. The compiler chooses
+the specialized type automatically based on the inferred element type.
+
 ### Multiple assignment
 
 ```vayu
@@ -423,9 +429,11 @@ Worth knowing before you rely on something:
   silently doing the wrong thing.
 - **No files, modules, or imports yet.** Everything is in one file per program.
 - **No async or concurrency.**
-- **Values are boxed.** Arithmetic goes through a runtime call, so tight
-  numeric loops are far slower than C. Measured numbers and what will close
-  the gap: [PERFORMANCE.md](PERFORMANCE.md). Raw output:
+- **Partial unboxing.** Variables proven as int/float emit as raw
+  `int64_t`/`double` — but values flowing through lists, maps, and function
+  parameters remain boxed. Tight numeric loops over locals are fast; loops that
+  touch collections still pay the boxing cost. Measured numbers and what will
+  close the rest of the gap: [PERFORMANCE.md](PERFORMANCE.md). Raw output:
   `benchmarks/RESULTS.md`.
 
 ---

@@ -249,6 +249,11 @@ void vy_stra_free(VyStringArray* a) {
   free(a);
 }
 
+/* Specialized array value wrappers */
+VyValue vy_i64a_val(VyInt64Array* a)   { VyValue v; v.tag = VY_TAG_OF(a, VY_I64A);  v.i64a = a; return v; }
+VyValue vy_f64a_val(VyFloat64Array* a) { VyValue v; v.tag = VY_TAG_OF(a, VY_F64A);  v.f64a = a; return v; }
+VyValue vy_stra_val(VyStringArray* a)  { VyValue v; v.tag = VY_TAG_OF(a, VY_STRA);  v.stra = a; return v; }
+
 /* ----------------------------------------------------------------- maps */
 
 /* An empty slot is an all-zero VyPair. Note this is NOT the same as "the key
@@ -276,6 +281,9 @@ static uint64_t hash_value(VyValue v) {
       x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
       return x ^ (x >> 33);
     case VY_STRING: return (uint64_t)v.str->hash * 0x9e3779b97f4a7c15ULL;
+    case VY_I64A:   return (uint64_t)(uintptr_t)v.i64a * 0x9e3779b97f4a7c15ULL;
+    case VY_F64A:   return (uint64_t)(uintptr_t)v.f64a * 0x9e3779b97f4a7c15ULL;
+    case VY_STRA:   return (uint64_t)(uintptr_t)v.stra * 0x9e3779b97f4a7c15ULL;
     default:       return (uint64_t)(uintptr_t)VY_PTR_OF(v) >> 3;
   }
 }

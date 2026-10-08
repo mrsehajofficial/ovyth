@@ -84,6 +84,46 @@ int vy_h_value_method(VyValue base, const char* name, VyValue a0, VyValue a1,
     }
   }
 
+  if (vy_tagof(base) == VY_I64A) {
+    if (!strcmp(name, "push") || !strcmp(name, "append")) {
+      vy_i64a_push(base.i64a, a0.i); *out = base; return 0;
+    }
+    if (!strcmp(name, "pop"))     { *out = vy_int(vy_i64a_pop(base.i64a)); return 0; }
+    if (!strcmp(name, "length"))  { *out = vy_int(base.i64a->len); return 0; }
+    if (!strcmp(name, "get"))     { *out = vy_int(vy_i64a_get(base.i64a, a0.i)); return 0; }
+    if (!strcmp(name, "set"))     { vy_i64a_set(base.i64a, a0.i, a1.i); *out = base; return 0; }
+    if (!strcmp(name, "sum")) {
+      int64_t sum = 0;
+      for (uint32_t i = 0; i < base.i64a->len; i++) sum += base.i64a->data[i];
+      *out = vy_int(sum); return 0;
+    }
+  }
+
+  if (vy_tagof(base) == VY_F64A) {
+    if (!strcmp(name, "push") || !strcmp(name, "append")) {
+      vy_f64a_push(base.f64a, a0.f); *out = base; return 0;
+    }
+    if (!strcmp(name, "pop"))     { *out = vy_float(vy_f64a_pop(base.f64a)); return 0; }
+    if (!strcmp(name, "length"))  { *out = vy_int(base.f64a->len); return 0; }
+    if (!strcmp(name, "get"))     { *out = vy_float(vy_f64a_get(base.f64a, a0.i)); return 0; }
+    if (!strcmp(name, "set"))     { vy_f64a_set(base.f64a, a0.i, a1.f); *out = base; return 0; }
+    if (!strcmp(name, "sum")) {
+      double sum = 0.0;
+      for (uint32_t i = 0; i < base.f64a->len; i++) sum += base.f64a->data[i];
+      *out = vy_float(sum); return 0;
+    }
+  }
+
+  if (vy_tagof(base) == VY_STRA) {
+    if (!strcmp(name, "push") || !strcmp(name, "append")) {
+      vy_stra_push(base.stra, a0.str); *out = base; return 0;
+    }
+    if (!strcmp(name, "pop"))     { *out = vy_str(vy_stra_pop(base.stra)); return 0; }
+    if (!strcmp(name, "length"))  { *out = vy_int(base.stra->len); return 0; }
+    if (!strcmp(name, "get"))     { *out = vy_str(vy_stra_get(base.stra, a0.i)); return 0; }
+    if (!strcmp(name, "set"))     { vy_stra_set(base.stra, a0.i, a1.str); *out = base; return 0; }
+  }
+
   if (vy_tagof(base) == VY_MAP) {
     if (!strcmp(name, "get")) { *out = vy_map_get(base.map, a0); return 0; }
     if (!strcmp(name, "set")) { vy_map_set(base.map, a0, a1); *out = base; return 0; }
@@ -122,6 +162,21 @@ int vy_h_index(VyValue base, VyValue idx, VyValue* out) {
       if (vy_tagof(idx) == VY_LIST || vy_tagof(idx) == VY_MAP)
         return fail("list index must be an Int", 25);
       *out = vy_list_get(base.list, vy_tagof(idx) == VY_FLOAT ? (int64_t)idx.f : idx.i);
+      return 0;
+    case VY_I64A:
+      if (vy_tagof(idx) == VY_LIST || vy_tagof(idx) == VY_MAP)
+        return fail("array index must be an Int", 27);
+      *out = vy_int(vy_i64a_get(base.i64a, vy_tagof(idx) == VY_FLOAT ? (int64_t)idx.f : idx.i));
+      return 0;
+    case VY_F64A:
+      if (vy_tagof(idx) == VY_LIST || vy_tagof(idx) == VY_MAP)
+        return fail("array index must be an Int", 27);
+      *out = vy_float(vy_f64a_get(base.f64a, vy_tagof(idx) == VY_FLOAT ? (int64_t)idx.f : idx.i));
+      return 0;
+    case VY_STRA:
+      if (vy_tagof(idx) == VY_LIST || vy_tagof(idx) == VY_MAP)
+        return fail("array index must be an Int", 27);
+      *out = vy_str(vy_stra_get(base.stra, vy_tagof(idx) == VY_FLOAT ? (int64_t)idx.f : idx.i));
       return 0;
     case VY_MAP:
       *out = vy_map_get(base.map, idx);
@@ -170,6 +225,13 @@ int vy_h_member(VyValue base, const char* name, VyValue* out) {
       if (!strcmp(name, "length")) { *out = vy_int(base.list->len); return 0; }
       { char tmp[160];
         snprintf(tmp, sizeof(tmp), "List has no field '%s'", name);
+        return fail(tmp, strlen(tmp)); }
+    case VY_I64A:
+    case VY_F64A:
+    case VY_STRA:
+      if (!strcmp(name, "length")) { *out = vy_int(base.i64a->len); return 0; }
+      { char tmp[160];
+        snprintf(tmp, sizeof(tmp), "Array has no field '%s'", name);
         return fail(tmp, strlen(tmp)); }
     case VY_NIL: { char tmp[160];
       snprintf(tmp, sizeof(tmp), "cannot read field '%s' of nil", name);

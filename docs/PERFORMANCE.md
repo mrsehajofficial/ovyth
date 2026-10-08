@@ -99,6 +99,8 @@ From `benchmarks/RESULTS.md` (measurements, not claims):
 | GC mark of int-keyed containers | 200k calls per collection | **tag compare**, no calls |
 | **JSON field extraction** | full AST build (19x slower than Python) | **fast path extraction** (~1.7x slower; repeated access ~19x -- see §7) |
 | **Context assembly (join)** | O(n²) repeated concat (6x slower) | **O(n) string builder** (2.1-4.3x slower, 1s timer variance -- see §7) |
+| **unboxed numeric locals** | proof-of-concept | **proven int/float** locals emitted as raw `int64_t`/`double`, no GC registration |
+| **specialized arrays** | generic `VyList` for all arrays | `VyInt64Array` / `VyFloat64Array` / `VyStringArray` with contiguous buffers and tag-guarded fast paths |
 
 Writing the benchmarks exposed six real bugs that reading the code did not: a GC that never computed its live set (collector ran on every allocation past 8 MB), heap accounting against the wrong "last allocation" slot, a `[[noreturn]]` parser-error function that actually returned and spun forever, a hash map that only grew when 100% full, `sweep()` subtracting garbage from an already-rebuilt live total, and a GC mark loop paying a function call per primitive element.
 
@@ -106,16 +108,16 @@ Writing the benchmarks exposed six real bugs that reading the code did not: a GC
 
 ## 4. Why the gap with C exists
 
-Every Vayu value is currently a **16-byte tagged `VyValue`**, passed by value. Four things followed from that, and three of them are now fixed:
+Every Vayu value is currently a **16-byte tagged `VyValue`**, passed by value. Several optimizations have closed the gap:
 
 | consequence | status |
 |---|---|
 | `a + b` was a **runtime call** into `libvyrt.a` with ~7 tag tests first | **fixed** — the fast path is `static inline` in `vyrt.h` |
 | no language-level constant folding; `-O3` could not cross the call boundary | **fixed** — literals fold at emit time |
 | per-operation allocation (`str(i)`, string appends, `"key" + str(i)` keys) | **mostly fixed** — stack-buffer rendering, string sharing, pinned literals |
-| the compiler does **not specialise int/float**, so no value ever lives in a register | **open** — this is the remaining item |
+| the compiler does **not specialise int/float**, so no value ever lives in a register | **partially done** — proven int/float locals are emitted as raw `int64_t`/`double` with no VyValue boxing; however, list elements and function parameters still go through the boxed path |
 
-That last row is the whole of what is left: `i` in `intloop` is still a 16-byte boxed struct that is rebuilt and re-tagged on every iteration, where C keeps a single register. Fixing it needs a type-inference pass that lowers known-int/float locals to raw `int64_t`/`double` and guards at function entry, which is a real pass rather than a patch (spec sections 5-7, plan in `PERFORMANCE-SPEC.md` §44 stage P3). That one change is what moves `intloop` from ~5.6x toward parity with C.
+The remaining gap is that values flowing through lists, maps, and function parameters are still boxed. Loop variables that the type-inference pass can prove as int/float now emit as raw locals — that optimization is implemented and deployed, but it is scope-local, and the remaining hot paths still pass through the boxed representation. This is the work tracked under stage P3 in the performance spec.
 
 ---
 
@@ -231,9 +233,9 @@ For real AI workloads where LLM calls dominate, Vayu's orchestration overhead is
 
 ## 8. Known Limitations
 
-- **Boxed values**: Every value is a 16-byte `VyValue` struct, preventing register allocation for numeric types
+- **Partial unboxing**: Only variables proven as int/float at the type level are emitted as raw `int64_t`/`double`. Values flowing through lists, maps, and function parameters remain boxed, so hot paths that iterate over collections still pay the boxing cost.
 - **GC overhead**: Every allocation goes through the garbage collector, adding ~1-2μs per object
 - **No escape analysis**: Cannot prove temporaries don't escape, so must GC-track everything
 - **String interning**: Short strings not interned like CPython, causing extra allocations
 
-These are architectural limitations that require deeper compiler changes (type inference pass) to fix. For now, Vayu targets scripting/automation workloads where the overhead is acceptable compared to the benefits of compiled native execution.
+The partial unboxing work (§4) is the first step toward full specialization — closing the remaining gap needs the type-inference pass to reach every value, not just locals. For now, Vayu targets scripting/automation workloads where the overhead is acceptable compared to the benefits of compiled native execution.

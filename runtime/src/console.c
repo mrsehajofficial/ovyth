@@ -116,6 +116,38 @@ static void render(Buf* b, VyValue v, int depth, int quoted) {
       b_str(b, "]");
       break;
     }
+    case VY_I64A: {
+      if (depth > 64) { b_str(b, "[...]"); break; }
+      b_str(b, "[");
+      for (uint32_t i = 0; i < v.i64a->len; i++) {
+        if (i) b_str(b, ", ");
+        snprintf(num, sizeof(num), "%lld", (long long)v.i64a->data[i]);
+        b_str(b, num);
+      }
+      b_str(b, "]");
+      break;
+    }
+    case VY_F64A: {
+      if (depth > 64) { b_str(b, "[...]"); break; }
+      b_str(b, "[");
+      for (uint32_t i = 0; i < v.f64a->len; i++) {
+        if (i) b_str(b, ", ");
+        snprintf(num, sizeof(num), "%g", v.f64a->data[i]);
+        b_str(b, num);
+      }
+      b_str(b, "]");
+      break;
+    }
+    case VY_STRA: {
+      if (depth > 64) { b_str(b, "[...]"); break; }
+      b_str(b, "[");
+      for (uint32_t i = 0; i < v.stra->len; i++) {
+        if (i) b_str(b, ", ");
+        render_string(b, v.stra->data[i]);
+      }
+      b_str(b, "]");
+      break;
+    }
     case VY_MAP: {
       if (depth > 64) { b_str(b, "{...}"); break; }
       b_str(b, "{");

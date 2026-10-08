@@ -226,6 +226,41 @@ class Gen {
   std::unordered_set<std::string> proven_ints_;
   std::unordered_set<std::string> proven_floats_;
 
+  // Check if a Vayu variable name is proven int/float from sema in any scope
+  bool is_proven_int_any_scope(const std::string& name) const {
+    for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
+      auto it = scopes_[i].find(name);
+      if (it != scopes_[i].end()) {
+        return proven_ints_.count(it->second) > 0;
+      }
+    }
+    // Not in current codegen scopes, check sema
+    auto it = sema_.proven_types.find(name);
+    return it != sema_.proven_types.end() && it->second.is_proven_int;
+  }
+  bool is_proven_float_any_scope(const std::string& name) const {
+    for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
+      auto it = scopes_[i].find(name);
+      if (it != scopes_[i].end()) {
+        return proven_floats_.count(it->second) > 0;
+      }
+    }
+    auto it = sema_.proven_types.find(name);
+    return it != sema_.proven_types.end() && it->second.is_proven_float;
+  }
+
+  // Initialize proven types from sema at codegen start
+  void init_proven_types() {
+    for (const auto& kv : sema_.proven_types) {
+      const std::string& name = kv.first;
+      const TyInfo& info = kv.second;
+      // Use the C variable name that will be generated for this Vayu name
+      std::string cname = ident(name, 0);  // base name, uniq=0 for globals/params
+      if (info.is_proven_int) proven_ints_.insert(cname);
+      if (info.is_proven_float) proven_floats_.insert(cname);
+    }
+  }
+
   // ---------------------------------------------------------------- output
   void line(const std::string& s) {
     out.append(indent_ * 2, ' ');
@@ -261,11 +296,15 @@ class Gen {
       if (std::string* c = lookup(name)) return *c + " = " + rhs;
       std::string c = ident(name, tmp_++);
       scopes_.back()[name] = c;
-      if (is_proven_int) proven_ints_.insert(c);   // track by C name
-      if (is_proven_float) proven_floats_.insert(c);
-      // Emit the C declaration inline and push to prologue list
-      cur_roots_.push_back("@int:" + c);  // sentinel: raw int64_t
-      return "int64_t " + c + " = " + rhs;
+      if (is_proven_int) {
+        proven_ints_.insert(c);   // track by C name
+        cur_roots_.push_back("@int:" + c);  // sentinel: raw int64_t
+        return "int64_t " + c + " = " + rhs;
+      } else {
+        proven_floats_.insert(c);
+        cur_roots_.push_back("@float:" + c);  // sentinel: raw double
+        return "double " + c + " = " + rhs;
+      }
     }
     // Regular VyValue - needs GC registration
     if (std::string* c = lookup(name)) return *c + " = " + rhs;
@@ -327,6 +366,10 @@ class Gen {
   // is_int_expr() is true.
   bool is_int_expr(const Expr* e) const;
   std::string ex_int(const Expr* e);  // raw int64_t C expression
+
+  // Proven-float fast path: same for double expressions.
+  bool is_float_expr(const Expr* e) const;
+  std::string ex_float(const Expr* e);  // raw double C expression
 
   // ------------------------------------------------------------ statements
   void stmt(const Stmt* s);
@@ -543,6 +586,64 @@ std::string Gen::ex_int(const Expr* e) {
   }
 }
 
+// Proven-float fast path helpers
+bool Gen::is_float_expr(const Expr* e) const {
+  if (!e) return false;
+  if (e->kind == ExprKind::FloatLit) return true;
+  if (e->kind == ExprKind::IntLit) return true;  // Int promotes to float
+  if (e->kind == ExprKind::Identifier) {
+    for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
+      auto it = scopes_[i].find(e->name);
+      if (it != scopes_[i].end()) {
+        return proven_floats_.count(it->second) > 0 || proven_ints_.count(it->second) > 0;
+      }
+    }
+    return false;
+  }
+  if (e->kind == ExprKind::Unary && e->op == Tok::MINUS)
+    return is_float_expr(e->a);
+  if (e->kind != ExprKind::Binary) return false;
+  switch (e->op) {
+    case Tok::PLUS: case Tok::MINUS: case Tok::STAR: case Tok::SLASH:
+      return is_float_expr(e->a) && is_float_expr(e->b);
+    default: return false;
+  }
+}
+
+std::string Gen::ex_float(const Expr* e) {
+  if (e->kind == ExprKind::FloatLit) {
+    std::ostringstream o;
+    o.precision(17);
+    o << e->fval;
+    std::string s = o.str();
+    if (s.find('.') == std::string::npos && s.find('e') == std::string::npos &&
+        s.find("inf") == std::string::npos && s.find("nan") == std::string::npos)
+      s += ".0";
+    return s;
+  }
+  if (e->kind == ExprKind::IntLit)
+    return std::to_string(e->ival) + ".0";
+  if (e->kind == ExprKind::Identifier) {
+    for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
+      auto it = scopes_[i].find(e->name);
+      if (it != scopes_[i].end()) return it->second;
+    }
+    return "0.0";
+  }
+  if (e->kind == ExprKind::Unary && e->op == Tok::MINUS)
+    return "(-(" + ex_float(e->a) + "))";
+  // Binary case:
+  std::string af = ex_float(e->a);
+  std::string bf = ex_float(e->b);
+  switch (e->op) {
+    case Tok::PLUS:  return "(" + af + ")+(" + bf + ")";
+    case Tok::MINUS: return "(" + af + ")-(" + bf + ")";
+    case Tok::STAR:  return "(" + af + ")*(" + bf + ")";
+    case Tok::SLASH: return "(" + bf + ")?(" + af + ")/(" + bf + "):(vy_zero_error(),0.0)";
+    default: return "0.0";
+  }
+}
+
 // ---------------------------------------------------------------- literals
 std::string Gen::ex(const Expr* e) {
   if (!e) return "vy_nil()";
@@ -572,13 +673,61 @@ std::string Gen::ex(const Expr* e) {
              "); vy_str(vy_lit_); })";
 
     case ExprKind::Identifier: {
-      if (std::string* c = lookup(e->name)) return *c;
+      if (std::string* c = lookup(e->name)) {
+        // If this is a proven int/float variable, wrap it in VyValue for general use.
+        // The fast paths (is_int_expr/ex_int, is_float_expr/ex_float) bypass this.
+        if (proven_ints_.count(*c)) return "vy_int(" + *c + ")";
+        if (proven_floats_.count(*c)) return "vy_float(" + *c + ")";
+        return *c;
+      }
       if (userfns_.count(e->name)) return "vy_nil()";
       fail("unknown name '" + e->name + "'");
       return "vy_nil()";
     }
 
     case ExprKind::ListLit: {
+      // Check if all items have the same proven type (int/float/string)
+      bool all_int = true, all_float = true, all_string = true;
+      for (const Expr* it : e->items) {
+        if (!is_int_expr(it)) all_int = false;
+        if (!is_float_expr(it)) all_float = false;
+        if (it->kind != ExprKind::StringLit) all_string = false;
+      }
+      
+      if (all_int && !e->items.empty()) {
+        // Emit as VyInt64Array
+        std::string arr = fresh(), idx = fresh();
+        std::string s = "({ VyInt64Array* " + arr + " = vy_i64a_new_cap(" + std::to_string(e->items.size()) + "); ";
+        for (size_t i = 0; i < e->items.size(); i++) {
+          s += arr + "->data[" + std::to_string(i) + "] = " + ex_int(e->items[i]) + "; ";
+        }
+        s += arr + "->len = " + std::to_string(e->items.size()) + "; ";
+        s += "vy_i64a_val(" + arr + "); })";
+        return s;
+      }
+      if (all_float && !e->items.empty()) {
+        // Emit as VyFloat64Array
+        std::string arr = fresh(), idx = fresh();
+        std::string s = "({ VyFloat64Array* " + arr + " = vy_f64a_new_cap(" + std::to_string(e->items.size()) + "); ";
+        for (size_t i = 0; i < e->items.size(); i++) {
+          s += arr + "->data[" + std::to_string(i) + "] = " + ex_float(e->items[i]) + "; ";
+        }
+        s += arr + "->len = " + std::to_string(e->items.size()) + "; ";
+        s += "vy_f64a_val(" + arr + "); })";
+        return s;
+      }
+      if (all_string && !e->items.empty()) {
+        // Emit as VyStringArray
+        std::string arr = fresh(), idx = fresh();
+        std::string s = "({ VyStringArray* " + arr + " = vy_stra_new_cap(" + std::to_string(e->items.size()) + "); ";
+        for (size_t i = 0; i < e->items.size(); i++) {
+          s += arr + "->data[" + std::to_string(i) + "] = " + ex(e->items[i]) + ".str; ";
+        }
+        s += arr + "->len = " + std::to_string(e->items.size()) + "; ";
+        s += "vy_stra_val(" + arr + "); })";
+        return s;
+      }
+      // Fallback to generic VyList
       std::string l = fresh(), v = fresh();
       std::string s = "({ VyList* " + l + " = vy_list_new(); VyValue " + v +
                       " = vy_list(" + l + "); ";
@@ -646,6 +795,25 @@ std::string Gen::ex(const Expr* e) {
           default: break;
         }
       }
+      // Proven-float fast path: both operands are statically Float/Int.
+      // Emit raw double arithmetic; no VyValue temporaries, no tag checks.
+      if (is_float_expr(e->a) && is_float_expr(e->b)) {
+        std::string af = ex_float(e->a);
+        std::string bf = ex_float(e->b);
+        switch (e->op) {
+          case Tok::PLUS:       return "vy_float((" + af + ") + (" + bf + "))";
+          case Tok::MINUS:      return "vy_float((" + af + ") - (" + bf + "))";
+          case Tok::STAR:       return "vy_float((" + af + ") * (" + bf + "))";
+          case Tok::SLASH:      return "vy_float((" + bf + ") ? (" + af + ") / (" + bf + ") : (vy_zero_error(),0.0))";
+          case Tok::EQUAL:      return "vy_bool((" + af + ") == (" + bf + "))";
+          case Tok::BANG_EQUAL: return "vy_bool((" + af + ") != (" + bf + "))";
+          case Tok::LESS:       return "vy_bool((" + af + ") < (" + bf + "))";
+          case Tok::GREATER:    return "vy_bool((" + af + ") > (" + bf + "))";
+          case Tok::LESS_EQUAL: return "vy_bool((" + af + ") <= (" + bf + "))";
+          case Tok::GREATER_EQUAL: return "vy_bool((" + af + ") >= (" + bf + "))";
+          default: break;
+        }
+      }
       std::string a = fresh(), b = fresh();
       const std::string pre = "({ VyValue " + a + " = " + ex(e->a) + "; VyValue " +
                               b + " = " + ex(e->b) + "; ";
@@ -692,6 +860,36 @@ std::string Gen::ex(const Expr* e) {
     }
 
     case ExprKind::Assign: {
+      // Fast path: target is a proven int/float Identifier
+      if (e->op == Tok::ASSIGN && e->a && e->a->kind == ExprKind::Identifier) {
+        const std::string& name = e->a->name;
+        bool pi = is_proven_int_any_scope(name);
+        bool pf = is_proven_float_any_scope(name);
+        if (pi || pf) {
+          std::string rhs;
+          if (pi && is_int_expr(e->b)) {
+            rhs = ex_int(e->b);
+          } else if (pf && is_float_expr(e->b)) {
+            rhs = ex_float(e->b);
+          } else if (pi) {
+            std::string tmp_v = fresh();
+            // Note: we can't emit a line here, so we use a statement expression
+            rhs = "({ VyValue " + tmp_v + " = " + ex(e->b) + "; (" + tmp_v + ").i; })";
+          } else if (pf) {
+            std::string tmp_v = fresh();
+            rhs = "({ VyValue " + tmp_v + " = " + ex(e->b) + "; (" + tmp_v + ").f; })";
+          } else {
+            rhs = ex(e->b);
+          }
+          // Get the C variable name for the target
+          std::string* c = lookup(name);
+          if (c) {
+            return "(" + *c + " = " + rhs + ", " + rhs + ")";
+          }
+          // Variable not yet in scope (shouldn't happen for assignments)
+          return rhs;
+        }
+      }
       std::string v = fresh();
       if (e->op == Tok::ASSIGN) {
         return "({ VyValue " + v + " = " + ex(e->b) + "; " +
@@ -838,16 +1036,33 @@ std::string Gen::emit_listcomp(const Expr* e) {
 
     const std::string I = it, J = i, V = var;
     s += "{ VyValue " + it + " = " + iterable + "; ";
-    s += "VyList* " + it + "_l = (vy_tagof(" + I + ") == VY_STRING) ? "
-         "vy_str_chars(" + I + ".str).list : " + I + ".list; ";
-    s += "if (" + I + "_l) for (uint32_t " + i + " = 0; " + i + " < " + I +
-         "_l->len; " + i + "++) { VyValue " + var + " = " + I + "_l->items[" + J +
-         "]; ";
-    if (!cond.empty()) s += "if (vy_truthy(" + cond + ")) { ";
-    emit_loops(gi + 1);
-    if (!cond.empty()) s += " } ";
-    s += "} } ";
+    // Handle all iterable types: string, list, int64array, float64array, stringarray
+    s += "VyList* " + it + "_l = NULL; ";
+    s += "VyInt64Array* " + it + "_i64a = NULL; ";
+    s += "VyFloat64Array* " + it + "_f64a = NULL; ";
+    s += "VyStringArray* " + it + "_stra = NULL; ";
+    s += "if (vy_tagof(" + I + ") == VY_STRING) { " + it + "_l = vy_str_chars(" + I + ".str).list; } "
+         "else if (vy_tagof(" + I + ") == VY_LIST) { " + it + "_l = " + I + ".list; } "
+         "else if (vy_tagof(" + I + ") == VY_I64A) { " + it + "_i64a = " + I + ".i64a; } "
+         "else if (vy_tagof(" + I + ") == VY_F64A) { " + it + "_f64a = " + I + ".f64a; } "
+         "else if (vy_tagof(" + I + ") == VY_STRA) { " + it + "_stra = " + I + ".stra; } ";
 
+    // For each iterable type, emit a loop with optional condition
+    auto emit_loop = [&](const std::string& suffix, const std::string& accessor) {
+      s += "if (" + I + "_" + suffix + ") { for (uint32_t " + i + " = 0; " + i + " < " + I +
+           "_" + suffix + "->len; " + i + "++) { VyValue " + var + " = " + accessor + "; ";
+      if (!cond.empty()) s += "if (vy_truthy(" + cond + ")) { ";
+      emit_loops(gi + 1);
+      if (!cond.empty()) s += " } ";
+      s += "} } ";
+    };
+
+    emit_loop("l", I + "_l->items[" + J + "]");
+    emit_loop("i64a", "vy_int(" + I + "_i64a->data[" + J + "])");
+    emit_loop("f64a", "vy_float(" + I + "_f64a->data[" + J + "])");
+    emit_loop("stra", "vy_str(" + I + "_stra->data[" + J + "])");
+
+    s += "} ";  // close scope
     pop_scope();
   };
   emit_loops(0);
@@ -1186,19 +1401,44 @@ std::string Gen::call_value_method(const Expr* e, const std::string& base) {
   std::string a1 = args.size() > 1 ? args[1] : "vy_nil()";
   std::string b = fresh(), o = fresh();
 
-  // Hot-path guard for the builder pattern: xs.push(x) used to pay an
-  // out-of-line dispatch + strcmp chain per call (500k times in
-  // benchmarks/cases/listappend.vy). A list base -- by far the common case --
-  // now takes the inline vy_list_push directly; anything else falls through
-  // to the exact same dispatch as before, errors included. Only emitted for
-  // arity <= 1 so every argument expression still gets evaluated.
+  // Hot-path for push/append on known specialized arrays
   if ((m->name == "push" || m->name == "append") && args.size() <= 1) {
     std::string av = fresh();
+    // Check if base is a proven int/float array
+    if (e->a && e->a->kind == ExprKind::Identifier) {
+      const std::string& base_name = e->a->name;
+      if (std::string* c = lookup(base_name)) {
+        if (proven_ints_.count(*c)) {
+          // Fast path for int64_t array push
+          return "({ VyInt64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
+        }
+        if (proven_floats_.count(*c)) {
+          // Fast path for double array push
+          return "({ VyFloat64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
+        }
+      }
+    }
+    // Fallback to list fast path
     return "({ VyValue " + b + " = " + base + "; VyValue " + av + " = " + a0 +
            "; VyValue " + o + "; if (vy_tagof(" + b + ") == VY_LIST) { vy_list_push(" +
            b + ".list, " + av + "); " + o + " = " + b + "; } else if (vy_h_value_method(" +
            b + ", " + quote_c(m->name) + ", " + av + ", vy_nil(), &" + o +
            ")) vy_throw_value(vy_h_err_value()); " + o + "; })";
+  }
+
+  // Hot-path for pop on known specialized arrays
+  if (m->name == "pop" && args.empty()) {
+    if (e->a && e->a->kind == ExprKind::Identifier) {
+      const std::string& base_name = e->a->name;
+      if (std::string* c = lookup(base_name)) {
+        if (proven_ints_.count(*c)) {
+          return "vy_int(" + *c + "->data[--" + *c + "->len])";
+        }
+        if (proven_floats_.count(*c)) {
+          return "vy_float(" + *c + "->data[--" + *c + "->len])";
+        }
+      }
+    }
   }
 
   return "({ VyValue " + b + " = " + base + "; VyValue " + o + "; if (vy_h_value_method(" +
@@ -1364,6 +1604,17 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
            ", " + ARG(2) + ", " + ARG(3) + ", &" + t + "); if (" + t +
            ") vy_throw_value(vy_h_err_value()); _r; })";
   if (q == "len") {
+    // Fast path: if arg is proven list/string, inline the length access
+    if (args.size() == 1 && e->args[0] && e->args[0]->kind == ExprKind::Identifier) {
+      const std::string& arg_name = e->args[0]->name;
+      if (std::string* c = lookup(arg_name)) {
+        // Check if it's a proven int/float array
+        if (proven_ints_.count(*c) || proven_floats_.count(*c)) {
+          // It's a raw array, not a VyList
+          return "(" + *c + "->len)";
+        }
+      }
+    }
     return "({ int " + t + " = 0; VyValue _r = vy_h_len(" + ARG(0) + ", &" + t +
            "); if (" + t + ") vy_throw_value(vy_h_err_value()); _r; })";
   }
@@ -1389,20 +1640,111 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
            ")); vy_nil(); })";
   }
   if (q == "range") {
+    // Fast path: if all args are int literals or proven int, create a specialized int array
+    bool all_int = true;
+    for (const Expr* arg : e->args) {
+      if (!is_int_expr(arg)) { all_int = false; break; }
+    }
+    if (all_int) {
+      std::string lo, hi, step;
+      if (e->args.size() == 1) {
+        lo = "0LL";
+        hi = ex_int(e->args[0]);
+        step = "1LL";
+      } else if (e->args.size() == 2) {
+        lo = ex_int(e->args[0]);
+        hi = ex_int(e->args[1]);
+        step = "1LL";
+      } else {
+        lo = ex_int(e->args[0]);
+        hi = ex_int(e->args[1]);
+        step = ex_int(e->args[2]);
+      }
+      std::string arr = fresh(), idx = fresh(), val = fresh();
+      return "({ VyInt64Array* " + arr + " = vy_i64a_new_cap((( " + hi + " - " + lo + " + " + step + " - 1 ) / " + step + ") + 1); "
+           + "int64_t " + val + " = " + lo + "; "
+           + "int64_t " + idx + " = 0; "
+           + "for (; " + val + " < " + hi + "; " + val + " += " + step + ") { "
+           + arr + "->data[" + idx + "++] = " + val + "; } "
+           + arr + "->len = " + idx + "; vy_i64a_val(" + arr + "); })";
+    }
+    // Original path
     if (args.size() == 1) return "vy_range(0, (" + ex(e->args[0]) + ").i, 1)";
     if (args.size() == 2)
       return "vy_range((" + ex(e->args[0]) + ").i, (" + ex(e->args[1]) + ").i, 1)";
     return "vy_range((" + ex(e->args[0]) + ").i, (" + ex(e->args[1]) + ").i, (" +
            ex(e->args[2]) + ").i)";
   }
-  if (q == "abs") return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'a'); })";
-  if (q == "sqrt") return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 's'); })";
-  if (q == "floor") return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'f'); })";
-  if (q == "ceil") return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'c'); })";
-  if (q == "round") return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'r'); })";
-  if (q == "min") return "({ VyValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = vy_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 1 ? _a : _b); })";
-  if (q == "max") return "({ VyValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = vy_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 0 ? _a : _b); })";
-  if (q == "sum") return "({ int _t = 0; vy_h_sum(" + ARG(0) + ", &_t); })";
+  if (q == "abs") {
+    if (args.size() == 1 && is_int_expr(e->args[0])) {
+      return "vy_int(" + ex_int(e->args[0]) + " < 0 ? -" + ex_int(e->args[0]) + " : " + ex_int(e->args[0]) + ")";
+    }
+    if (args.size() == 1 && is_float_expr(e->args[0])) {
+      return "vy_float(fabs(" + ex_float(e->args[0]) + "))";
+    }
+    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'a'); })";
+  }
+  if (q == "sqrt") {
+    if (args.size() == 1 && is_float_expr(e->args[0])) {
+      return "vy_float(sqrt(" + ex_float(e->args[0]) + "))";
+    }
+    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 's'); })";
+  }
+  if (q == "floor") {
+    if (args.size() == 1 && is_float_expr(e->args[0])) {
+      return "vy_int((int64_t)floor(" + ex_float(e->args[0]) + "))";
+    }
+    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'f'); })";
+  }
+  if (q == "ceil") {
+    if (args.size() == 1 && is_float_expr(e->args[0])) {
+      return "vy_int((int64_t)ceil(" + ex_float(e->args[0]) + "))";
+    }
+    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'c'); })";
+  }
+  if (q == "round") {
+    if (args.size() == 1 && is_float_expr(e->args[0])) {
+      return "vy_int((int64_t)llround(" + ex_float(e->args[0]) + "))";
+    }
+    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'r'); })";
+  }
+  if (q == "min") {
+    if (args.size() == 2 && is_int_expr(e->args[0]) && is_int_expr(e->args[1])) {
+      return "vy_int((" + ex_int(e->args[0]) + " < " + ex_int(e->args[1]) + " ? " + ex_int(e->args[0]) + " : " + ex_int(e->args[1]) + "))";
+    }
+    if (args.size() == 2 && is_float_expr(e->args[0]) && is_float_expr(e->args[1])) {
+      return "vy_float(fmin(" + ex_float(e->args[0]) + ", " + ex_float(e->args[1]) + "))";
+    }
+    return "({ VyValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = vy_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 1 ? _a : _b); })";
+  }
+  if (q == "max") {
+    if (args.size() == 2 && is_int_expr(e->args[0]) && is_int_expr(e->args[1])) {
+      return "vy_int((" + ex_int(e->args[0]) + " > " + ex_int(e->args[1]) + " ? " + ex_int(e->args[0]) + " : " + ex_int(e->args[1]) + "))";
+    }
+    if (args.size() == 2 && is_float_expr(e->args[0]) && is_float_expr(e->args[1])) {
+      return "vy_float(fmax(" + ex_float(e->args[0]) + ", " + ex_float(e->args[1]) + "))";
+    }
+    return "({ VyValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = vy_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 0 ? _a : _b); })";
+  }
+  if (q == "sum") {
+    // Fast path: if arg is proven int array, inline the sum
+    if (args.size() == 1 && e->args[0] && e->args[0]->kind == ExprKind::Identifier) {
+      const std::string& arg_name = e->args[0]->name;
+      if (std::string* c = lookup(arg_name)) {
+        if (proven_ints_.count(*c)) {
+          // Raw int64_t array - inline sum loop
+          std::string idx = fresh();
+          return "({ int64_t " + idx + " = 0; int64_t " + *c + "_sum = 0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; vy_int(" + *c + "_sum); })";
+        }
+        if (proven_floats_.count(*c)) {
+          // Raw double array - inline sum loop
+          std::string idx = fresh();
+          return "({ int64_t " + idx + " = 0; double " + *c + "_sum = 0.0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; vy_float(" + *c + "_sum); })";
+        }
+      }
+    }
+    return "({ int _t = 0; vy_h_sum(" + ARG(0) + ", &_t); })";
+  }
   if (q == "upper") return "vy_str(vy_str_upper(" + ARG(0) + ".str))";
   if (q == "lower") return "vy_str(vy_str_lower(" + ARG(0) + ".str))";
   if (q == "trim")  return "vy_str(vy_str_trim(" + ARG(0) + ".str))";
@@ -1517,45 +1859,89 @@ void Gen::stmt(const Stmt* s) {
       line("(void)(" + ex(s->expr) + ");");
       return;
 
-    case StmtKind::VarDecl: {
+case StmtKind::VarDecl: {
       size_t n = s->names.size();
       // `acc = acc + e` reaches us as a VarDecl when acc is not yet bound in
       // this scope, so the builder append has to be recognised here too.
       if (sb_.active && n == 1 && s->values.size() == 1 &&
           try_sb_append(s->names[0], s->values[0], s->op))
         return;
-      // Evaluate every value into a temp first, so `a, b = b, a` is correct
-      // and each intermediate stays reachable across allocations.
-      std::vector<std::string> tmp;
+      // Handle each variable individually, generating the appropriate RHS
       for (size_t i = 0; i < n; i++) {
-        std::string t = fresh();
-        std::string rhs = (i < s->values.size() && s->values[i]) ? ex(s->values[i])
-                                                                : "vy_nil()";
-        line("VyValue " + t + " = " + rhs + ";");
-        tmp.push_back(t);
-      }
-      // `a, b = [x, y]` unpacks a list on the right: every name, starting at
-      // index 0, takes the element at that position.
-      if (n > 1 && s->values.size() == 1) {
-        std::string src = tmp[0];
-        for (size_t i = 0; i < n; i++) {
-          std::string t = fresh();
-          line("VyValue " + t + " = (vy_tagof(" + src + ") == VY_LIST && " +
-               std::to_string(i) + " < " + src + ".list->len) ? vy_list_get(" +
-               src + ".list, " + std::to_string(i) + ") : vy_nil();");
-          tmp[i] = t;
+        const std::string& name = s->names[i];
+        bool pi = is_proven_int_any_scope(name);
+        bool pf = is_proven_float_any_scope(name);
+        std::string rhs;
+        if (i < s->values.size() && s->values[i]) {
+          if (pi && is_int_expr(s->values[i])) {
+            rhs = ex_int(s->values[i]);
+          } else if (pf && is_float_expr(s->values[i])) {
+            rhs = ex_float(s->values[i]);
+          } else if (pi) {
+            std::string tmp_v = fresh();
+            rhs = "({ VyValue " + tmp_v + " = " + ex(s->values[i]) + "; (" + tmp_v + ").i; })";
+          } else if (pf) {
+            std::string tmp_v = fresh();
+            rhs = "({ VyValue " + tmp_v + " = " + ex(s->values[i]) + "; (" + tmp_v + ").f; })";
+          } else {
+            rhs = ex(s->values[i]);
+          }
+        } else {
+          if (pi) rhs = "0LL";
+          else if (pf) rhs = "0.0";
+          else rhs = "vy_nil()";
         }
-      }
-      for (size_t i = 0; i < n; i++) {
         // With an active string builder, `acc = ""` is just the builder's
         // initial (empty) state -- do not rebind the result variable.
-        // The accumulator's own storage is the builder, so `acc = ""` inside a
-        // rewritten loop must not rebind the result variable.
         bool is_acc_init =
-            sb_.active && s->names[i] == sb_.var && i < s->values.size() &&
+            sb_.active && name == sb_.var && i < s->values.size() &&
             s->values[i] && s->values[i]->kind == ExprKind::StringLit &&
             s->values[i]->sval.empty();
-        if (!is_acc_init) line(bind(s->names[i], tmp[i]) + ";");
+        if (!is_acc_init) {
+          line(bind(name, rhs, pi, pf) + ";");
+        }
+      }
+      // Handle tuple unpacking: `a, b = [x, y]` - each name gets the list element at that index.
+      // This must happen AFTER the individual bindings so the list value is evaluated first.
+      if (n > 1 && s->values.size() == 1) {
+        // The list value was already evaluated as the RHS for the first variable
+        // We need to re-evaluate it or capture it. For simplicity, re-evaluate.
+        std::string list_expr = ex(s->values[0]);
+        for (size_t i = 0; i < n; i++) {
+          const std::string& name = s->names[i];
+          bool pi = is_proven_int_any_scope(name);
+          bool pf = is_proven_float_any_scope(name);
+          std::string elem_rhs;
+          if (pi) {
+            elem_rhs = "((vy_tagof(" + list_expr + ") == VY_LIST && " + std::to_string(i) +
+                       " < " + list_expr + ".list->len) ? (" + list_expr + ".list->items[" +
+                       std::to_string(i) + "]).i : "
+                       "(vy_tagof(" + list_expr + ") == VY_I64A && " + std::to_string(i) +
+                       " < " + list_expr + ".i64a->len) ? " + list_expr + ".i64a->data[" +
+                       std::to_string(i) + "] : 0LL)";
+          } else if (pf) {
+            elem_rhs = "((vy_tagof(" + list_expr + ") == VY_LIST && " + std::to_string(i) +
+                       " < " + list_expr + ".list->len) ? (" + list_expr + ".list->items[" +
+                       std::to_string(i) + "]).f : "
+                       "(vy_tagof(" + list_expr + ") == VY_F64A && " + std::to_string(i) +
+                       " < " + list_expr + ".f64a->len) ? " + list_expr + ".f64a->data[" +
+                       std::to_string(i) + "] : 0.0)";
+          } else {
+            elem_rhs = "(vy_tagof(" + list_expr + ") == VY_LIST && " + std::to_string(i) +
+                       " < " + list_expr + ".list->len) ? vy_list_get(" + list_expr + ".list, " +
+                       std::to_string(i) + ") : "
+                       "(vy_tagof(" + list_expr + ") == VY_I64A && " + std::to_string(i) +
+                       " < " + list_expr + ".i64a->len) ? vy_int(" + list_expr + ".i64a->data[" +
+                       std::to_string(i) + "]) : "
+                       "(vy_tagof(" + list_expr + ") == VY_F64A && " + std::to_string(i) +
+                       " < " + list_expr + ".f64a->len) ? vy_float(" + list_expr + ".f64a->data[" +
+                       std::to_string(i) + "]) : "
+                       "(vy_tagof(" + list_expr + ") == VY_STRA && " + std::to_string(i) +
+                       " < " + list_expr + ".stra->len) ? vy_str(" + list_expr + ".stra->data[" +
+                       std::to_string(i) + "]) : vy_nil()";
+          }
+          line(bind(name, elem_rhs, pi, pf) + ";");
+        }
       }
       // Remember `x = ""` so a following loop can recognise string building.
       if (n == 1 && s->values[0] && s->values[0]->kind == ExprKind::StringLit &&
@@ -1565,6 +1951,35 @@ void Gen::stmt(const Stmt* s) {
     }
 
     case StmtKind::Assign: {
+      // If target is a proven int/float variable, generate raw assignment
+      if (s->op == Tok::ASSIGN && s->expr && s->expr->kind == ExprKind::Identifier) {
+        const std::string& name = s->expr->name;
+        bool pi = is_proven_int_any_scope(name);
+        bool pf = is_proven_float_any_scope(name);
+        if (pi || pf) {
+          std::string rhs;
+          if (pi && is_int_expr(s->expr2)) {
+            rhs = ex_int(s->expr2);
+          } else if (pf && is_float_expr(s->expr2)) {
+            rhs = ex_float(s->expr2);
+          } else if (pi) {
+            // RHS is not a pure int expr, but target is proven int:
+            // evaluate RHS as VyValue into a temp, then extract .i
+            std::string tmp_v = fresh();
+            line("VyValue " + tmp_v + " = " + ex(s->expr2) + ";");
+            rhs = "((" + tmp_v + ").i)";
+          } else if (pf) {
+            std::string tmp_v = fresh();
+            line("VyValue " + tmp_v + " = " + ex(s->expr2) + ";");
+            rhs = "((" + tmp_v + ").f)";
+          } else {
+            rhs = ex(s->expr2);
+          }
+          line(bind(name, rhs, pi, pf) + ";");
+          return;
+        }
+      }
+
       std::string v = fresh();
 
       // String-builder accumulation (spec 12).
@@ -1744,7 +2159,7 @@ void Gen::stmt(const Stmt* s) {
 }
 
 void Gen::emit_for(const Stmt* s) {
-  // `for v in xs` over a list, a string's characters, or a map's keys.
+  // `for v in xs` over a list, a string's characters, a map's keys, or specialized arrays.
   std::string it = fresh(), idx = fresh(), seq = fresh(), n = fresh();
   std::string var = s->iter_vars.empty() ? std::string("vy_unused") : ident(s->iter_vars[0], tmp_++);
   LoopLabels L{lbl("Lbrk"), lbl("Lcont")};
@@ -1753,16 +2168,33 @@ void Gen::emit_for(const Stmt* s) {
   const std::string I = it, S = seq, N = n, X = idx;
   line("{ VyValue " + it + " = " + ex(s->expr) + ";");
   indent_++;
-  line("VyList* " + seq + " = (vy_tagof(" + I + ") == VY_STRING) ? "
-       "vy_str_chars(" + I + ".str).list : (vy_tagof(" + I + ") == VY_MAP) ? "
-       "vy_map_keys(" + I + ".map).list : " + I + ".list;");
-  line("int64_t " + n + " = " + S + " ? (int64_t)" + S + "->len : 0;");
+  // Handle all iterable types: string, list, map, int64array, float64array, stringarray
+  line("VyList* " + seq + " = NULL;");
+  line("VyInt64Array* " + seq + "_i64a = NULL;");
+  line("VyFloat64Array* " + seq + "_f64a = NULL;");
+  line("VyStringArray* " + seq + "_stra = NULL;");
+  line("if (vy_tagof(" + I + ") == VY_STRING) { " + seq + " = vy_str_chars(" + I + ".str).list; } "
+       "else if (vy_tagof(" + I + ") == VY_MAP) { " + seq + " = vy_map_keys(" + I + ".map).list; } "
+       "else if (vy_tagof(" + I + ") == VY_LIST) { " + seq + " = " + I + ".list; } "
+       "else if (vy_tagof(" + I + ") == VY_I64A) { " + seq + "_i64a = " + I + ".i64a; } "
+       "else if (vy_tagof(" + I + ") == VY_F64A) { " + seq + "_f64a = " + I + ".f64a; } "
+       "else if (vy_tagof(" + I + ") == VY_STRA) { " + seq + "_stra = " + I + ".stra; } ");
+  line("int64_t " + n + " = 0;");
+  line("if (" + seq + ") " + n + " = " + seq + "->len;");
+  line("else if (" + seq + "_i64a) " + n + " = " + seq + "_i64a->len;");
+  line("else if (" + seq + "_f64a) " + n + " = " + seq + "_f64a->len;");
+  line("else if (" + seq + "_stra) " + n + " = " + seq + "_stra->len;");
   line("for (int64_t " + X + " = 0; " + X + " < " + N + "; " + X + "++) {");
   indent_++;
   push_scope();
   scopes_.back()[s->iter_vars.empty() ? std::string("__unused") : s->iter_vars[0]] = var;
   cur_roots_.push_back(var);
-  line("VyValue " + var + " = " + S + "->items[" + X + "];");
+  // Extract element based on iterable type
+  line("VyValue " + var + ";");
+  line("if (" + seq + ") " + var + " = " + seq + "->items[" + X + "];");
+  line("else if (" + seq + "_i64a) " + var + " = vy_int(" + seq + "_i64a->data[" + X + "]);");
+  line("else if (" + seq + "_f64a) " + var + " = vy_float(" + seq + "_f64a->data[" + X + "]);");
+  line("else if (" + seq + "_stra) " + var + " = vy_str(" + seq + "_stra->data[" + X + "]);");
   bool uses_continue = body_uses_continue(s->body);
   bool uses_break = body_uses_break(s->body);
   loops_.push_back(L);
@@ -1861,6 +2293,7 @@ void Gen::emit_function(const Stmt* s) {
 // ------------------------------------------------------------------- module
 std::string Gen::run() {
   collect_functions(prog_.statements);
+  init_proven_types();
 
   // ---- header ----
   out +=

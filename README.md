@@ -9,28 +9,24 @@ print("hello from", name)
 
 ## Is it fast?
 
-Honest answer: 2.5x–24x faster than Python on loops, recursion and list building; within ~1.2x of Python on hash maps, 1.6x–19x slower on AI pipeline operations (JSON extraction, context building); 2.9x–309x slower than C — and the numbers are measured and published, not guessed.
+Honest answer: **Vayu is 2.5x–24x faster than Python on loops, recursion and list building; within ~1.2x of Python on hash maps, 1.6x–4.3x slower on AI pipeline operations (JSON extraction, context building); 2.9x–309x slower than C** — and the numbers are measured and published, not guessed.
 
 | Workload | vs Python | vs C | Notes |
 |---|---|---|---|
-| arithmetic loops (intloop) | ~24x faster | ~5.6x slower | |
-| function calls (fib(25)) | ~4.3x faster | ~19x slower | |
-| list building (listappend) | ~2.5x faster | ~309x slower | |
+| arithmetic loops (intloop) | **~24x faster** | ~5.6x slower | |
+| function calls (fib(25)) | **~4.3x faster** | ~19x slower | |
+| list building (listappend) | **~2.5x faster** | ~309x slower | |
 | hash maps (mapops) | ~1.2x slower | ~2.9x slower | Fixed in v0.1.1, re-measured 7 Oct 2026 |
 | JSON field extraction (`json.extract`) | ~1.7x slower | ~8x slower | `json.extract(path)`, no full AST |
 | JSON repeated access (500k extracts) | ~19x slower | — (C caches) | different algorithms, see PERFORMANCE.md §7 |
-| Context assembly (join) | ~2.1–4.3x slower | ~7–14x slower | O(n) string builder, 1s timer variance |
+| Context assembly (join) | 2.1–4.3x slower | ~7–14x slower | O(n) string builder, 1s timer variance |
 | string building (strconcat) | ~1.6x slower | ~17x slower | |
 | startup of a compiled binary | ~5 ms | — | |
 | binary size (print("hi")) | 18 KB | — | |
 
-Fresh numbers: `bash benchmarks/compare.sh` + `compare_ai.sh --release`,
-7 Oct 2026 (best-of-3 wall clock; desktop variance ±20-40%). The AI cases
-use a 1-second timer so sub-second cases print `0ms` ("below granularity",
-not "instant") — see `docs/PERFORMANCE.md` §7 and
-`benchmarks/RESULTS_AI.md` before quoting them.
+Fresh numbers: `bash benchmarks/compare.sh` + `compare_ai.sh --release`, 7 Oct 2026 (best-of-3 wall clock; desktop variance ±20-40%). The AI cases use a 1-second timer so sub-second cases print `0ms` ("below granularity", not "instant") — see `docs/PERFORMANCE.md` §7 and `benchmarks/RESULTS_AI.md` before quoting them.
 
-The gap with C has one dominant cause left: every value is still a boxed, tagged `VyValue`, so a loop variable is a 16‐byte struct rebuilt per iteration instead of a register. Arithmetic no longer calls out of line — those fast paths are static inline in `runtime/include/vyrt.h`. Fresh ratios (7 Oct 2026): intloop ~5.6x, fib ~19x, strconcat ~17x, listappend ~309x, mapops ~2.9x behind C. See `docs/PERFORMANCE.md` for the measured tables, the six bugs the benchmarks exposed, and what will close the rest of the gap.
+The gap with C has one dominant cause left: every value is still a boxed, tagged `VyValue`, so a loop variable is a 16-byte struct rebuilt per iteration instead of a register. Arithmetic no longer calls out of line — those fast paths are static inline in `runtime/include/vyrt.h`. Fresh ratios (7 Oct 2026): intloop ~5.6x, fib ~19x, strconcat ~17x, listappend ~309x, mapops ~2.9x behind C. See `docs/PERFORMANCE.md` for the measured tables, the six bugs the benchmarks exposed, and what will close the rest of the gap.
 
 ## Setup
 
@@ -164,22 +160,15 @@ The full tour — lists, comprehensions, slices, tuples, the whole stdlib — is
 | command | what it does |
 |---|---|
 | `vyc init <dir>` | create a new project from a template |
-| `vyc run prog.vy` | run with the interpreter (instant, good while coding) |
-| `vyc prog.vy` | compile to `./prog`, a native executable |
-| `vyc prog.vy --release` | optimised: -O3, LTO, symbols stripped |
-| `vyc prog.vy --release --target=native` | also tune for this CPU |
-| `vyc check prog.vy` | parse and type-check, produce no binary |
-| `vyc fmt prog.vy` | print canonically formatted source |
-| `vyc ast / vyc tokens` | dump the syntax tree / token stream |
-
-A typical loop while developing:
-
-```bash
-vyc check prog.vy     # syntax/type check, instant
-vyc run prog.vy       # try it
-vyc prog.vy --release -o prog    # build the real thing
-./prog
-```
+| `vyc run <file.vy>` | run with the tree-walking interpreter |
+| `vyc <file.vy>` | compile to a native executable |
+| `vyc <file.vy> --release` | optimised build: -O3, LTO, strip |
+| `vyc <file.vy> --target=native` | optimise for this machine's CPU |
+| `vyc check <file.vy>` | parse + type check only |
+| `vyc ast <file.vy>` | dump the AST |
+| `vyc tokens <file.vy>` | dump the token stream |
+| `vyc fmt <file.vy>` | canonical formatting (stdout) |
+| `vyc version` | print version |
 
 ## Examples
 
@@ -215,34 +204,6 @@ AI_API_URL=http://localhost:8765 AI_API_KEY=dummy ./build/vyc run examples/chatb
 | `CONTRIBUTING.md` | build, test, style, and how the two-backend rule works |
 | `CHANGELOG.md` | what changed in each release |
 
-## Recent Changes (v0.1.1)
-
-### GC Runtime Fixes
-
-Fixed critical garbage collection bugs that caused segfaults during high-iteration JSON parsing with nested index access (common in AI/RAG workloads):
-
-- **Added GC root scanner API** (`runtime/src/gc.c`, `runtime/include/vyrt.h`)
-  - `vy_gc_set_scanner()` — register dynamic root scanners during collection
-  - `vy_gc_mark_value()` — mark values as roots
-  - `vy_gc_roots_mark()` / `vy_gc_roots_restore()` — LIFO stack frames for root management
-
-- **Native codegen protection** (`compiler/backend/codegen_c.cpp`)
-  - Compound expressions with nested index chains now emit `vy_gc_begin_mutation()` / `vy_gc_end_mutation()` guards
-  - Prevents GC from collecting intermediates during operations like `doc["choices"][0]["message"]["content"]`
-
-- **Interpreter RAII root tracking** (`compiler/backend/interp*.cpp`)
-  - Subexpressions and temporaries are now properly tracked
-  - Fixes crashes in list comprehensions, binary operations, and nested assignments
-
-- **Added regression test** `tests/interp/016_gc_stress.vy`
-
-All 32 tests pass across both backends.
-
-### New Examples
-
-- **Chatbot** (`examples/chatbot/chatbot.vy`) — Automation-focused chatbot with tool calling, session history, and mock server support
-- **Mock server** (`examples/chatbot/mock_server.py`) — Python mock OpenAI API for local testing
-
 ## Running everything
 
 ```bash
@@ -252,36 +213,23 @@ make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 bash benchmarks/run.sh                 # benchmark suite
 bash benchmarks/compare.sh             # Vayu vs C vs Python
+bash benchmarks/compare_ai.sh          # AI pipeline vs C vs Python
 make install PREFIX=$HOME/.local       # put vyc on your PATH
 ```
 
 ## Known limitations
 
 - Closures don't capture their enclosing scope. A closure reading an outer local is rejected with an error rather than silently miscompiled.
-- Every value is boxed. Arithmetic goes through a runtime call — tight numeric loops are much slower than C (see `docs/PERFORMANCE.md`).
+- Partial unboxing: proven int/float locals emit as raw `int64_t`/`double`, but values flowing through lists, maps, and function parameters remain boxed — tight numeric loops are fast, collection iteration still pays boxing cost (see `docs/PERFORMANCE.md`).
 - No files, modules, or imports yet. One file per program.
 - No async or concurrency.
-
-I'm actively working on removing these barriers. Closure capture is on the roadmap, and a module system is the next big feature after that.
 
 ## License
 
 This project is licensed under the **MIT License**.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

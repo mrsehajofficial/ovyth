@@ -45,6 +45,9 @@ typedef struct VyList VyList;
 typedef struct VyMap  VyMap;
 typedef struct VyFunc VyFunc;
 typedef struct VyHeader VyHeader;
+typedef struct VyInt64Array VyInt64Array;
+typedef struct VyFloat64Array VyFloat64Array;
+typedef struct VyStringArray VyStringArray;
 
 typedef struct VyValue {
   uint64_t tag;
@@ -55,6 +58,9 @@ typedef struct VyValue {
     VyList* list;
     VyMap*  map;
     VyFunc* fn;
+    VyInt64Array*  i64a;
+    VyFloat64Array* f64a;
+    VyStringArray*  stra;
     uint8_t b;
   };
 } VyValue;
@@ -87,7 +93,10 @@ typedef enum VyTag {
   VY_LIST   = 5,
   VY_MAP    = 6,
   VY_FUNC   = 7,
-  VY_MASK   = 7ULL
+  VY_I64A   = 8,   // Int64Array
+  VY_F64A   = 9,   // Float64Array
+  VY_STRA   = 10,  // StringArray
+  VY_MASK   = 15ULL
 } VyTag;
 
 /* Reference tags pack a 3-bit kind with the 61-bit heap address, so a tagged
@@ -237,6 +246,11 @@ typedef struct VyStringArray {
   uint32_t cap;
 } VyStringArray;
 
+/* Specialized array value wrappers - used by generated code */
+extern VyValue vy_i64a_val(VyInt64Array* a);
+extern VyValue vy_f64a_val(VyFloat64Array* a);
+extern VyValue vy_stra_val(VyStringArray* a);
+
 /* Forward declarations for slow paths */
 void vy_i64a_push_slow(VyInt64Array* a, int64_t v);
 int64_t vy_i64a_get_slow(VyInt64Array* a, int64_t i);
@@ -261,6 +275,13 @@ static inline int64_t vy_i64a_get(VyInt64Array* a, int64_t i) {
   if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) return a->data[i];
   return vy_i64a_get_slow(a, i);
 }
+static inline int64_t vy_i64a_pop(VyInt64Array* a) {
+  if (!a || a->len == 0) return 0;
+  return a->data[--a->len];
+}
+static inline void vy_i64a_set(VyInt64Array* a, int64_t i, int64_t v) {
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) a->data[i] = v;
+}
 
 /* Float64Array operations */
 VyFloat64Array* vy_f64a_new_cap(uint32_t cap);
@@ -273,6 +294,13 @@ static inline double vy_f64a_get(VyFloat64Array* a, int64_t i) {
   if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) return a->data[i];
   return vy_f64a_get_slow(a, i);
 }
+static inline double vy_f64a_pop(VyFloat64Array* a) {
+  if (!a || a->len == 0) return 0.0;
+  return a->data[--a->len];
+}
+static inline void vy_f64a_set(VyFloat64Array* a, int64_t i, double v) {
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) a->data[i] = v;
+}
 
 /* StringArray operations */
 VyStringArray* vy_stra_new_cap(uint32_t cap);
@@ -284,6 +312,13 @@ static inline void vy_stra_push(VyStringArray* a, VyStr* v) {
 static inline VyStr* vy_stra_get(VyStringArray* a, int64_t i) {
   if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) return a->data[i];
   return vy_stra_get_slow(a, i);
+}
+static inline VyStr* vy_stra_pop(VyStringArray* a) {
+  if (!a || a->len == 0) return NULL;
+  return a->data[--a->len];
+}
+static inline void vy_stra_set(VyStringArray* a, int64_t i, VyStr* v) {
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) a->data[i] = v;
 }
 
 /* `hdr` first -- see the VyList note above: the GC tracks &m->hdr as the
