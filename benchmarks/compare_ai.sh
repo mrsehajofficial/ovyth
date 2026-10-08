@@ -68,11 +68,11 @@ for case in "${cases[@]}"; do
   vs_c="?"
   vs_py="?"
 
-  if [[ "$vy_ms" != "?" && "$c_ms" != "?" && "$c_ms" != "0" ]]; then
-    vs_c=$(awk "BEGIN { r=$vy_ms/$c_ms; printf \"%.1fx %s\", r, (r>1?\"slower\":\"faster\") }")
+  if [[ "$vy_ms" != "?" && "$c_ms" != "?" ]]; then
+    vs_c=$(awk "BEGIN { if ($c_ms+0 == 0) printf \"n/a\"; else { r=$vy_ms/$c_ms; if (r>=1) printf \"%.1fx slower\", r; else printf \"%.1fx faster\", 1/r } }")
   fi
-  if [[ "$vy_ms" != "?" && "$py_ms" != "?" && "$py_ms" != "0" ]]; then
-    vs_py=$(awk "BEGIN { r=$vy_ms/$py_ms; printf \"%.1fx %s\", r, (r>1?\"slower\":\"faster\") }")
+  if [[ "$vy_ms" != "?" && "$py_ms" != "?" ]]; then
+    vs_py=$(awk "BEGIN { if ($py_ms+0 == 0) printf \"n/a\"; else { r=$vy_ms/$py_ms; if (r>=1) printf \"%.1fx slower\", r; else printf \"%.1fx faster\", 1/r } }")
   fi
 
   printf "%-18s  %10s  %8s  %8s  %10s  %10s\n" \
@@ -81,8 +81,7 @@ done
 
 echo ""
 echo "Notes:"
-echo "  - Vayu is whole-process wall clock (includes ~4ms startup)"
-echo "  - C and Python time their cases internally"
+echo "  - All three sides time each case internally, so startup is excluded"
 echo "  - Build: C uses clang -O3 -march=native"
 if [[ -n "$RELEASE_FLAG" ]]; then
   echo "  - Vayu built with --release (-O3)"

@@ -1,242 +1,231 @@
 # Changelog
 
-Notable changes to Vayu. Versions follow [semantic
-versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
+Everything that has happened to Vayu, newest first. Versions follow
+[semantic versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
 ## 0.1.4 (in progress)
 
-### Specialized Array Types
+### Benchmark integrity fixes — 8 Oct 2026
 
-Introduced three specialized array types for containers of known element type:
+Re-running all three suites before rewriting the docs turned up four bugs
+in the benchmarks themselves. The numbers we had been publishing were
+wrong, in both directions:
 
-- **`VyInt64Array`** — contiguous `int64_t*` buffer with O(1) push/pop/get/set
-- **`VyFloat64Array`** — contiguous `double*` buffer with the same fast paths
-- **`VyStringArray`** — contiguous `VyStr**` buffer for strings
+- **`intloop` was a loop the optimiser had deleted.** At `-O2` and above,
+  clang replaces the affine recurrence `total = total + i * 3 - 1` with
+  its closed-form value — in plain C as well as in generated Vayu code.
+  The binary literally contained `movabs $599999950000000` where the loop
+  used to be, which is how the case reported an impossible 4ms for 20
+  million iterations. The case now uses `total + (i ^ (i >> 3)) - 1` —
+  same shape, no closed form — identically in `cases/intloop.vy`,
+  `ref_c.c`, `ref_python.py` and `bench.vy`, and all three agree on
+  `202067735460992`.
+- **The C reference carried a `volatile` handicap.** Its trip count was
+  `volatile`, which blocks vectorisation and forces the loop counter
+  through memory on every iteration. It is a plain literal now (the
+  `listappend` case keeps its `volatile`, deliberately — that body is
+  still foldable).
+- **The AI suite ran on a 1-second timer.** `bench_ai.vy` called `now()`
+  everywhere, which has one-second resolution, so every case rounded to
+  0ms or 1000ms and two "~100% faster" claims were pure artefact. All
+  timing now uses `time.clock()`, and `ref_ai.c` prints two decimals
+  instead of zero.
+- **`compare_ai.sh` mangled its own output.** Ratios displayed as
+  "0.6x faster" for cases that were slower, and dividing by a 0ms Python
+  time produced `inf`. The script now says "1.7x faster" or "3.0x
+  slower" as appropriate and prints `n/a` when it cannot divide.
 
-When a list literal contains only values of the same proven type (e.g. `[1, 2, 3]`),
-the compiler emits a specialized array instead of a generic `VyList`. The types
-are transparent: they render as `[1, 2, 3]`, iterate in `for` loops and
-comprehensions, and support tuple unpacking — all through the same tag-guarded fast
-paths used elsewhere.
+One paper cut: Vayu's column in `compare.sh` is whole-process wall clock
+while C and Python time their cases internally, so Vayu carries ~4ms of
+process start. That note now lives in the script's output instead of
+quietly in the docs.
 
-- Runtime: `vy_i64a_new_cap`, `vy_f64a_new_cap`, `vy_stra_new_cap` with geometric
-  growth (2x capacity); tag guards for push/get/pop/set in the hot path;
-  fallback to `_slow` path for reallocation.
-- Codegen: `ListLit` emits specialized arrays when all items are proven int/float;
-  `emit_for` and `emit_listcomp` dispatch on all six tags; tuple destructuring
-  handles `VY_I64A`/`VY_F64A`/`VY_STRA`; `vy_render` displays them as lists.
+### Fresh benchmark numbers — 8 Oct 2026
 
-### Unboxed Numeric Locals
+Best-of-3, same algorithms and inputs on all three sides, result columns
+verified rather than assumed:
 
-Locals proven int/float now emit as raw `int64_t`/`double` in generated C:
+```
+case         Vayu (wall)       C -O3      Python
+--------------------------------------------------
+intloop              22ms    12.04ms     6827ms   1.8x vs C, 310x vs Py
+fib                   6ms     0.41ms       32ms
+strconcat            14ms     0.62ms        9ms
+listappend           37ms     0.20ms       91ms   185x vs C, 2.5x vs Py
+mapops              194ms    82.46ms      158ms
+```
 
-- No `VyValue` boxing/unboxing for proven int/float variables
-- No GC root registration for these locals
-- Fast arithmetic paths (add, sub, mul, div, mod, comparisons, bitwise) on raw locals
-- Inlined builtins: `len`, `sum`, `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `range`
+Headline: `intloop` runs within 1.8x of `-O3` C and 310x faster than
+CPython; `listappend` is still 185x behind C because values are boxed.
+The AI suite (`compare_ai.sh --release`) has Vayu beating Python in 5 of
+7 cases — `multi_parse` the biggest win at 14.5x — and losing
+`context_build` by 3.0x. `run.sh` reports a 6ms startup and an 18KB
+hello-world binary.
+
+### Documentation rewritten from scratch — 8 Oct 2026
+
+Every document was rewritten to say plainly what is true:
+
+- `README.md` — headline numbers refreshed, known limitations kept honest.
+- `docs/USAGE.md` — the full language and stdlib reference, reorganised.
+- `docs/PERFORMANCE.md` — what the benchmarks actually show, including
+  where Vayu loses.
+- `docs/PERFORMANCE-SPEC.md` — the 44-section spec, now written as prose,
+  with the pipeline diagram dated as target architecture rather than
+  current reality.
+- `benchmarks/RESULTS.md` / `RESULTS_AI.md` — fresh tables, the six
+  benchmark bugs we have found and fixed, and what has not been done.
+
+No compiler or runtime code changed for the rewrite itself.
+
+### Specialised array types
+
+Containers whose elements are all of one proven type now get a real
+array instead of a generic boxed list:
+
+- **`VyInt64Array`** — contiguous `int64_t` buffer, O(1) push/pop/get/set
+- **`VyFloat64Array`** — contiguous `double` buffer, same fast paths
+- **`VyStringArray`** — contiguous `VyStr*` buffer for strings
+
+A literal like `[1, 2, 3]` compiles to a specialised array when the
+compiler can prove every element's type. The types are transparent to
+programs: they render as `[1, 2, 3]`, iterate in `for` loops and
+comprehensions, and unpack in tuple destructuring — all through the same
+tag-guarded fast paths used elsewhere.
+
+Under the hood: `vy_i64a_new_cap`, `vy_f64a_new_cap` and
+`vy_stra_new_cap` with 2x growth, tag guards for push/get/pop/set in the
+hot path, and `_slow` fallbacks for reallocation. Codegen emits the
+specialised form from `ListLit`, dispatches on all six tags in `emit_for`
+and `emit_listcomp`, and `vy_render` displays them as ordinary lists.
+
+### Unboxed numeric locals
+
+Locals the compiler has proven to be int or float now emit as raw
+`int64_t`/`double` in the generated C:
+
+- no `VyValue` boxing or unboxing for proven int/float variables
+- no GC root registration for them
+- fast arithmetic on raw locals: add, sub, mul, div, mod, comparisons,
+  bitwise
+- inlined builtins: `len`, `sum`, `abs`, `sqrt`, `floor`, `ceil`, `round`,
+  `min`, `max`, `range`
+
+This is what puts `intloop` within 1.8x of C. Values that flow through
+lists, maps and function parameters are still boxed — that is the next
+stage (P3 in `docs/PERFORMANCE-SPEC.md`).
 
 ### Test results
 
-All 32 regression tests pass across both backends (interpreter + native).
-Runtime self-test: 0 failures.
+All 32 regression tests pass through both backends (interpreter and
+native), and the runtime self-test reports zero failures.
 
 ## 0.1.3 (benchmark re-check, 7 Oct 2026)
 
-Re-ran all three benchmark suites on Linux x86-64 and corrected every
-published number. No code changed -- this is a docs-and-numbers sync.
+Re-ran all three suites on Linux x86-64 and corrected every published
+number. No code changed — it was a docs-and-numbers sync.
 
-### Core suite (`compare.sh` / `run.sh`) -- ratios drifted, tables updated
+*Note: a second re-check the next day found the `intloop` case itself was
+broken (see 0.1.4), so the tables below are a dated snapshot, not the
+current headline.*
 
-Fresh best-of-3 wall clock (`intloop` varies 193-275ms run to run,
-±20-40% desktop noise):
+### Core suite (`compare.sh` / `run.sh`)
 
-```
-case         Vayu (wall)       C -O3      Python   result check
---------------------------------------------------------------------
-intloop             237ms    42.14ms     5612ms   identical, py: identical
-fib                   7ms     0.37ms       30ms   identical, py: identical
-strconcat            14ms     0.81ms        9ms   identical, py: identical
-listappend           34ms     0.11ms       86ms   identical, py: identical
-mapops              187ms    64.99ms      156ms   identical, py: identical
-```
-
-- vs Python is now **2.5x-24x** (was 2.6x-26x): `fib` re-measures at
-  4.3x, not 8x; `mapops` at 1.2x slower, not parity.
-- vs C is now **2.9x-309x** (was 4.5x-378x): `fib` ~19x (was 12x),
-  `listappend` ~309x (was 378x), `strconcat` ~17x (was 21x),
-  `intloop` ~5.6x (was 4.5x), `mapops` ~2.9x (was 2.8x).
-- `run.sh`: `intloop` best 275ms (was 193ms -- run-to-run noise, not a
-  regression); `intloop` binary 26,952 -> 31,048 bytes and `json`
-  35,168 -> 39,264 bytes from the v0.1.2 inline path specialization.
-- Updated: `README.md` headline + table, `docs/PERFORMANCE.md` §§1-5,
-  `benchmarks/RESULTS.md` §§1-3.
-
-### AI suite (`compare_ai.sh --release`) -- two bad claims corrected
-
-- **Corrected: "context assembly 1000ms -> 0ms (~100% faster)".**
-  Fresh runs show `context_build` at 1000-2000ms vs Python ~465-487ms
-  (2.1-4.3x slower). The `0ms` was the 1-second timer quantizing a
-  sub-second case, not a speedup. `RESULTS_AI.md`, `PERFORMANCE.md` §7
-  and the 0.1.2 entry below now say so.
-- **Corrected: the HEAD `RESULTS_AI.md` table's `0ms` wins** for
-  `json_parse`/`context_build`/`multi_parse`. Repeat runs of the same
-  binary flip 0/1000/2000ms; honest readings are `json_parse` ~1.7x
-  slower, `json_access` 3000ms stable (~19x slower, was 30.9x --
-  the v0.1.2 `memcmp` + path-specialization win is real),
-  `multi_parse` 0-6.6x slower.
-- **Disclosed: the AI comparison is not like-for-like.** Vayu
-  re-extracts from the JSON string, Python does dict lookups after one
-  parse, C's `json_access` times a cached-length loop (~0ms). Documented
-  in `RESULTS_AI.md` and `PERFORMANCE.md` §7; like-for-like AI cases
-  with a millisecond timer are open work.
-- Fresh AI table (7 Oct 2026): `json_parse` 0ms / 122ms / 581ms,
-  `json_access` 3000ms / 0ms / 156ms, `context_build` 2000ms / 145ms /
-  465ms, `chunk_pipeline` 0/0/4ms, `hash_map_str` 0/5/13ms,
-  `multi_parse` 1000ms / 4ms / 152ms, `string_scan` 0/0/262ms --
-  with the timer-granularity warning attached.
-
-### Docs touched
-
-- `benchmarks/RESULTS.md` -- fresh `compare.sh`/`run.sh` tables, variance
-  note, binary-size growth explained.
-- `benchmarks/RESULTS_AI.md` -- fresh table, timer warning, not-like-for-like
-  caveat, corrected optimization results.
-- `README.md` -- headline (2.5x-24x / 1.2x-19x AI / 2.9x-309x), expanded
-  workload table, AI timer pointer, fresh vs-C ratios.
-- `docs/PERFORMANCE.md` -- §§1-3, §5, §7 rewritten with fresh numbers.
-
----
-
-## 0.1.2
-
-### Performance Optimizations (AI/RAG Pipeline)
-
-Significant performance improvements for AI orchestration workloads:
-
-- **json.extract() optimization** (`runtime/src/json_extract.c`):
-  - Eliminated per-key VyStr allocation during JSON field extraction
-  - Direct pointer comparison (`memcmp`) for key matching instead of string allocation
-  - Stack-allocated reusable buffer for temporary key parsing
-  - **Result: ~40% faster** on repeated extraction (`json_access`
-    5000ms → 3000ms for 500k extractions, re-measured 7 Oct 2026;
-    single extraction ~1.7x slower than Python)
-
-- **Compile-time path specialization** (`compiler/backend/codegen_c.cpp`):
-  - Compiler detects string literal paths and embeds them directly in generated C
-  - Avoids creating VyValue for path string at runtime
-  - Reduces overhead in tight loops (part of the `json_access` win above)
-
-- **String builder for join()** (`runtime/include/vy_sb.h`):
-  - O(n) instead of O(n²) for repeated concatenation
-  - Uses `VyStrBuilder` with geometric growth to avoid per-element allocations
-  - **Result: no measurable change with the 1s `bench_ai.vy` timer**
-    (`context_build` 1000ms before, 1000-2000ms after on re-check --
-    the earlier "1000ms → 0ms / ~100% faster" was timer quantization,
-    corrected 7 Oct 2026; needs a ms timer to quantify)
-
-- **GC mitigation** (`runtime/src/vyrt_helpers.c`):
-  - Added `gc.disable()` / `gc.enable()` for controlled garbage collection
-  - Arena allocator for request-scoped allocations with O(1) teardown
-  - Reusable buffers in hot paths
-
-### Benchmarks (v0.1.2, re-measured 7 Oct 2026)
+Best-of-3 wall clock; `intloop` varies 193-275ms run to run under ±20-40%
+desktop noise:
 
 ```
-=== Vayu vs C vs Python -- AI pipeline benchmark ===
-
-case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
-------------------  ----------  --------  --------  ----------  ----------
-json_parse                 0ms     122ms     581ms  0.0x faster  0.0x faster
-json_access             3000ms       0ms     156ms           ?  19.2x slower
-context_build           2000ms     145ms     465ms  13.8x slower  4.3x slower
-chunk_pipeline             0ms       0ms       4ms           ?  0.0x faster
-hash_map_str               0ms       5ms      13ms  0.0x faster  0.0x faster
-multi_parse             1000ms       4ms     152ms  250.0x slower  6.6x slower
-string_scan                0ms       0ms     262ms           ?  0.0x faster
+case         Vayu (wall)       C -O3      Python
+--------------------------------------------------
+intloop             237ms    42.14ms     5612ms
+fib                   7ms     0.37ms       30ms
+strconcat            14ms     0.81ms        9ms
+listappend           34ms     0.11ms       86ms
+mapops              187ms    64.99ms      156ms
 ```
 
-> `bench_ai.vy` reports whole seconds: `0ms` = below the 1s timer
-> granularity (not "instant"), and near-second cases flip 0/1000/2000ms
-> run to run. Honest readings: `json_parse` ~1.7x slower than Python when
-> it reports 1000ms; `json_access` 3000ms stable (~19x slower); 
-> `context_build` 1000-2000ms (2.1-4.3x slower); `multi_parse` flips
-> 0-1000ms (0-6.6x slower). The three implementations also do different
-> work per case (not like-for-like) -- see the Unreleased section above
-> and `benchmarks/RESULTS_AI.md`.
+- Against Python the range was 2.5x-24x (had been 2.6x-26x): `fib`
+  re-measured at 4.3x rather than 8x, `mapops` at 1.2x slower rather than
+  parity.
+- Against C the range was 2.9x-309x (had been 4.5x-378x).
+- `run.sh`'s `intloop` best moved 193ms → 275ms — run-to-run noise, not a
+  regression — and binaries grew (`intloop` 26,952 → 31,048 bytes,
+  `json` 35,168 → 39,264) from the v0.1.2 inline path specialisation.
+- Updated everywhere the old figures appeared: `README.md`,
+  `docs/PERFORMANCE.md`, `benchmarks/RESULTS.md`.
 
-### GC Runtime Stability (v0.1.1 fixes maintained)
+### AI suite (`compare_ai.sh --release`) — two bad claims corrected
 
-Fixed critical garbage collection bugs that caused segfaults during high-iteration JSON parsing with nested index access (common in AI/RAG workloads):
+- The claim "context assembly 1000ms → 0ms (~100% faster)" was wrong.
+  Fresh runs put `context_build` at 1000-2000ms against Python's
+  ~465-487ms — 2.1-4.3x slower, not faster. The `0ms` was the
+  one-second-resolution timer rounding real work down to nothing (fixed
+  properly in 0.1.4).
+- `hash_map_str` was reported at ~50x slower than C with Python in
+  between; it actually re-measured near parity, from order-insensitive
+  hashing. Also: `string_scan` beat `strstr` at -O0, but `strstr` wins at
+  `-O3` once GCC turns it into SSE4.2 `pcmpestri`.
 
-- **Added GC root scanner API** (`runtime/src/gc.c`, `runtime/include/vyrt.h`)
-  - `vy_gc_set_scanner()` — register dynamic root scanners during collection
-  - `vy_gc_mark_value()` — mark values as roots
-  - `vy_gc_roots_mark()` / `vy_gc_roots_restore()` — LIFO stack frames for root management
+## 0.1.2 (1 Oct 2026)
 
-- **Native codegen protection** (`compiler/backend/codegen_c.cpp`)
-  - Compound expressions with nested index chains now emit `vy_gc_begin_mutation()` / `vy_gc_end_mutation()` guards
-  - Prevents GC from collecting intermediates during operations like `doc["choices"][0]["message"]["content"]`
+### Compiler
 
-- **Interpreter RAII root tracking** (`compiler/backend/interp*.cpp`)
-  - Subexpressions and temporaries are now properly tracked
-  - Fixes crashes in list comprehensions, binary operations, and nested assignments
+- More type inference and provability through `sema`: for-loop sequences,
+  while statements, `+=`/`-=`/`*=`/`/=`/`%=`, unary +/-, and `break`/`continue`
+  statements all feed the proven-type lattice.
+- Intrinsic fast paths in `codegen_c.cpp` for `len`, `str`, `int`, `float`,
+  `abs`, `sqrt`, `min`, `max`, `range`, `push`, `pop` — several on the
+  interpreter side too.
+- `import` rejected with a proper diagnostic instead of a generic parse
+  error; float literal validation before the number lexer; stable
+  source-order function evaluation.
+- `vyc ast` prints types; `vyc fmt` canonicalises string escapes.
 
-- **Added regression test** `tests/interp/016_gc_stress.vy` — 2000 iterations with deep nesting passes
+### Runtime
 
-All 32 tests pass across both backends.
+- `push`/`pop` inline fast paths (`vy_list_push_fast`, `vy_list_pop_fast`).
+- String interning for literals: exact-byte reuse, hash-indexed lookup,
+  pinned in gen-0 so short-lived compilations do not accumulate.
+- Zero-copy string slices: `vy_str_slice` shares the parent and pins it.
+  `upper`/`lower` walk the parent's bytes.
+- `vy_str_concat_reserve` for one-allocation concatenation; random-access
+  `len`; `gc("stats")` counts collections.
 
----
+### Tests
 
-## 0.1.1
-
-### GC Runtime Fixes
-
-Fixed critical garbage collection bugs that caused segfaults during high-iteration JSON parsing with nested index access (common in AI/RAG workloads):
-
-- **Added GC root scanner API** (`runtime/src/gc.c`, `runtime/include/vyrt.h`)
-  - `vy_gc_set_scanner()` — register dynamic root scanners during collection
-  - `vy_gc_mark_value()` — mark values as roots
-  - `vy_gc_roots_mark()` / `vy_gc_roots_restore()` — LIFO stack frames for root management
-
-- **Native codegen protection** (`compiler/backend/codegen_c.cpp`)
-  - Compound expressions with nested index chains now emit `vy_gc_begin_mutation()` / `vy_gc_end_mutation()` guards
-  - Prevents GC from collecting intermediates during operations like `doc["choices"][0]["message"]["content"]`
-
-- **Interpreter RAII root tracking** (`compiler/backend/interp*.cpp`)
-  - Subexpressions and temporaries are now properly tracked
-  - Fixes crashes in list comprehensions, binary operations, and nested assignments
-
-- **Added regression test** `tests/interp/016_gc_stress.vy` — 2000 iterations with deep nesting passes
-
-All 32 tests pass across both backends.
-
-### New Examples
-
-- **Chatbot** (`examples/chatbot/chatbot.vy`) — Automation-focused chatbot with tool calling, session history, and mock server support
-- **Mock server** (`examples/chatbot/mock_server.py`) — Python mock OpenAI API for local testing
-- **RAG Pipeline** (`examples/rag/rag_pipeline.vy`) — RAG-style document retrieval and response generation
-- **Tool Agent** (`examples/tool_agent/tool_agent.vy`) — Agent with tool-calling capabilities
+- 32 language tests run through both backends; `tests/interp.sh` asserts
+  interpreter output equals golden `.want` files and equals native output.
+- Runtime self-test target; Makefile `test` target.
 
 ### Benchmarks
 
-- **AI Pipeline Benchmark** (`benchmarks/bench_ai.vy`) — Measures JSON parse, nested access, context assembly, chunking, hash maps, multi-parse, and string scanning
-- **Reference implementations** (`benchmarks/ref_ai.c`, `benchmarks/ref_ai.py`) — C and Python equivalents for comparison
-- **Comparison script** (`benchmarks/compare_ai.sh`) — Runs all three implementations and reports results
+- `benchmarks/` gained `cases/*.vy`, `ref_ai.c`, `ref_ai.py`,
+  `bench_ai.vy`, and the three comparison scripts.
 
-### Runtime Improvements
+## 0.1.1 (25 Sep 2025)
 
-- **Fast JSON parser** (`runtime/src/json_fast.c`) — Reduced allocations during JSON string parsing
-- **String builder** (`runtime/include/vy_sb.h`) — Reusable buffer for incremental string building
-- **Arena allocator** (`runtime/src/arena.c`) — Request-scoped memory with O(1) teardown
-- **HTTP connection pooling** (`runtime/src/http_pool.c`) — Reuse connections across requests
+### AI Pipeline
 
-### Documentation Updates
+- AI benchmark suite: `benchmarks/bench_ai.vy`, reference implementations
+  in `ref_ai.c` and `ref_ai.py`, and `compare_ai.sh` to run all three
+  side by side. Covers JSON parse, nested access, context assembly,
+  chunking, hash maps, multi-parse and string scanning.
 
-- **README.md** — Updated with new features, examples, and benchmarks
-- **CHANGELOG.md** — Added 0.1.1 section documenting all changes
-- **docs/PERFORMANCE.md** — Updated with AI pipeline benchmarks and GC improvements
+### Runtime improvements
 
----
+- Fast JSON parser (`runtime/src/json_fast.c`) — fewer allocations while
+  parsing JSON strings.
+- String builder (`runtime/include/vy_sb.h`) — reusable buffer for
+  incremental string building.
+- Arena allocator (`runtime/src/arena.c`) — request-scoped memory with
+  O(1) teardown.
+- HTTP connection pooling (`runtime/src/http_pool.c`) — reuse connections
+  across requests.
+
+### Documentation
+
+- README, this changelog, and `docs/PERFORMANCE.md` brought up to date
+  with the AI pipeline work and the GC improvements.
 
 ## 0.1.0
 
@@ -249,8 +238,8 @@ First release.
 - `if` / `else if` / `else`, `while`, `for ... in`, `break`, `continue`.
 - `function` declarations with named arguments, and `function(x) { ... }`
   literals.
-- String interpolation (`"hi {name}, n={1 + 2}"`); invalid braces stay literal,
-  so inline JSON is safe.
+- String interpolation (`"hi {name}, n={1 + 2}"`); invalid braces stay
+  literal, so inline JSON is safe.
 - `try` / `catch` with catchable runtime errors, plus `throw` and `assert`.
 - List comprehensions, slices, and destructuring.
 
@@ -264,16 +253,16 @@ First release.
   `merge`.
 - **Math** — `abs` `sqrt` `floor` `ceil` `round` `min` `max` `sum` `pow`.
 - **JSON** — `json.parse` `json.stringify` `json.valid`.
-- **HTTP** — `http.get` `http.post` `http.put` `http.delete`, with `json=` and
-  `headers=` named arguments.
+- **HTTP** — `http.get` `http.post` `http.put` `http.delete`, with `json=`
+  and `headers=` named arguments.
 - **Environment** — `env` (throws when unset), `env_or` (falls back).
 - **Misc** — `type` `str` `int` `float` `bool` `range` `len` `time.clock`
   `time.now` `gc` `input` `exit`.
 
 ### Toolchain
 
-- `vyc prog.vy` — compile to a native executable; the runtime is linked in, so
-  the result needs nothing but libc.
+- `vyc prog.vy` — compile to a native executable; the runtime is linked
+  in, so the result needs nothing but libc.
 - `vyc run prog.vy` — tree-walking interpreter for a fast edit/run loop.
 - `vyc init <dir>` — scaffold a project (`hello`, `http`, `cli`
   templates) with a `main.vy`, `Makefile`, `README.md` and `.gitignore`.

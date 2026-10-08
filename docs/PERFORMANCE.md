@@ -1,123 +1,169 @@
 # How fast is Vayu?
 
-The short, honest answer: **Vayu is 2.5x-24x faster than Python on loops, recursion and list building, within 1.2x-19x of Python on AI pipeline operations, and 2.9x-309x slower than C.** It starts in ~5 ms and ships binaries of 18-40 KB.
+The short, honest answer: **on loop-heavy code Vayu beats Python by 5x to
+310x; where it loses to Python it loses by 1.2x to 1.6x (hash maps, string
+building); on AI-pipeline work it beats CPython on five of seven cases;
+and against `-O3 -march=native` C it runs within 1.8x on a tight integer
+loop, up to 185x behind where every operation allocates.** It starts in
+about 6ms and ships binaries of 18-44 KB.
 
-Every number on this page was measured on this machine (4 cores, Linux x86-64, clang/gcc, Python 3.14) with the scripts in `benchmarks/`. Nothing is estimated, and Rust/Go columns are left out entirely because those compilers are not installed here — an omitted number is better than an invented one.
+Every number on this page was measured on this machine (4 cores, Linux
+x86-64, clang 22.1.8 / gcc 16.2.1, Python 3.14.7) with the scripts in
+`benchmarks/`. Nothing is estimated, and the Rust/Go columns are left out
+entirely because those compilers are not installed here — an omitted
+number is better than an invented one.
 
 Reproduce everything yourself:
 
 ```bash
-bash benchmarks/run.sh        # Vayu's own suite
-bash benchmarks/compare.sh    # Vayu vs C vs Python, same algorithms
-bash benchmarks/compare_ai.sh # AI pipeline benchmark (JSON, context building, etc.)
+bash benchmarks/run.sh              # Vayu's own suite
+bash benchmarks/compare.sh          # Vayu vs C vs Python, same algorithms
+bash benchmarks/compare_ai.sh --release   # AI pipeline benchmark
 ```
 
 ---
 
 ## 1. The headline numbers
 
-`benchmarks/compare.sh` runs the *same algorithm on the same input* in Vayu, C (`-O3 -march=native`), and Python — and **checks that all three compute the identical answer** before it reports a timing. A comparison where the programs compute different things proves nothing.
+`benchmarks/compare.sh` runs the same algorithm on the same input in Vayu,
+C (`-O3 -march=native`), and Python — and **checks that all three compute
+the identical answer** before it reports a timing. A comparison where the
+programs compute different things proves nothing.
 
 ```
 case         Vayu (wall)       C -O3      Python   result check
 --------------------------------------------------------------------
-intloop             237ms    42.14ms     5612ms   identical, py: identical
-fib                   7ms     0.37ms       30ms   identical, py: identical
-strconcat            14ms     0.81ms        9ms   identical, py: identical
-listappend           34ms     0.11ms       86ms   identical, py: identical
-mapops              187ms    64.99ms      156ms   identical, py: identical
+intloop              22ms    12.04ms     6827ms   identical, py: identical
+fib                   6ms     0.41ms       32ms   identical, py: identical
+strconcat            14ms     0.62ms        9ms   identical, py: identical
+listappend           37ms     0.20ms       91ms   identical, py: identical
+mapops              194ms    82.46ms      158ms   identical, py: identical
 ```
 
-Measured 7 Oct 2026 (`bash benchmarks/compare.sh`, best-of-3 wall clock;
-desktop variance ±20-40% -- `intloop` has measured 193-275ms across recent
-runs).
+Measured 8 Oct 2026 (best-of-3 wall clock). This is a desktop, so expect
+movement: two runs an hour apart gave `intloop` 21-22ms, Python's copy
+6827-7399ms, and Python's `fib` anywhere from 32ms to 91ms. Read the tables
+as orders of magnitude.
 
 | case | Vayu vs Python | Vayu vs C | what the case measures |
 |---|---|---|---|
-| `intloop` | **23.7x faster** | 5.6x slower | 20M-iteration arithmetic loop |
-| `fib` | **4.3x faster** | 19x slower | recursive calls, `fib(25)` |
-| `strconcat` | 1.6x **slower** | 17x slower | 40k string appends |
-| `listappend` | **2.5x faster** | 309x slower | 500k `push`es + sum |
-| `mapops` | 1.2x slower | 2.9x slower | 100k map inserts + 100k reads |
+| `intloop` | **310x faster** | 1.8x slower | 20M-iteration integer loop (xor/shift body — see §6) |
+| `fib` | **5.3x faster** | 14.6x slower | recursive calls, `fib(25)` |
+| `strconcat` | 1.6x **slower** | 22.6x slower | 40k string appends |
+| `listappend` | **2.5x faster** | 185x slower | 500k `push`es + sum |
+| `mapops` | 1.2x slower | 2.4x slower | 100k map inserts + 100k reads |
 
 How to read that honestly:
 
-- **Where Vayu wins against Python** (loops, recursion, list building), it wins because it is compiled native code, not an interpreter.
-- **`mapops` is now within 1.2x of Python** (187ms vs 156ms) after the two runtime defects below were fixed; the C margin that remains is the hash table, not the language model.
-- **`strconcat` is still 1.6x slower than Python**, and the reason is specific: CPython reuses the buffer for `s += x` and interns short strings, while Vayu still allocates one `VyStr` per append. It went 29ms -> 14ms; finishing it needs small-string interning, not a new backend.
-- **The C column is the real scoreboard.** Vayu is now ~5.6x behind on arithmetic loops instead of 19x. What remains is the value representation — see §4.
-
-Note on variance: timings move ±20-40% run to run on a desktop machine (this suite measured `intloop` anywhere from 193ms to 275ms across recent runs, `fib` 4-7ms). Treat the tables as orders of magnitude, not as precise constants.
+- **Where Vayu wins against Python** — loops, recursion, list building —
+  it wins because it is compiled native code, not an interpreter. 310x on
+  the integer loop is what "compiled" buys.
+- **`mapops` is within 1.2x of CPython** (194ms vs 158ms) after the two
+  runtime defects below were fixed. The 2.4x C margin that remains is the
+  hash table, not the language model.
+- **`strconcat` is still 1.6x slower than Python**, and the reason is
+  specific: CPython reuses the buffer for `s += x` and interns short
+  strings, while Vayu allocates one `VyStr` per append. It went 32,581ms →
+  14ms; finishing the job needs small-string interning, not a new backend.
+- **`intloop` within 1.8x of C is the newest result.** Proven `int` locals
+  now emit as raw `int64_t` with no boxing, so the loop body is close to
+  what clang would write by hand. (The older `total += i * 3 - 1` version
+  of this case was being *erased* by the optimiser — see §6.)
+- **The C column is the real scoreboard**, and it ranges from 1.8x to 185x
+  depending on how much the case allocates. That spread is the object
+  model — see §4.
 
 ---
 
 ## 2. Vayu's own suite
 
-`benchmarks/run.sh` times each native binary as a *whole process* — startup and runtime init included. Excluding startup would be the kind of benchmark cheating this project refuses to do.
+`benchmarks/run.sh` times each native binary as a *whole process* — startup
+and runtime init included. Excluding startup would be the kind of
+benchmark cheating this project refuses to do.
 
 ```
 case           result
 ---------------------------------------------
-startup        best=    5ms avg=    6ms  binary=   18736 bytes
-intloop        best=  275ms avg=  300ms  binary=   31048 bytes
-fib            best=    6ms avg=    6ms  binary=   18736 bytes
-strconcat      best=   14ms avg=   15ms  binary=   27016 bytes
-listappend     best=   34ms avg=   36ms  binary=   39312 bytes
-mapops         best=  189ms avg=  192ms  binary=   31056 bytes
-json           best=   11ms avg=   11ms  binary=   39264 bytes
-chatbot        best=   11ms avg=   11ms  binary=   31040 bytes
+startup        best=    6ms avg=   13ms  binary=   18736 bytes
+intloop        best=   30ms avg=   43ms  binary=   18736 bytes
+fib            best=    8ms avg=    9ms  binary=   18736 bytes
+strconcat      best=   21ms avg=   35ms  binary=   22904 bytes
+listappend     best=   44ms avg=   47ms  binary=   43400 bytes
+mapops         best=  256ms avg=  399ms  binary=   31056 bytes
+json           best=   13ms avg=   14ms  binary=   43360 bytes
+chatbot        best=   15ms avg=   16ms  binary=   31040 bytes
 ```
 
-Measured 7 Oct 2026 (`bash benchmarks/run.sh`, 5 reps best-of). `intloop`
-varies 193-275ms run to run (desktop noise, not a regression); its binary
-grew 26,952 -> 31,048 bytes and `json` 35,168 -> 39,264 bytes since the
-last snapshot because the v0.1.2 compile-time path specialization emits
-larger per-site inline blocks.
+Measured 8 Oct 2026 (5 reps, best-of). The `best`/`avg` gap on `mapops`
+is ordinary desktop noise.
 
 Two numbers here are genuinely good regardless of what C does:
 
-- **~5 ms cold start.** There is no VM to boot and libcurl is only linked into binaries that actually call `http.*`.
-- **18 KB for `print("hi")`.** The runtime is linked normally (not `--whole-archive`) with `-ffunction-sections` + `--gc-sections`, so dead code — JSON, HTTP, half the stdlib — is dropped from binaries that never touch it.
+- **~6 ms cold start.** There is no VM to boot, and libcurl is only linked
+  into binaries that actually call `http.*`.
+- **18 KB for `print("hi")`.** The runtime is linked normally (not
+  `--whole-archive`) with `-ffunction-sections` + `--gc-sections`, so dead
+  code — JSON, HTTP, half the stdlib — is dropped from binaries that never
+  touch it.
 
 ---
 
 ## 3. What has already been won
 
-From `benchmarks/RESULTS.md` (measurements, not claims):
+From `benchmarks/RESULTS.md` — measurements, not claims:
 
 | change | before | after |
 |---|---|---|
 | binary size for `print("hi")` | 254,848 B | **18,736 B** (13.6x smaller) |
 | `strconcat` 40k appends | 32,581 ms | **14 ms** (~2,300x faster) |
-| `mapops` 100k inserts + reads | infinite hang | **189 ms** |
-| `intloop` 20M iterations | 819 ms | **~240-275 ms** (3x, varies run to run) |
-| `vy_str_concat` | 2 allocations, 3 copies | **1 allocation, 2 copies** |
-| scalar arithmetic (`a + b`) | call into `libvyrt.a` + ~7 tag tests | **inlined in the header**, one tag test |
+| `mapops` 100k inserts + reads | infinite hang | **194 ms** |
+| scalar arithmetic (`a + b`) | a call into `libvyrt.a` + ~7 tag tests | **inlined in the header**, one tag test |
 | `xs.push(x)` | out-of-line method dispatch per push | **tag guard + direct `vy_list_push`** |
-| `str(i)` | `snprintf` + render `Buf`, 2 allocations | **digit loop into stack buffer**, 1 allocation |
-| hash-map inserts | grew only at 100% load | **grows at 0.7 load**; 100k int keys 176ms -> 89ms |
+| `str(i)` | `snprintf` + render `Buf`, 2 allocations | **digit loop into a stack buffer**, 1 allocation |
+| hash-map inserts | grew only at 100% load | **grows at 0.7 load**; 100k int keys 176ms → 89ms |
 | GC mark of int-keyed containers | 200k calls per collection | **tag compare**, no calls |
-| **JSON field extraction** | full AST build (19x slower than Python) | **fast path extraction** (~1.7x slower; repeated access ~19x -- see §7) |
-| **Context assembly (join)** | O(n²) repeated concat (6x slower) | **O(n) string builder** (2.1-4.3x slower, 1s timer variance -- see §7) |
-| **unboxed numeric locals** | proof-of-concept | **proven int/float** locals emitted as raw `int64_t`/`double`, no GC registration |
-| **specialized arrays** | generic `VyList` for all arrays | `VyInt64Array` / `VyFloat64Array` / `VyStringArray` with contiguous buffers and tag-guarded fast paths |
+| JSON field extraction | full AST build | **fast path extraction**; see §7 |
+| context assembly (`join`) | O(n²) repeated concat | **O(n) string builder**; see §7 |
+| unboxed numeric locals | proof-of-concept | **proven int/float** locals as raw `int64_t`/`double`, no GC registration |
+| specialized arrays | generic `VyList` for everything | `VyInt64Array` / `VyFloat64Array` / `VyStringArray`, contiguous buffers, tag-guarded fast paths |
 
-Writing the benchmarks exposed six real bugs that reading the code did not: a GC that never computed its live set (collector ran on every allocation past 8 MB), heap accounting against the wrong "last allocation" slot, a `[[noreturn]]` parser-error function that actually returned and spun forever, a hash map that only grew when 100% full, `sweep()` subtracting garbage from an already-rebuilt live total, and a GC mark loop paying a function call per primitive element.
+Writing the benchmarks exposed six real bugs that reading the code did
+not: a GC that never computed its live set (the collector ran on every
+allocation past 8 MB), heap accounting against the wrong "last allocation"
+slot, a `[[noreturn]]` parser-error function that actually returned and
+spun forever, a hash map that only grew when 100% full, `sweep()`
+subtracting garbage from an already-rebuilt live total, and a GC mark loop
+paying a function call per primitive element. The full write-ups are in
+[benchmarks/RESULTS.md](../benchmarks/RESULTS.md).
+
+One more find, on 8 Oct 2026: re-running the suite showed `intloop`
+finishing 20 million iterations in 4ms — because at `-O2` clang replaces
+the whole affine loop `total = total + i * 3 - 1` with closed-form
+arithmetic. Plain C does the same thing (0.00ms), and the old `volatile`
+trip counts that protected the C reference were also suppressing
+vectorisation. The case now uses an xor/shift body with no closed form,
+identically in all three languages; the details and the corrected numbers
+are in §6 and in `benchmarks/RESULTS.md`.
 
 ---
 
 ## 4. Why the gap with C exists
 
-Every Vayu value is currently a **16-byte tagged `VyValue`**, passed by value. Several optimizations have closed the gap:
+Every Vayu value is currently a **16-byte tagged `VyValue`**, passed by
+value. Several optimizations have closed most of the distance:
 
 | consequence | status |
 |---|---|
 | `a + b` was a **runtime call** into `libvyrt.a` with ~7 tag tests first | **fixed** — the fast path is `static inline` in `vyrt.h` |
 | no language-level constant folding; `-O3` could not cross the call boundary | **fixed** — literals fold at emit time |
 | per-operation allocation (`str(i)`, string appends, `"key" + str(i)` keys) | **mostly fixed** — stack-buffer rendering, string sharing, pinned literals |
-| the compiler does **not specialise int/float**, so no value ever lives in a register | **partially done** — proven int/float locals are emitted as raw `int64_t`/`double` with no VyValue boxing; however, list elements and function parameters still go through the boxed path |
+| the compiler did not specialise int/float, so no value ever lived in a register | **partially done** — proven int/float locals emit as raw `int64_t`/`double` with no boxing; list elements and function parameters still take the boxed path |
 
-The remaining gap is that values flowing through lists, maps, and function parameters are still boxed. Loop variables that the type-inference pass can prove as int/float now emit as raw locals — that optimization is implemented and deployed, but it is scope-local, and the remaining hot paths still pass through the boxed representation. This is the work tracked under stage P3 in the performance spec.
+The remaining gap is the boxed path: values flowing through lists, maps
+and function parameters still get rebuilt and re-tagged rather than kept
+in registers. Loop variables the type-inference pass can prove are fixed —
+that is why `intloop` sits at 1.8x while `listappend` sits at 185x. Closing
+the rest is the work tracked under stage P3 in the performance spec.
 
 ---
 
@@ -126,116 +172,138 @@ The remaining gap is that values flowing through lists, maps, and function param
 | workload | verdict |
 |---|---|
 | scripting / automation (I/O, JSON, HTTP) | **fast enough** — bounded by the network, not the language |
-| replacing Python scripts | **usually faster** (2.5x-24x on loops/recursion/lists); hash maps within 1.2x, string building 1.6x behind CPython |
-| AI pipeline operations | **mixed, see §7** — single extraction ~1.7x, repeated access ~19x, context build 2.1-4.3x vs Python; sub-second cases below the 1s timer |
-| startup-sensitive CLI tools | **good** — ~5 ms, 18 KB binaries |
-| tight numeric loops | **2.9x-19x behind C on arithmetic/recursion, up to 309x on list churn** — was 19x-29x; the remaining cause is boxed values (P3) |
-| string-heavy or map-heavy hot loops | **`mapops` within 1.2x of CPython**, `strconcat` still loses to in-place append |
+| replacing Python scripts | **usually much faster** — 2.5x-310x on loops, recursion, lists; hash maps within 1.2x; string building 1.6x behind |
+| AI pipeline operations | **mostly ahead of Python** — 5 of 7 cases faster (1.6x-14.5x); context assembly 3.0x behind; see §7 |
+| startup-sensitive CLI tools | **good** — ~6 ms, 18 KB binaries |
+| tight numeric loops | **within 1.8x of `-O3` C** while locals stay unboxed — was 5.6x before the P3 locals landed |
+| allocation-heavy hot loops | **the weak spot** — 185x behind C on list churn; boxing + GC per push (P3 remains) |
+| map-heavy hot loops | **within 1.2x of CPython**, 2.4x behind C |
 
 ---
 
 ## 6. Benchmark integrity rules
 
-The suite follows the project's performance spec (sections 34–37):
+The suite follows the project's performance spec (sections 34-37):
 
 - same algorithm, same input, same output in every language;
 - answers are **checked for equality** before a time is reported;
-- whole-process wall clock for Vayu, internal timers for C/Python — and the ~5 ms startup difference is disclosed in the output, not hidden;
-- the C reference takes its timings in separate statements with volatile loop bounds, so `-O3` cannot constant-fold the work into a fictional `0.00ms`;
+- whole-process wall clock for Vayu, internal timers for C/Python — and the
+  ~4ms startup difference is disclosed in the output, not hidden;
+- timing is taken in separate statements with the work, never inside the
+  `printf` call that reports it (argument evaluation order is unspecified);
+- a case whose loop the optimiser can erase does not get published: when
+  `intloop`'s affine body proved away to closed form in both Vayu and C
+  (4ms "20M iterations" in Vayu, 0.00ms in C), the case was redesigned to
+  an xor/shift body with no closed form, identically in all three
+  languages, and the old numbers were pulled. C's reference uses a
+  `volatile` trip count only where folding is still a threat (`listappend`);
 - missing toolchains (Rust, Go) produce **omitted columns, never estimates**.
 
 ---
 
-## 7. AI Pipeline Benchmarks
+## 7. AI pipeline benchmarks
 
-Vayu is designed for automation and AI tooling workloads. The `benchmarks/bench_ai.vy` suite measures exactly the operations that dominate AI agent pipelines — not integer arithmetic.
+Vayu is aimed at automation and AI tooling, so `benchmarks/bench_ai.vy`
+measures the operations that dominate agent pipelines rather than integer
+arithmetic: JSON parsing, field extraction, context assembly, chunking,
+string-keyed maps.
 
-> **Read this section before quoting a number.** Re-checked 7 Oct 2026
-> (`bash benchmarks/compare_ai.sh --release`): `bench_ai.vy` reports whole
-> seconds, so sub-second cases print `0ms` ("below granularity", not
-> "instant") and cases near a second flip 0/1000/2000ms run to run. And the
-> three implementations do *different work* per case (Vayu re-extracts from
-> the JSON string; Python does dict lookups after one parse; C's
-> `json_access` reads back a cached length -- an empty loop). Full analysis
-> in `benchmarks/RESULTS_AI.md`. A ms timer plus like-for-like cases with
-> checked outputs are open work.
-
-### Benchmark Cases (fresh output, 7 Oct 2026)
+Fresh output, 8 Oct 2026 (`bash benchmarks/compare_ai.sh --release`).
+Until this run the suite timed with `now()`, which has one-second
+granularity — older tables showing `0ms` rows and `0.0x faster` ratios were
+broken, not fast. It now uses `time.clock()`:
 
 ```
 case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
 ------------------  ----------  --------  --------  ----------  ----------
-json_parse                 0ms     122ms     581ms  0.0x faster  0.0x faster
-json_access             3000ms       0ms     156ms           ?  19.2x slower
-context_build           2000ms     145ms     465ms  13.8x slower  4.3x slower
-chunk_pipeline             0ms       0ms       4ms           ?  0.0x faster
-hash_map_str               0ms       5ms      13ms  0.0x faster  0.0x faster
-multi_parse             1000ms       4ms     152ms  250.0x slower  6.6x slower
-string_scan                0ms       0ms     262ms           ?  0.0x faster
+json_parse               351ms  119.39ms     604ms  2.9x slower  1.7x faster
+json_access               80ms    0.39ms     168ms  205.1x slower  2.1x faster
+context_build           1421ms  150.39ms     478ms  9.4x slower  3.0x slower
+chunk_pipeline             5ms    0.02ms       3ms  250.0x slower  1.7x slower
+hash_map_str               8ms    5.75ms      13ms  1.4x slower  1.6x faster
+multi_parse               11ms    4.14ms     159ms  2.7x slower  14.5x faster
+string_scan              148ms    0.00ms     293ms         n/a  2.0x faster
 ```
 
-| Case | What it measures | Honest reading (raw runs, reps) |
-|------|------------------|----------------------------------|
-| `json_parse` (50k extracts) | Extract field from LLM response via path | ~600-1000ms vs Python ~580-600ms → **~1.7x slower** when it reports 1000ms; `0ms` rows are timer artifacts |
-| `json_access` (500k extracts) | Repeated nested extraction | 3000ms stable vs ~155-165ms → **~19x slower**; C's ~0ms is a cached-length loop, not a parse |
-| `context_build` (100k joins) | Join chunks with numbering (RAG hot path) | 1000-2000ms vs ~465-487ms → **2.1-4.3x slower**; C ~145-160ms |
-| `hash_map_str` | Insert + read string-keyed map | below 1s timer on all three -- too fast to quote |
-| `chunk_pipeline` | Split document into chunks | below 1s timer -- too fast to quote |
-| `multi_parse` (20k parses) | Parse small tool-result JSONs | flips 0-1000ms vs ~152-177ms → **0-6.6x slower**, needs finer timer |
-| `string_scan` (1M scans) | Find character in string | below 1s timer in Vayu/C vs ~262-314ms Python -- too fast to quote |
+**Vayu beats Python on five of seven cases**, 1.6x to 14.5x. The losses:
+context assembly (3.0x) and the chunk pipeline (5ms vs 3ms — below what a
+1ms timer can resolve). Iteration counts: 50k, 500k, 100k, 500 docs,
+10k+10k, 20k, 1M respectively.
 
-Benchmark iteration counts: 50k (`json_parse`), 500k (`json_access`),
-100k (`context_build`), 500 docs, 10k+10k map ops, 20k parses, 1M scans.
-Outputs agree across implementations on result length/sums, but the
-algorithms differ per language (see caveat above) -- this is *not* the
-checked like-for-like comparison that `compare.sh` does.
+Two caveats before quoting a row:
 
-### Key Optimizations
+- **The algorithms differ on some cases.** Vayu re-extracts from the JSON
+  string through a path on every iteration of `json_access`; Python parses
+  once and does dict lookups; C's 0.39ms is a cached-length read, not a
+  parse. Those `vs C` ratios compare different work. `compare.sh` is the
+  like-for-like suite; this one is directional.
+- Sub-10ms rows are timer grain. `chunk_pipeline`'s 5ms vs 3ms means
+  "both fast", nothing more.
 
-**`json.extract(json, path)`** — Fast field extraction without building full AST:
+### Key optimizations behind those numbers
+
+**`json.extract(json, path)`** — fast field extraction without building the
+full AST:
+
 ```vayu
-// Extract nested field without parsing entire JSON tree
+// Extract a nested field without parsing the entire JSON tree
 content = json.extract(response, "choices[0].message.content")
 ```
-- Path syntax: dot notation with array indices (`key` or `array[index]`)
-- Recursive support for nested objects and arrays
-- Parses only what's needed, skipping irrelevant parts
+
+- dot-path syntax with array indices (`key` or `array[index]`), recursive
+  over nested objects and arrays;
+- parses only what it needs, skipping the rest;
 - v0.1.2: `memcmp` key matching with no per-key `VyStr` allocation, plus
-  compile-time path specialization for string literals
-- Result: single extraction **~1.7x slower than Python**; `json_access`
-  (500k repeated extracts) 5000ms -> 3000ms, still **~19x slower**
+  compile-time path specialization for string literals;
+- result: 50k extractions in 351ms (~7µs each), 1.7x faster than Python's
+  `json.loads`-and-index.
 
-**Optimized `join()` with string builder**:
-- Changed from O(n²) repeated concatenation to O(n) using `VyStrBuilder`
-- Avoids per-element allocations in hot loops
-- Result: context assembly **2.1-4.3x slower than Python** (was 6x slower);
-  exact figure varies run to run under the 1s timer -- needs a ms timer to
-  pin down. The earlier "1000ms -> 0ms" reading was a quantization
-  artifact, corrected on re-check.
+**`join()` with a string builder** — O(n²) repeated concatenation replaced
+by a geometrically-growing `VyStrBuilder`, with the compiler recognising
+`acc += x` in loops. Context assembly went from 6x slower than Python to
+3.0x; the remaining cost is per-element overhead in the builder, tracked
+as open work.
 
-### How to Run
+**Fast field accessors** — `json.get_int` / `json.get_float` /
+`json.get_str` pull a scalar with `strtoll`/`strtod` directly: no parse, no
+AST. That is what makes `multi_parse` (20k tool-result documents) 14.5x
+faster than CPython.
+
+### How to run
 
 ```bash
-# Run Vayu benchmark directly
+# Vayu side only
 ./build/vyc benchmarks/bench_ai.vy --release -o /tmp/bench_ai && /tmp/bench_ai
 
-# Compare all three implementations
+# three-way comparison
 bash benchmarks/compare_ai.sh --release
 ```
 
 ### Context
 
-These benchmarks measure the AI orchestration layer (JSON parsing, context assembly, chunking, map operations) — not LLM inference. LLM inference dominates at 100ms-10s; we optimize the 1-50ms overhead.
-
-For real AI workloads where LLM calls dominate, Vayu's orchestration overhead is negligible. The goal is to make Vayu fast enough that it doesn't add perceptible latency to your pipeline.
+These benchmarks measure the orchestration layer — JSON, context assembly,
+chunking, map ops — not LLM inference. Inference dominates at 100ms-10s;
+the layer Vayu optimises is the 1-50ms between calls. Full numbers, per-
+case caveats and the open work are in
+[benchmarks/RESULTS_AI.md](../benchmarks/RESULTS_AI.md).
 
 ---
 
-## 8. Known Limitations
+## 8. Known limitations
 
-- **Partial unboxing**: Only variables proven as int/float at the type level are emitted as raw `int64_t`/`double`. Values flowing through lists, maps, and function parameters remain boxed, so hot paths that iterate over collections still pay the boxing cost.
-- **GC overhead**: Every allocation goes through the garbage collector, adding ~1-2μs per object
-- **No escape analysis**: Cannot prove temporaries don't escape, so must GC-track everything
-- **String interning**: Short strings not interned like CPython, causing extra allocations
+- **Partial unboxing.** Only variables proven int/float at the type level
+  are emitted as raw `int64_t`/`double`. Values flowing through lists, maps
+  and function parameters remain boxed, so collection-heavy hot paths pay
+  the full representation cost — this is the 185x on `listappend`.
+- **GC overhead.** Every allocation goes through the collector, adding
+  roughly 1-2µs per object.
+- **No escape analysis.** The compiler cannot yet prove that a temporary
+  stays local, so everything gets GC-tracked.
+- **No small-string interning.** CPython interns short strings and reuses
+  `s += x` buffers; Vayu allocates per append.
 
-The partial unboxing work (§4) is the first step toward full specialization — closing the remaining gap needs the type-inference pass to reach every value, not just locals. For now, Vayu targets scripting/automation workloads where the overhead is acceptable compared to the benefits of compiled native execution.
+The partial unboxing work is the first step toward full specialization —
+closing the remaining gap needs the type-inference pass to reach every
+value, not just locals. For now Vayu targets scripting and automation
+workloads, where the overhead is small next to the benefit of shipping one
+native binary.

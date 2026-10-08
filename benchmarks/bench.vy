@@ -14,10 +14,12 @@
 print("=== Vayu benchmarks ===")
 
 // --- integer arithmetic --------------------------------------------------
+// xor/shift body: a plain `total + n * 3 - 1` sum has a closed form, and at
+// -O2 the whole loop proves away. See benchmarks/cases/intloop.vy.
 total = 0
 n = 0
 while n < 20000000 {
-    total = total + n * 3 - 1
+    total = total + (n ^ (n >> 3)) - 1
     n = n + 1
 }
 print("int-loop  total=", total)

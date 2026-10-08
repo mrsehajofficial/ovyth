@@ -30,14 +30,14 @@ print("")
 sample_completion = "{\"id\":\"chatcmpl-abc123\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Arena allocators free all request-scoped memory in O(1) by releasing an entire block, eliminating per-object malloc/free overhead. This is critical for agent workloads where each request creates hundreds of temporary strings, JSON objects, and embedding inputs.\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":52,\"total_tokens\":94}}"
 
 N_JSON = 50000
-t0 = now()
+t0 = time.clock()
 i = 0
 last = ""
 while i < N_JSON {
     last = json.extract(sample_completion, "choices[0].message.content")
     i = i + 1
 }
-t_json_parse = (now() - t0) * 1000.0
+t_json_parse = (time.clock() - t0) * 1000.0
 print("json_parse\t" + str(round(t_json_parse)) + "ms\t" + str(N_JSON) + " extractions\tresult_len=" + str(len(last)))
 
 // ----------------------------------------------------------------- 2. JSON access (field navigation)
@@ -45,14 +45,14 @@ print("json_parse\t" + str(round(t_json_parse)) + "ms\t" + str(N_JSON) + " extra
 // Parse once, then access the already-parsed value many times (matching C benchmark)
 doc = json.parse(sample_completion)
 N_ACCESS = 500000
-t0 = now()
+t0 = time.clock()
 i = 0
 content = ""
 while i < N_ACCESS {
     content = doc["choices"][0]["message"]["content"]
     i = i + 1
 }
-t_json_access = (now() - t0) * 1000.0
+t_json_access = (time.clock() - t0) * 1000.0
 print("json_access\t" + str(round(t_json_access)) + "ms\t" + str(N_ACCESS) + " extractions")
 
 // ----------------------------------------------------------------- 3. Context assembly (RAG hot path)
@@ -70,7 +70,7 @@ chunks = [
 ]
 
 N_CTX = 100000
-t0 = now()
+t0 = time.clock()
 i = 0
 ctx = ""
 while i < N_CTX {
@@ -83,7 +83,7 @@ while i < N_CTX {
     ctx = join("\n", parts)
     i = i + 1
 }
-t_context = (now() - t0) * 1000.0
+t_context = (time.clock() - t0) * 1000.0
 print("context_build\t" + str(round(t_context)) + "ms\t" + str(N_CTX) + " assemblies\tctx_len=" + str(len(ctx)))
 
 // ----------------------------------------------------------------- 4. Document chunking pipeline
@@ -111,7 +111,7 @@ function chunk_text(text, size) {
 doc_template = "This document discusses arena allocators and their role in high-performance AI agent systems where memory allocation overhead is critical for latency sensitive workloads processing thousands of requests per second with minimal garbage collection pauses"
 
 N_DOCS = 500
-t0 = now()
+t0 = time.clock()
 total_chunks = 0
 i = 0
 while i < N_DOCS {
@@ -119,14 +119,14 @@ while i < N_DOCS {
     total_chunks = total_chunks + len(chunks_out)
     i = i + 1
 }
-t_chunk = (now() - t0) * 1000.0
+t_chunk = (time.clock() - t0) * 1000.0
 print("chunk_pipeline\t" + str(round(t_chunk)) + "ms\t" + str(N_DOCS) + " docs\ttotal_chunks=" + str(total_chunks))
 
 // ----------------------------------------------------------------- 5. String-keyed map (agent state)
 
 // Agent state is often a map of string -> value (tool results, variables)
 N_MAP = 10000
-t0 = now()
+t0 = time.clock()
 i = 0
 state = {}
 while i < N_MAP {
@@ -141,7 +141,7 @@ while i < N_MAP {
     sum_v = sum_v + v
     i = i + 1
 }
-t_map = (now() - t0) * 1000.0
+t_map = (time.clock() - t0) * 1000.0
 print("hash_map_str\t" + str(round(t_map)) + "ms\t" + str(N_MAP) + " inserts+" + str(N_MAP) + " reads\tsum=" + str(sum_v))
 
 // ----------------------------------------------------------------- 6. Multi JSON parse (tool results)
@@ -150,14 +150,14 @@ print("hash_map_str\t" + str(round(t_map)) + "ms\t" + str(N_MAP) + " inserts+" +
 tool_result = "{\"status\":\"ok\",\"data\":{\"query\":\"arena allocator\",\"results\":[{\"title\":\"Arena Allocator Design\",\"score\":0.92},{\"title\":\"Memory Management\",\"score\":0.87}],\"total\":2}}"
 
 N_TOOL = 20000
-t0 = now()
+t0 = time.clock()
 i = 0
 total_score = 0.0
 while i < N_TOOL {
     total_score = total_score + json.get_float(tool_result, "score")
     i = i + 1
 }
-t_tool = (now() - t0) * 1000.0
+t_tool = (time.clock() - t0) * 1000.0
 print("multi_parse\t" + str(round(t_tool)) + "ms\t" + str(N_TOOL) + " tool_jsons")
 
 // ----------------------------------------------------------------- 7. String scanning (simulates JSON tokenizer inner loop)
@@ -166,7 +166,7 @@ print("multi_parse\t" + str(round(t_tool)) + "ms\t" + str(N_TOOL) + " tool_jsons
 haystack = "The quick brown fox jumps over the lazy dog. Arena allocators free all request-scoped memory in O(1). SIMD scanning finds structural characters at 16 bytes per cycle."
 needle = "\""
 N_SCAN = 1000000
-t0 = now()
+t0 = time.clock()
 i = 0
 found = 0
 while i < N_SCAN {
@@ -174,7 +174,7 @@ while i < N_SCAN {
     if pos >= 0 { found = found + 1 }
     i = i + 1
 }
-t_scan = (now() - t0) * 1000.0
+t_scan = (time.clock() - t0) * 1000.0
 print("string_scan\t" + str(round(t_scan)) + "ms\t" + str(N_SCAN) + " scans")
 
 // ----------------------------------------------------------------- summary

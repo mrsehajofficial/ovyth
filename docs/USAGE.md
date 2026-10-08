@@ -1,26 +1,27 @@
 # Vayu usage guide
 
-Everything a beginner needs to install, write, and run their first Vayu
-program.
+Everything you need to install, write, and run Vayu programs. Read it
+front-to-back the first time; after that it works as a reference.
 
 ---
 
-## 1. What Vayu is
+## 1. What is Vayu?
 
 A small compiled language for automation and AI tooling.
 
-```vayu
+```vy
 name = "Vayu"
 print("hello from", name)
 ```
 
-You write `.vy` files. The compiler `vyc` turns them into **native machine
-code** — an ordinary ELF executable. No interpreter ships with your program, and
-it doesn't need Python, Node, or a virtual machine at runtime.
+You write `.vy` files. The compiler, `vyc`, turns them into **native
+machine code** — an ordinary ELF executable. Nothing interprets your program
+at the other end: no Python, no Node, no VM. Copy the binary to another
+machine with the same libc and it runs.
 
-There is also an interpreter (`vyc run`) that you can use while developing,
-because it starts instantly and prints errors more readably. The compiled
-binary is what you deploy.
+There is also an interpreter (`vyc run`) for development — it starts
+instantly and prints errors more readably. What you deploy is the compiled
+binary.
 
 ---
 
@@ -40,17 +41,18 @@ make            # builds build/vyc and build/libvyrt.a
 make test       # runs the full test suite
 ```
 
-`make` finishes with no output on success. If it does, the error names the file.
+`make` finishes silently on success. If it fails, the error names the file.
 
 Check it works:
 
 ```bash
 ./build/vyc version
+# vyc 0.1.3 (Vayu)
 ```
 
 ### Putting `vyc` on your PATH
 
-Rather than typing `./build/vyc`, install it into a prefix:
+Rather than typing `./build/vyc` everywhere, install it into a prefix:
 
 ```bash
 ./install.sh                       # -> ~/.local/bin/vyc   (no sudo)
@@ -58,7 +60,7 @@ Rather than typing `./build/vyc`, install it into a prefix:
 make install PREFIX=$HOME/.local   # the same thing via make
 ```
 
-The installer copies three things into the prefix:
+The installer copies three things:
 
 ```
 <prefix>/bin/vyc            the compiler
@@ -66,8 +68,8 @@ The installer copies three things into the prefix:
 <prefix>/include/vyrt.h     the runtime headers vyc passes to clang
 ```
 
-`vyc` locates the last two relative to its own path, so there is nothing to
-configure and the prefix can be moved afterwards.
+`vyc` locates the last two relative to its own path, so there is nothing
+to configure and you can move the prefix afterwards.
 
 ### Starting a project
 
@@ -98,8 +100,8 @@ vyc init scraper -t http          # http   -- call an API, parse the JSON
 vyc init chat --template=cli      # cli    -- an interactive input() loop
 ```
 
-`vyc init` will not write into a directory that already has files in it; it
-reports the conflict instead of overwriting.
+`vyc init` won't write into a directory that already has files; it reports
+the conflict instead of overwriting.
 
 ---
 
@@ -107,10 +109,9 @@ reports the conflict instead of overwriting.
 
 Create `hello.vy`:
 
-```vayu
-name = "Sehaj"
-age = 18
-print(name, age)
+```vy
+name = "Vayu"
+print(name)
 ```
 
 Run it:
@@ -121,8 +122,8 @@ Run it:
 ./hello                       # run the native binary
 ```
 
-The second command produces a real executable. Copy it to another machine with
-the same libc and it still runs — nothing else is needed.
+The second command produces a real executable. Copy it to another machine
+with the same libc and it still runs — nothing else is needed.
 
 ---
 
@@ -130,7 +131,7 @@ the same libc and it still runs — nothing else is needed.
 
 ### Values
 
-```vayu
+```vy
 count   = 42          # Int
 ratio   = 0.75        # Float
 enabled = true        # Bool
@@ -140,26 +141,26 @@ items   = [1, 2, 3]   # List
 config  = {"port": 8080, "host": "localhost"}   # Map
 ```
 
-Variables need no type annotation — the compiler infers it. You can annotate
-when you want to:
+Variables need no type annotation — the compiler infers it. You can
+annotate when you want to:
 
-```vayu
+```vy
 count: Int = 42
 ```
 
 ### Printing
 
-```vayu
+```vy
 print("a", 1, true)     # a 1 true     (space separated, newline at end)
 print(42)               # 42
 print([1, 2, 3])        # [1, 2, 3]
 print({"a": 1})         # {"a": 1}
-eprint("to stderr", 42) # same rendering, on stderr -- stdout stays clean
+eprint("to stderr", 42) # same rendering, on stderr — stdout stays clean
 ```
 
 ### Strings
 
-```vayu
+```vy
 greeting = "hello " + "world"
 upper    = "vayu".upper()
 shout    = "abc".repeat(3)        # abcabcabc
@@ -171,7 +172,7 @@ dotted   = "ab".pad(5, 46)        # "...ab"  (46 is the fill code point)
 
 ### Interpolation
 
-```vayu
+```vy
 name = "Vayu"
 n = 42
 print("hi {name}, n={n}, math={1 + 2 * 3}")   # hi Vayu, n=42, math=7
@@ -182,7 +183,7 @@ inline: `print("{\"a\":1}")` prints `{"a":1}`.
 
 ### Control flow
 
-```vayu
+```vy
 if n > 100 {
     print("big")
 } else if n > 10 {
@@ -213,29 +214,29 @@ for key in some_map {        # maps iterate by key
 
 ### Functions
 
-```vayu
+```vy
 function add(a, b) {
     return a + b
 }
 print(add(2, 3))            # 5
 
-// named arguments, in any order
+# named arguments, in any order
 print(add(b: 20, a: 10))    # 30
 
-// recursion works
+# recursion works
 function fact(k) {
     if k <= 1 { return 1 }
     return k * fact(k - 1)
 }
 
-// closures
+# closures
 double = function(x) { return x * 2 }
 print(double(21))           # 42
 ```
 
 ### Lists and maps
 
-```vayu
+```vy
 xs = [1, 2, 3]
 xs.push(4)                  # [1, 2, 3, 4]
 print(xs[0], xs.length())   # 1 4
@@ -249,23 +250,26 @@ print(m["a"], m.has("b"), m.count())
 print(m.keys(), m.values())
 ```
 
-For better performance, lists containing only integers, floats, or strings are
-compiled to specialized array types (`Int64Array`, `Float64Array`, `StringArray`)
-with contiguous element buffers. This is transparent: they print and iterate
-like ordinary lists, and all list operations work the same. The compiler chooses
-the specialized type automatically based on the inferred element type.
+**Specialized arrays.** When a list literal contains only values of one
+proven type (`[1, 2, 3]`, `[1.0, 2.0]`), the compiler emits a specialized
+array — `Int64Array`, `Float64Array` or `StringArray` — with a contiguous
+element buffer. This is transparent: they print and iterate like ordinary
+lists and every list operation works the same. The compiler picks the
+type from the inferred element type.
 
 ### Multiple assignment
 
-```vayu
+```vy
 a, b = 1, 2
 x, y, z = [10, 20, 30]      # unpacks a list
 print(a + b, x + y + z)     # 3 60
 ```
 
+Works with specialized arrays too.
+
 ### Errors
 
-```vayu
+```vy
 try {
     print(1 / 0)
 } catch e {
@@ -285,8 +289,9 @@ assert(1 < 2, "must be ordered")
 
 ## 5. Real example: the chatbot
 
-`examples/chatbot/chatbot.vy` is a complete program — it reads a line, POSTs it
-to an LLM chat endpoint, prints the reply, and loops until you type `exit`.
+`examples/chatbot/chatbot.vy` is a complete program — it reads a line,
+POSTs it to an LLM chat endpoint, prints the reply, and loops until you
+type `exit`.
 
 ```bash
 # terminal 1 — a fake OpenAI-compatible server, no API key needed
@@ -305,7 +310,8 @@ Vayu chatbot -- type 'exit' to quit
 > you said: 'hello'
 ```
 
-Point `AI_API_URL` at any OpenAI-compatible endpoint and it works unchanged.
+Point `AI_API_URL` at any OpenAI-compatible endpoint and it works
+unchanged.
 
 ---
 
@@ -317,9 +323,9 @@ Point `AI_API_URL` at any OpenAI-compatible endpoint and it works unchanged.
 | `vyc run prog.vy` | run with the interpreter (instant, good while coding) |
 | `vyc prog.vy` | compile to `./prog`, a native executable |
 | `vyc prog.vy -o path` | choose the output path |
-| `vyc prog.vy --release` | optimised: `-O3`, LTO, symbols stripped |
+| `vyc prog.vy --release` | optimized: `-O3`, LTO, symbols stripped |
 | `vyc prog.vy --release --target=native` | also tune for this CPU |
-| `vyc prog.vy -O0` … `-O3` | optimisation level (default 2) |
+| `vyc prog.vy -O0` … `-O3` | optimization level (default 2) |
 | `vyc prog.vy --keep-ir` | keep the generated C for inspection |
 | `vyc check prog.vy` | parse and type-check, produce no binary |
 | `vyc fmt prog.vy` | print canonically formatted source |
@@ -351,7 +357,8 @@ Errors name the file, line, and column:
 prog.vy:4:9: error: unknown name 'nmae'
 ```
 
-`vyc ast` and `vyc tokens` are the tools for "why did it parse that way".
+When a parse surprises you, `vyc ast` and `vyc tokens` answer the question
+"why did it see that?".
 
 ---
 
@@ -364,7 +371,7 @@ prog.vy:4:9: error: unknown name 'nmae'
 | arithmetic | `+` `-` `*` `/` `%` `**` |
 | comparison | `==` `!=` `<` `<=` `>` `>=` |
 | logic | `and` `or` `not` |
-| bitwise | `&` `\|` `^` `<<` `>>` |
+| bitwise | `&` `|` `^` `<<` `>>` |
 | membership | `x in list` |
 | assignment | `=` `+=` `-=` `*=` `/=` `%=` |
 
@@ -375,32 +382,32 @@ prog.vy:4:9: error: unknown name 'nmae'
 | output | `print` `eprint` `input` |
 | environment | `env` `env_or` `setenv` |
 | conversion | `len` `str` `int` `float` `bool` `type` `range` |
-| json | `json.parse` `json.stringify` `json.valid` |
+| json | `json.parse` `json.stringify` `json.valid` `json.extract` `json.get_int` `json.get_float` `json.get_str` |
 | http | `http.get` `http.post` `http.put` `http.delete` |
 | strings | `upper` `lower` `trim` `split` `join` `contains` `replace` `indexof` `repeat` `startswith` `endswith` `pad` `chars` `bytes` |
-| lists | `push` `pop` `insert` `remove` `sort` `reverse` `contains` `indexof` `extend` `length` |
+| lists | `push` `pop` `insert` `remove` `sort` `reverse` `contains` `indexof` `extend` `length` `sum` |
 | maps | `get` `set` `has` `delete` `keys` `values` `items` `count` `merge` |
 | math | `abs` `sqrt` `floor` `ceil` `round` `min` `max` `sum` `pow` |
 | misc | `time.clock` `time.now` `gc` `exit` `throw` `assert` |
 
 A few semantics worth knowing:
 
-```vayu
+```vy
 api_key = env_or("AI_API_KEY", "")   # fallback when unset; env(name) throws instead
 model   = env_or("AI_MODEL", "my-model")
 setenv("LOG_LEVEL", "debug")         # nil
 ```
 
-`time.clock()` is monotonic seconds as a Float (for measuring), `time.now()`
-is epoch seconds as an Int. `gc()` collects; `gc("stats")` returns a
-`"live=... heap=... allocs=..."` string and `gc("reset")` clears the counters.
-`pad(s, n)` / `s.pad(n)` pads on the left to width `n`; an optional third
-argument sets the fill character (`pad(s, n, 46)` fills with `.`) and a fourth
-of `"right"` pads on the right instead.
+`time.clock()` is monotonic seconds as a Float (use it for measuring);
+`time.now()` is epoch seconds as an Int. `gc()` collects, `gc("stats")`
+returns a `"live=... heap=... allocs=..."` string, and `gc("reset")` clears
+the counters. `pad(s, n)` / `s.pad(n)` pads on the left to width `n`; a
+third argument sets the fill code point (`pad(s, n, 46)` fills with `.`)
+and a fourth of `"right"` pads on the right instead.
 
 ### HTTP response shape
 
-```vayu
+```vy
 response = http.post(
     "https://example.com/api",
     headers = {"Authorization": "Bearer " + api_key},
@@ -425,15 +432,16 @@ Transport failures (DNS, TLS, timeout) are raised as catchable errors, so
 Worth knowing before you rely on something:
 
 - **Closures don't capture their enclosing scope.** A closure that reads a
-  variable from the function around it is rejected with an error rather than
-  silently doing the wrong thing.
-- **No files, modules, or imports yet.** Everything is in one file per program.
+  variable from the function around it is rejected with an error rather
+  than silently doing the wrong thing.
+- **No files, modules, or imports yet.** Everything is in one file per
+  program.
 - **No async or concurrency.**
 - **Partial unboxing.** Variables proven as int/float emit as raw
-  `int64_t`/`double` — but values flowing through lists, maps, and function
-  parameters remain boxed. Tight numeric loops over locals are fast; loops that
-  touch collections still pay the boxing cost. Measured numbers and what will
-  close the rest of the gap: [PERFORMANCE.md](PERFORMANCE.md). Raw output:
+  `int64_t`/`double` — but values flowing through lists, maps and function
+  parameters remain boxed. Tight numeric loops over locals are fast; loops
+  that touch collections still pay the boxing cost. Measured numbers and
+  what will close the gap: [PERFORMANCE.md](PERFORMANCE.md). Raw output:
   `benchmarks/RESULTS.md`.
 
 ---
@@ -463,4 +471,5 @@ make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 bash benchmarks/run.sh                 # benchmark suite
 bash benchmarks/compare.sh             # Vayu vs C vs Python
+bash benchmarks/compare_ai.sh --release # AI pipeline vs C vs Python
 ```

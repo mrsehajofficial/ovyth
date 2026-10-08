@@ -322,6 +322,9 @@ VyValue vy_h_len(VyValue v, int* threw) {
     case VY_STRING: return vy_int(v.str->len);
     case VY_LIST:   return vy_int(v.list->len);
     case VY_MAP:    return vy_int(v.map->len);
+    case VY_I64A:   return vy_int(v.i64a->len);
+    case VY_F64A:   return vy_int(v.f64a->len);
+    case VY_STRA:   return vy_int(v.stra->len);
     default: {
       char tmp[128];
       snprintf(tmp, sizeof(tmp), "len() needs a String, List or Map, got %s",

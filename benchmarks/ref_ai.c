@@ -244,25 +244,25 @@ int main(void) {
   volatile int N_SCAN   = 1000000;
 
   t = now_ms(); bench_json_parse(N_JSON);   dt = now_ms() - t;
-  printf("json_parse\t%.0fms\t%d parses\n", dt, N_JSON);
+  printf("json_parse\t%.2fms\t%d parses\n", dt, N_JSON);
 
   t = now_ms(); bench_json_access(N_ACCESS); dt = now_ms() - t;
-  printf("json_access\t%.0fms\t%d accesses\n", dt, N_ACCESS);
+  printf("json_access\t%.2fms\t%d accesses\n", dt, N_ACCESS);
 
   t = now_ms(); bench_context_build(N_CTX);  dt = now_ms() - t;
-  printf("context_build\t%.0fms\t%d assemblies\n", dt, N_CTX);
+  printf("context_build\t%.2fms\t%d assemblies\n", dt, N_CTX);
 
   t = now_ms(); bench_chunk_pipeline(N_DOCS, &a); dt = now_ms() - t;
-  printf("chunk_pipeline\t%.0fms\t%d docs\n", dt, N_DOCS);
+  printf("chunk_pipeline\t%.2fms\t%d docs\n", dt, N_DOCS);
 
   t = now_ms(); bench_hashmap(N_MAP);       dt = now_ms() - t;
-  printf("hash_map_str\t%.0fms\t%d inserts+reads\tsum=%lld\n", dt, N_MAP*2, g_sink_i);
+  printf("hash_map_str\t%.2fms\t%d inserts+reads\tsum=%lld\n", dt, N_MAP*2, g_sink_i);
 
   t = now_ms(); bench_multi_parse(N_TOOL);  dt = now_ms() - t;
-  printf("multi_parse\t%.0fms\t%d tool_jsons\n", dt, N_TOOL);
+  printf("multi_parse\t%.2fms\t%d tool_jsons\n", dt, N_TOOL);
 
   t = now_ms(); bench_string_scan(N_SCAN);  dt = now_ms() - t;
-  printf("string_scan\t%.0fms\t%d scans\n", dt, N_SCAN);
+  printf("string_scan\t%.2fms\t%d scans\n", dt, N_SCAN);
 
   arena_free(&a);
   return 0;

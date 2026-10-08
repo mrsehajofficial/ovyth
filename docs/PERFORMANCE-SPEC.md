@@ -1,10 +1,17 @@
-Vayu Maximum Performance Engineering Specification
+# Vayu maximum performance engineering specification
 
-1. Primary Goal
+This is the document the project measures itself against. It says what
+performance means for Vayu, what principles the compiler and runtime must
+follow to get there, and — in section 44 — what to actually do first,
+with the measured results of each stage as it landed. Sections 1–43 are
+the principles; section 44 is the scorecard.
 
-Vayu must be designed as a high-performance native compiled language.
+---
 
-The priority order is:
+## 1. Primary goal
+
+Vayu must be designed as a high-performance native compiled language. The
+priority order is fixed:
 
 1. Correctness
 2. Predictable performance
@@ -13,1260 +20,746 @@ The priority order is:
 5. Fast compilation where practical
 6. Developer ergonomics
 
-Vayu must not sacrifice runtime performance merely to imitate Python's internal behavior.
-
-The goal is NOT to claim that Vayu will be faster than every existing language.
-
-The goal is to remove unnecessary overhead wherever technically possible and allow the compiler to generate highly optimized native machine code.
-
----
-
-2. Keep the Existing C++ Compiler
-
-The compiler may remain implemented in C++.
-
-Do NOT rewrite the compiler simply because it is written in C++.
-
-C++ is the implementation language.
-
-Vayu is the target language.
-
-The existing architecture should remain:
-
-Vayu source
-    ↓
-Lexer
-    ↓
-Parser
-    ↓
-AST
-    ↓
-Semantic analysis
-    ↓
-Vayu IR
-    ↓
-Optimizer
-    ↓
-LLVM IR
-    ↓
-Native machine code
-
-Only replace components when there is a demonstrated technical reason.
+Two things the goal is *not*. It is not to imitate Python's internal
+behaviour at the cost of runtime speed, and it is not to claim that Vayu
+will beat every existing language. The goal is simpler and more testable:
+remove unnecessary overhead wherever technically possible, and let the
+compiler generate highly optimized native machine code. When we cannot
+demonstrate the result with a measurement, we do not claim it (see
+section 40).
 
 ---
 
-3. Native Code Must Be the Normal Execution Path
+## 2. Keep the existing C++ compiler
 
-Production Vayu programs should execute as native machine code.
+The compiler may stay implemented in C++. There is no reason to rewrite
+it merely because the implementation language is C++, and C++ is only the
+implementation language — Vayu is the target language.
 
-Target:
-
-program.vy
-     ↓
-Vayu compiler
-     ↓
-optimized LLVM IR
-     ↓
-native machine code
-     ↓
-executable
-
-The interpreter may exist for:
-
-- debugging
-- development
-- REPL
-- testing
-- rapid prototyping
-
-But production execution must not silently fall back to the interpreter.
+The architecture stays as it is: source goes through lexer, parser, AST,
+semantic analysis, an IR, an optimizer, and then to native code. Replace a
+component only when there is a demonstrated technical reason, not a
+theoretical one.
 
 ---
 
-4. Avoid a Heavy Runtime
+## 3. Native code must be the normal execution path
 
-The runtime must be as small as reasonably possible.
+Production Vayu programs execute as native machine code: program.vy →
+compiler → optimized IR → machine code → executable.
 
-Do not require a large runtime merely to execute:
-
-x = 10
-print(x)
-
-The compiler should eliminate unused runtime components during linking where possible.
-
-Prefer:
-
-small program
- ↓
-small executable
- ↓
-small runtime footprint
-
-rather than:
-
-small program
- ↓
-large mandatory runtime
+The interpreter exists for debugging, development, a REPL, tests and rapid
+prototyping. What it must never do is silently become the way production
+programs run. If a program is supposed to be compiled, it is compiled.
 
 ---
 
-5. Avoid Python's Object Model
+## 4. Avoid a heavy runtime
 
-Do NOT represent every value as a heavyweight generic object.
+The runtime must be as small as reasonably possible. A program that just
+does `x = 10` and `print(x)` should not require a large mandatory runtime
+to execute. Where the linker can prove a runtime component is unused —
+JSON, HTTP, half the stdlib — it should be dropped from the binary.
 
-Avoid a mandatory representation such as:
+The shape we want is: small program, small executable, small runtime
+footprint. The shape we refuse is: small program, large mandatory runtime.
 
+---
+
+## 5. Avoid Python's object model
+
+Do not represent every value as a heavyweight generic object. Wrapping
+every primitive in
+
+```
 Object
  ├── type information
  ├── reference information
  ├── metadata
  └── payload
+```
+is exactly the cost Vayu exists not to pay. Prefer native representations:
+an int is a native integer, a float a native floating-point value, a bool
+a native boolean, a byte a native byte.
 
-for every primitive value.
-
-Prefer native representations:
-
-int    → native integer
-float  → native floating point
-bool   → native boolean
-byte   → native byte
-
-A simple integer operation should compile to something close to the corresponding machine instruction.
-
-Example:
-
-a = 10
-b = 20
-c = a + b
-
-should have no unnecessary runtime dispatch.
+So `a = 10`, `b = 20`, `c = a + b` should compile to something close to
+the corresponding machine instructions, with no unnecessary runtime
+dispatch in between.
 
 ---
 
-6. Static Typing With Inference
+## 6. Static typing with inference
 
-Vayu should provide static typing while keeping syntax simple.
+Vayu provides static typing without annotation noise:
 
-Example:
-
+```vy
 x = 10
 name = "Vayu"
 active = true
+```
 
-The compiler should infer:
-
-x      → integer
-name   → string
-active → boolean
-
-Explicit types should remain available:
-
-x: int = 10
-
-Static information gives the optimizer much more information.
-
-Do not make dynamic typing the default execution model.
+The compiler infers int, string, bool. Explicit types remain available
+(`x: Int = 10`) when the programmer wants to pin one down. Static type
+information is what gives the optimizer its leverage, so dynamic typing is
+never the default execution model.
 
 ---
 
-7. Dynamic Features Must Be Explicit
+## 7. Dynamic features must be explicit
 
-If Vayu eventually supports dynamic values, they should not infect the entire program.
-
-Avoid:
-
-everything → dynamic Value
-
-Prefer:
-
-normal code → statically typed
-dynamic code → explicitly dynamic
-
-This allows the compiler to optimize normal code aggressively.
+If Vayu eventually supports genuinely dynamic values, they must be opt-in.
+The normal path stays statically typed; anything dynamic is written
+dynamically. Avoid `everything → dynamic Value` as a representation — it
+hands the optimizer nothing to work with. Normal code should be statically
+typed so it can be optimized aggressively, and dynamic code should say so
+at the source.
 
 ---
 
-8. Zero-Cost Abstractions
+## 8. Zero-cost abstractions
 
-A language feature should not impose runtime cost when the compiler can prove that the abstraction has no observable effect.
+A language feature should cost nothing at runtime once the compiler can
+prove the abstraction has no observable effect. A small function like
 
-Example:
-
-fn add(a: int, b: int) -> int {
+```vy
+function add(a, b) {
     return a + b
 }
+```
 
-The compiler should be able to inline this when beneficial.
-
-Do not automatically turn every function call into:
-
-runtime lookup
- → dynamic dispatch
- → generic invocation
-
-when the target is statically known.
+should be inlined when inlining is beneficial. What must not happen is
+that a statically-known call gets lowered into a runtime lookup → dynamic
+dispatch → generic invocation chain. When the target is known, the call is
+a call (or nothing at all).
 
 ---
 
-9. Minimize Heap Allocation
+## 9. Minimize heap allocation
 
-Heap allocation is expensive compared with simple stack/register operations.
+Heap allocation is expensive next to stack and register operations, so
+nothing gets allocated on the heap by default. The preference order is:
+register, then stack, then heap only when necessary.
 
-Do not allocate everything on the heap.
-
-Prefer:
-
-register
- ↓
-stack
- ↓
-heap only when necessary
-
-The compiler should eventually perform:
-
-- escape analysis
-- allocation elimination
-- scalar replacement
-- stack allocation
-- lifetime analysis
-
-where practical.
+Over time the compiler should grow escape analysis, allocation elimination,
+scalar replacement, stack allocation and lifetime analysis where practical.
 
 ---
 
-10. Make Stack Allocation the Natural Choice
+## 10. Make stack allocation the natural choice
 
-Local values that do not escape their scope should be eligible for stack allocation.
+Local values that do not escape their scope should be eligible for stack
+allocation. A function like
 
-Example:
-
-fn calculate() {
+```vy
+function calculate() {
     x = 10
     y = 20
     return x + y
 }
+```
 
-There should be no unnecessary heap allocation.
-
-Ideally the generated code becomes essentially:
-
-register operations
-return
+should involve no heap allocation at all — ideally the generated code is a
+few register operations and a return. The heap is for values that outlive
+the frame, not for everything that happens to exist for a moment.
 
 ---
 
-11. Minimize Memory Copies
+## 11. Minimize memory copies
 
-Avoid unnecessary:
-
-copy
- → modify
- → copy
- → return
-
-operations.
-
-Prefer references/views/slices where safe.
-
-Provide efficient representations for:
-
-string
-bytes
-arrays
-buffers
-slices
-
-For example:
-
-buffer
-  ↓
-slice/view
-
-should not automatically copy the underlying memory.
+Avoid the pattern copy → modify → copy → return. Prefer references, views
+and slices wherever that is safe, and give strings, byte buffers, arrays
+and slices representations that can share underlying memory. Taking a view
+of a buffer must not copy the buffer.
 
 ---
 
-12. Design Strings Carefully
+## 12. Design strings carefully
 
-Strings will be one of the most frequently used data types.
-
-Do not implement naive concatenation such that:
-
-a + b + c + d
-
-creates many temporary allocations and copies.
-
-The compiler/runtime should be capable of optimizing concatenation.
-
-Possible strategies include:
-
-- capacity-aware buffers
-- efficient builders
-- compiler optimization
-- move semantics
-- slices
-- copy elision
-
-The final design should be determined by benchmarks.
+Strings will be one of the most frequently used types, so their design
+decides a lot of real-world performance. Naive concatenation — where
+`a + b + c + d` creates a temporary allocation and copy per step — is not
+acceptable as the final design. The compiler and runtime must be able to
+optimize concatenation, through some combination of capacity-aware
+buffers, proper builders, compiler recognition of append patterns, move
+semantics, slices and copy elision. Which strategies win is decided by
+benchmarks, not by taste (the `strconcat` case in `benchmarks/` exists for
+exactly this purpose).
 
 ---
 
-13. Move Semantics and Ownership
+## 13. Move semantics and ownership
 
-Investigate an ownership/move system rather than automatically copying large values.
+Passing a large value must not implicitly mean "allocate, copy the whole
+buffer, pass the copy". Investigate an ownership/move model so the language
+can say clearly what happens to `data` when it is handed to `process(data)`:
+who owns it, whether it is borrowed or moved, what mutability applies.
 
-Example:
-
-data = create_large_buffer()
-process(data)
-
-Passing "data" should not automatically mean:
-
-allocate
-copy entire buffer
-pass copy
-
-The language should have a clear model for:
-
-- ownership
-- borrowing
-- moving
-- immutable references
-- mutable references
-
-However:
-
-«Do not copy Rust's entire ownership system blindly.»
-
-Design only what Vayu actually needs.
+The warning that comes with this section: do not copy Rust's entire
+ownership system blindly. Design only what Vayu actually needs — and note
+that this section stays parked until the runtime model in sections 14–15
+is resolved against what the runtime really is (see section 44, P4).
 
 ---
 
-14. Avoid Reference Counting Everywhere
+## 14. Avoid reference counting everywhere
 
-Do not automatically put a reference counter on every value.
-
-Reference counting can introduce:
-
-increment
-decrement
-atomic operations
-cache traffic
-
-into otherwise simple operations.
-
-Use ownership/lifetime analysis where possible.
-
-Use reference counting only where shared ownership genuinely requires it.
+Do not put a reference counter on every value by default. Refcounting
+injects increments, decrements, atomic operations and cache traffic into
+otherwise simple operations. Use ownership and lifetime analysis where
+possible, and reserve reference counting for the places where shared
+ownership genuinely requires it.
 
 ---
 
-15. Garbage Collection Should Not Be Mandatory
+## 15. Garbage collection should not be mandatory
 
-Do not introduce a garbage collector merely because it makes implementation easier.
+A garbage collector must not be introduced merely because it makes the
+implementation easier. It costs memory overhead, pauses, CPU overhead and
+unpredictable latency. Investigate the alternatives first: stack
+allocation, ownership, borrowing, explicit allocation, and targeted
+reference counting. If a GC turns out to be useful for specific dynamic
+features, keep it optional or isolated where it can be paid for only by
+the programs that use those features.
 
-A GC can introduce:
-
-- memory overhead
-- pauses
-- CPU overhead
-- unpredictable latency
-
-Investigate alternatives first.
-
-Possible model:
-
-stack allocation
-+
-ownership
-+
-borrowing
-+
-explicit allocation
-+
-targeted reference counting
-
-If a garbage collector is eventually useful for specific dynamic features, keep it optional or isolated where possible.
+(Honesty note: today the runtime *is* a mark-sweep collector plus
+refcounted strings. Section 44 P4 commits to making the document match
+that reality — adopt the model, then optimise it — rather than pretending
+sections 13–15 are already satisfied.)
 
 ---
 
-16. Make Memory Layout Predictable
+## 16. Make memory layout predictable
 
-Data structures should have predictable layouts.
+Data structures should have predictable layouts with minimal pointer
+indirection. Contiguous memory beats pointer-chasing wherever it fits:
 
-Avoid unnecessary pointer indirection.
-
-Prefer contiguous memory where appropriate:
-
-array
+```
 [ item ][ item ][ item ][ item ]
+```
 
-rather than:
-
-pointer → item
-pointer → item
-pointer → item
-
-Contiguous memory improves cache locality.
+not `pointer → item` three times over. Prefer the first shape.
 
 ---
 
-17. Cache Locality Matters
+## 17. Cache locality matters
 
-Algorithmic complexity is not enough.
-
-A theoretically efficient algorithm can still be slow because of cache misses.
-
-Compiler and standard-library implementations should consider:
-
-- cache locality
-- contiguous memory
-- data layout
-- branch prediction
-- memory bandwidth
-- pointer chasing
-
-Hot data should be stored efficiently.
+Algorithmic complexity is not enough. A theoretically efficient algorithm
+is still slow if it misses cache every iteration, so compiler and
+stdlib work has to consider cache locality, contiguous memory, data
+layout, branch prediction, memory bandwidth and pointer chasing. Hot data
+gets stored efficiently, not merely computed efficiently.
 
 ---
 
-18. Bounds Checking Should Be Optimizable
+## 18. Bounds checking should be optimizable
 
-Safe arrays should normally have bounds checks.
+Safe arrays keep their bounds checks — but a check the compiler can prove
+redundant should be removable. In a loop like
 
-But if the compiler can prove that an index is valid, it should be able to eliminate redundant checks.
-
-Example:
-
+```
 for i in 0..array.length {
     process(array[i])
 }
+```
 
-The optimizer should eventually recognize that the index is within bounds.
-
-Safety must not automatically mean unnecessary checks on every operation.
-
----
-
-19. Compiler Optimization Pipeline
-
-The compiler should have a serious optimization pipeline.
-
-Potential stages:
-
-AST
- ↓
-Semantic analysis
- ↓
-Vayu IR
- ↓
-Constant folding
- ↓
-Constant propagation
- ↓
-Dead code elimination
- ↓
-Inlining
- ↓
-Devirtualization
- ↓
-Escape analysis
- ↓
-Allocation elimination
- ↓
-Loop optimization
- ↓
-Vectorization
- ↓
-LLVM
- ↓
-Machine optimization
-
-Not every optimization must be implemented manually.
-
-Use LLVM where it already provides excellent optimization.
+the index is provably within bounds on every iteration, and the optimizer
+should eventually learn to see that. Safety must not automatically mean
+paying for the same check twice.
 
 ---
 
-20. LLVM Should Be Used Properly
+## 19. The compiler optimization pipeline
 
-LLVM should be treated as the native optimization/backend infrastructure, not merely as a way to emit basic machine code.
+The compiler should have a serious optimization pipeline behind the AST:
+constant folding and propagation, dead-code elimination, inlining,
+devirtualization, escape analysis, allocation elimination, loop
+optimization and vectorization, before LLVM takes over for machine-level
+optimization.
 
-Use appropriate optimization levels for release builds.
-
-Support something equivalent to:
-
-vyc build --release program.vy
-
-Release compilation can enable:
-
-aggressive optimization
-inlining
-dead-code elimination
-vectorization
-LTO
-target-specific optimization
-
-where appropriate.
+Not every stage has to be implemented by hand. Where LLVM already provides
+an excellent optimization, use it — but only after the emitted code gives
+LLVM something it can actually work with (functions that call out of line
+to do `a + b` cannot be optimized across the boundary; see section 44 P0).
 
 ---
 
-21. Target the Actual CPU
+## 20. LLVM should be used properly
 
-Vayu should eventually allow target-specific optimization.
-
-For example:
-
-vyc build --release --target=native program.vy
-
-This allows the compiler/backend to use CPU features available on the target machine.
-
-Potentially:
-
-SSE
-AVX
-AVX2
-AVX-512
-AES
-BMI
-FMA
-
-where supported.
-
-Do not enable instructions that make the binary incompatible with the declared target.
+LLVM is the native optimization and backend infrastructure, not merely a
+way to emit basic machine code. Release builds use aggressive optimization
+levels — inlining, dead-code elimination, vectorization, LTO,
+target-specific optimization — where appropriate, exposed as something
+equivalent to `vyc build --release program.vy`.
 
 ---
 
-22. SIMD and Vectorization
+## 21. Target the actual CPU
 
-CPU-heavy operations should be capable of vectorization.
-
-LLVM can perform automatic vectorization.
-
-Do not manually write SIMD code everywhere.
-
-Use:
-
-high-level Vayu
- ↓
-optimized IR
- ↓
-LLVM vectorization
- ↓
-SIMD machine code
-
-Manual SIMD/intrinsics should only be introduced for proven hotspots.
+Vayu should allow target-specific optimization — `vyc build --release
+--target=native program.vy` — so the backend can use the CPU features of
+the machine it is compiling on: SSE/AVX/AVX2/AVX-512, AES, BMI, FMA where
+supported. The constraint is symmetric: never emit instructions that make
+the binary incompatible with its declared target.
 
 ---
 
-23. Function Calls Should Be Cheap
+## 22. SIMD and vectorization
 
-Avoid unnecessary runtime dispatch.
-
-When the compiler knows:
-
-add(1, 2)
-
-it should generate a direct call or inline it.
-
-Do not use:
-
-function name
- ↓
-hash lookup
- ↓
-runtime object
- ↓
-dynamic call
-
-unless dynamic behavior is explicitly required.
+CPU-heavy operations should be vectorizable, and LLVM can do that
+automatic vectorization well. The preferred path is high-level Vayu →
+optimized IR → LLVM vectorization → SIMD machine code. Manual SIMD and
+intrinsics are introduced only for proven hotspots, never as the default
+way to write a loop.
 
 ---
 
-24. Generics Should Be Compile-Time Friendly
+## 23. Function calls should be cheap
 
-If generics are eventually added, avoid automatically forcing all generic operations through dynamic dispatch.
-
-Where practical:
-
-generic function
- ↓
-specialization
- ↓
-optimized native implementation
-
-This can produce code specialized for the actual types.
-
-Do not implement generics until the core language needs them.
+When the compiler knows what `add(1, 2)` refers to, it emits a direct call
+or inlines it. Turning a known call into a hash lookup of the function
+name → a runtime object → a dynamic invocation is forbidden unless the
+program explicitly asked for dynamic behaviour.
 
 ---
 
-25. Async Must Have Low Overhead
+## 24. Generics should be compile-time friendly
 
-Eventually Vayu should support asynchronous programming.
-
-Do not design async around heavyweight objects and expensive task creation.
-
-Aim for:
-
-cheap task
-cheap suspension
-cheap wake-up
-efficient scheduler
-
-But do not implement async before the synchronous native execution path is stable.
+If generics are eventually added, they must not force every generic
+operation through dynamic dispatch. Where practical, a generic function is
+specialized at compile time for the actual types, producing optimized
+native code per instantiation. Equally important: do not implement
+generics until the core language actually needs them.
 
 ---
 
-26. Concurrency Should Not Penalize Single-Threaded Programs
+## 25. Async must have low overhead
 
-A program that never uses concurrency should not pay significant concurrency-runtime overhead.
-
-Avoid:
-
-every program
- ↓
-thread pool
- ↓
-scheduler
- ↓
-synchronization infrastructure
-
-when unnecessary.
-
-Runtime components should be initialized only when needed where practical.
+Eventually Vayu should support asynchronous programming, and it must not
+be designed around heavyweight task objects or expensive task creation.
+The targets are cheap tasks, cheap suspension, cheap wake-up and an
+efficient scheduler. It must not be built before the synchronous native
+execution path is stable.
 
 ---
 
-27. Avoid Hidden Work
+## 26. Concurrency must not penalize single-threaded programs
 
-Vayu should make expensive operations visible.
-
-Avoid language constructs that silently perform:
-
-heap allocation
-copying
-locking
-reflection
-network access
-dynamic dispatch
-
-unless their semantics require them.
-
-The programmer should be able to reason about the cost of code.
+A program that never uses concurrency should not pay for one. No
+thread pool, no scheduler, no synchronization infrastructure initialised
+for programs that will never touch it; runtime components come up only
+when they are needed, where practical.
 
 ---
 
-28. Compile-Time Computation
+## 27. Avoid hidden work
 
-Where safe and useful, allow the compiler to evaluate constant expressions.
-
-Example:
-
-x = 100 * 20 + 50
-
-should not necessarily require runtime arithmetic.
-
-Compile:
-
-x = 2050
-
-The same principle can eventually apply to more sophisticated compile-time computations.
+Language constructs must not silently do heap allocation, copying, locking,
+reflection, network access or dynamic dispatch when their semantics don't
+require it. The programmer should be able to reason about the cost of the
+code they are reading. Expensive operations stay visible.
 
 ---
 
-29. Dead Code Must Disappear
+## 28. Compile-time computation
 
-Unused functions and unused runtime components should not unnecessarily remain in the final binary.
-
-Use:
-
-dead-code elimination
-linker garbage collection
-LTO
-
-where appropriate.
+Where safe and useful, let the compiler evaluate constant expressions:
+`x = 100 * 20 + 50` can become `x = 2050` at compile time rather than
+paying for the arithmetic at runtime. The same principle can eventually
+extend to more sophisticated compile-time computation.
 
 ---
 
-30. Runtime Initialization Must Be Minimal
+## 29. Dead code must disappear
 
-Do not make startup expensive.
-
-A program such as:
-
-print("Hello")
-
-should not initialize:
-
-HTTP subsystem
-database subsystem
-AI subsystem
-async scheduler
-
-unless needed.
-
-Initialize only what is required.
+Unused functions and unused runtime components must not survive into the
+final binary when dead-code elimination, linker garbage collection and LTO
+can remove them. (This is section 4 in practice: an 18 KB hello-world is
+the acceptance test.)
 
 ---
 
-31. Error Handling Must Be Predictable
+## 30. Runtime initialization must be minimal
 
-Normal expected failures should not require extremely expensive mechanisms.
-
-A result-based model can be considered:
-
-Result<T, Error>
-
-for operations where failure is expected.
-
-Do not use exceptions as the universal control-flow mechanism.
-
-If exceptions are eventually supported, optimize the common non-exception path.
+`print("Hello")` must not initialise the HTTP subsystem, the database
+subsystem, an AI subsystem or an async scheduler. The runtime initialises
+only what the program requires.
 
 ---
 
-32. Standard Library Must Be Native-Performance-Oriented
+## 31. Error handling must be predictable
 
-Do not write a high-level standard library that secretly introduces large overhead on top of native operations.
-
-For important primitives:
-
-strings
-arrays
-maps
-files
-bytes
-math
-I/O
-HTTP
-JSON
-
-the implementation should be benchmarked.
-
-Use optimized system libraries where appropriate rather than reinventing everything.
+Expected, ordinary failures should not travel through an extremely
+expensive mechanism. A result-style model (`Result<T, Error>`) can be
+considered for operations where failure is expected, and exceptions must
+not become the universal control-flow mechanism. If exceptions are
+eventually supported, the non-exception path is the one that gets
+optimized.
 
 ---
 
-33. Do Not Reinvent High-Performance Libraries Without a Reason
+## 32. The standard library must be native-performance-oriented
 
-If a mature native library is significantly faster and reliable, integrate it.
-
-Do not implement your own:
-
-cryptography
-compression
-BLAS
-TLS
-CPU primitives
-
-just to say Vayu implemented them.
-
-The objective is performance, not maximum amount of handwritten code.
+The standard library must not be a friendly high-level layer that quietly
+adds large overhead on top of native operations. The important primitives —
+strings, arrays, maps, files, bytes, math, I/O, HTTP, JSON — are all
+benchmarked. Where a mature system library is faster than anything we
+would write, use it.
 
 ---
 
-34. Benchmark Everything
+## 33. Don't reinvent high-performance libraries without a reason
 
-Create a permanent benchmark suite.
-
-At minimum:
-
-integer arithmetic
-floating-point arithmetic
-function calls
-loops
-arrays
-maps
-strings
-string concatenation
-memory allocation
-memory copying
-file I/O
-JSON
-HTTP
-concurrency
-startup time
-binary size
-
-Record:
-
-latency
-throughput
-memory
-allocations
-CPU usage
-
-Never optimize based solely on intuition.
+If a mature native library is significantly faster and more reliable,
+integrate it. Do not hand-write cryptography, compression, BLAS, TLS or
+cpu primitives just so the project can say Vayu implemented them. The
+objective is performance, not a maximum amount of handwritten code.
 
 ---
 
-35. Compare Against Real Implementations
+## 34. Benchmark everything
 
-Compare Vayu against:
-
-Python
-C
-C++
-Rust
-Go
-
-when appropriate.
-
-Do not compare toy programs.
-
-Use equivalent algorithms and equivalent compiler optimization settings.
-
-For example:
-
-same input
-same algorithm
-same output
-same workload
-
-Then measure.
+Keep a permanent benchmark suite. At minimum it covers integer arithmetic,
+floating-point arithmetic, function calls, loops, arrays, maps, strings,
+string concatenation, memory allocation and copying, file I/O, JSON, HTTP,
+concurrency, startup time and binary size — recording latency,
+throughput, memory, allocation counts and CPU use. Never optimize based
+solely on intuition.
 
 ---
 
-36. Use Profiling Before Optimization
+## 35. Compare against real implementations
 
-Every optimization cycle should be:
-
-Benchmark
-   ↓
-Profile
-   ↓
-Find bottleneck
-   ↓
-Optimize
-   ↓
-Benchmark again
-   ↓
-Keep only if improvement is real
-
-Do not optimize code that isn't actually a bottleneck.
+Compare Vayu against Python, C, C++, Rust and Go when appropriate — using
+equivalent algorithms, equivalent inputs, equivalent outputs and
+equivalent compiler settings. Toy programs and mismatched workloads are
+not comparisons. If a toolchain is not installed, the column is omitted,
+not estimated.
 
 ---
 
-37. Avoid Benchmark Cheating
+## 36. Profile before optimizing
 
-Do not:
-
-- remove work from the benchmark
-- use different algorithms without documenting it
-- exclude initialization selectively
-- ignore memory allocation
-- ignore compilation/runtime startup when it matters
-- compare debug Vayu against optimized C++
-- compare different workloads
-
-Benchmarks must represent real programs.
+Every optimization cycle runs the same loop: benchmark → profile → find
+the bottleneck → optimize → benchmark again → keep it only if the
+improvement is real. Code that is not actually a bottleneck does not get
+optimized.
 
 ---
 
-38. Have Multiple Performance Modes
+## 37. Avoid benchmark cheating
 
-Eventually support:
-
-Debug
-Release
-Release + Native CPU
-Release + LTO
-PGO
-
-Example:
-
-vyc build program.vy
-vyc build --release program.vy
-vyc build --release --target=native program.vy
-
-Later:
-
-vyc profile program.vy
-vyc build --pgo program.vy
+Do not: remove work from a benchmark; use different algorithms without
+documenting it; selectively exclude initialization; ignore memory
+allocation; ignore compilation or runtime startup where it matters;
+compare debug Vayu against optimized C++; or compare different workloads.
+Benchmarks must represent real programs. (The `intloop` story in section
+44 is what this looks like when it is enforced against ourselves.)
 
 ---
 
-39. Don't Sacrifice Correctness for Micro-Optimizations
+## 38. Have multiple performance modes
 
-Never introduce undefined behavior merely to gain a few percent.
-
-Bad:
-
-unsafe memory access everywhere
-
-Good:
-
-safe default
-+
-explicit unsafe escape hatch
-+
-optimized compiler-generated code
-
-Safety and performance are not mutually exclusive.
+Support, eventually: Debug, Release, Release + native CPU, Release + LTO,
+and PGO — as `vyc build program.vy`, `vyc build --release program.vy`,
+`vyc build --release --target=native program.vy`, and later
+`vyc profile` / `vyc build --pgo`.
 
 ---
 
-40. Do Not Optimize for "Looks Fast"
+## 39. Don't sacrifice correctness for micro-optimizations
 
-Avoid decisions such as:
-
-«"C++ is fast, therefore this must be fast."»
-
-or:
-
-«"LLVM is used, therefore Vayu is automatically fast."»
-
-Neither is true.
-
-Actual performance depends on:
-
-language semantics
-+
-type system
-+
-memory model
-+
-data structures
-+
-compiler IR
-+
-optimizer
-+
-runtime
-+
-generated machine code
+Never introduce undefined behaviour to gain a few percent. The shape to
+aim for is: safe by default, an explicit escape hatch where unsafe is
+truly needed, and optimized compiler-generated code doing the heavy
+lifting. Safety and performance are not mutually exclusive.
 
 ---
 
-41. The Ultimate Vayu Performance Pipeline
+## 40. Don't optimize for "looks fast"
 
-The intended final architecture should approach:
-
-                  VAYU SOURCE
-                       │
-                       ▼
-                    Lexer
-                       │
-                       ▼
-                    Parser
-                       │
-                       ▼
-                      AST
-                       │
-                       ▼
-              Semantic Analysis
-                       │
-                       ▼
-                   Vayu IR
-                       │
-             ┌─────────┴─────────┐
-             │                   │
-        Optimization        Analysis
-             │                   │
-             └─────────┬─────────┘
-                       ▼
-                 Optimized IR
-                       │
-                       ▼
-                     LLVM
-                       │
-              ┌────────┴────────┐
-              │                 │
-          CPU target        Generic target
-              │                 │
-              ▼                 ▼
-       Native machine code
-              │
-              ▼
-        Small runtime
-              │
-              ▼
-        Native executable
-
-The final program should contain only what it actually needs.
+"C++ is fast, therefore this must be fast" and "LLVM is used, therefore
+Vayu is automatically fast" are both false. Actual performance comes from
+the whole stack together: language semantics, type system, memory model,
+data structures, compiler IR, optimizer, runtime, and the generated
+machine code. Any decision that cannot be measured goes back on the
+shelf.
 
 ---
 
-42. Performance Philosophy
+## 41. The target pipeline
 
-The fundamental philosophy of Vayu should be:
+The intended final architecture looks like this:
 
-«Do expensive work only when necessary.»
+```
+              VAYU SOURCE
+                   |
+                   v
+        Lexer → Parser → AST → Semantic Analysis
+                   |
+                   v
+                Vayu IR
+              /         \
+     Optimization      Analysis
+              \         /
+                   v
+             Optimized IR
+                   |
+                   v
+                 LLVM  →  native machine code (CPU-specific or generic)
+                   |
+                   v
+            small runtime → native executable
+```
 
-And:
+The final program contains only what it actually needs.
 
-«If the compiler can prove something is unnecessary, remove it.»
-
-And:
-
-«If the compiler cannot prove it, measure it before optimizing it.»
-
-And:
-
-«Do not inherit overhead merely because another language does it that way.»
-
-Vayu should take inspiration from Python's simplicity, but it should not inherit Python's runtime architecture.
-
----
-
-43. Development Priority
-
-Do NOT attempt to implement everything above immediately.
-
-Use this order:
-
-Stage 1 — Correct compiler
-
-lexer
-parser
-AST
-semantic analysis
-IR
-
-Stage 2 — Native execution
-
-LLVM backend
-native executable
-basic optimizer
-
-Stage 3 — Efficient primitives
-
-integers
-floats
-strings
-arrays
-maps
-functions
-memory
-
-Stage 4 — Runtime efficiency
-
-allocation
-ownership
-copy elimination
-runtime minimization
-
-Stage 5 — Compiler optimization
-
-inlining
-constant folding
-DCE
-loop optimization
-vectorization
-LTO
-
-Stage 6 — Concurrency
-
-tasks
-async I/O
-scheduler
-channels
-
-Stage 7 — Higher-level libraries
-
-HTTP
-JSON
-files
-database
-
-Only after these foundations are strong should Vayu begin adding specialized AI/RAG/agent capabilities.
+One correction this document owes the reader (see section 44, P4): today's
+backend emits C and hands it to clang — which *is* LLVM, so sections 19–22
+are partly free already, but only within a single generated function. The
+IR → Optimizer → LLVM IR leg of the diagram above is the target
+architecture, not yet the implemented one; `codegen_llvm.cpp` is a stub.
+Section 44 tracks closing that gap.
 
 ---
 
-44. Execution Order: Where the Milliseconds Actually Are
+## 42. Performance philosophy
 
-Grounded in the code as it exists today (C backend, measured numbers in
-docs/PERFORMANCE.md). Every stage below lands only if `make test` stays
-green and `benchmarks/run.sh` + `benchmarks/compare.sh` are re-run and the
-new numbers recorded. This section exists because stages 1-43 say what to
-believe, not what to do first.
+Four sentences to argue from:
 
-Stage P0 -- make arithmetic inlineable (highest return, no language change)
+- Do expensive work only when necessary.
+- If the compiler can prove something is unnecessary, remove it.
+- If the compiler cannot prove it, measure it before optimizing it.
+- Do not inherit overhead merely because another language does it that way.
 
-  Status: LANDED and measured.
-
-  The hot path for `a + b` used to be:
-    codegen_c.cpp emits vy_add(a, b)          -- a real CALL
-    vy_add lives out-of-line in value.c
-    ~7 tag/branch tests (3x string, list, is_num x2, both_int)
-    before reaching the int+int path
-    libvyrt.a is built WITHOUT -flto (Makefile grep: 0 matches), so even a
-    --release LTO build can never inline across the archive boundary.
-
-  What was done:
-  - vy_add/vy_sub/vy_mul/vy_div/vy_mod, vy_neg/vy_pos/vy_not, the bitwise
-    ops, vy_eq, vy_cmp, vy_truthy and vy_is now have `static inline` fast
-    paths in vyrt.h: both tags VY_INT -> vy_int(a.i <op> b.i); float likewise;
-    otherwise call the corresponding `*_slow` body in value.c, so string
-    coercion, list concat and nil handling are byte-for-byte unchanged.
-  - vy_list_push/vy_list_get got the same treatment (fast path in vyrt.h,
-    `*_slow` fallback in vyrt.c).
-  - -flto on libvyrt.a was deliberately NOT added: vyc links the emitted C
-    with clang while the runtime archive is built by g++, so a bitcode
-    archive would not even be readable in every configuration. With the hot
-    path in the header, LTO has nothing left to buy here; adding it would
-    only introduce a toolchain coupling.
-
-  Measured: intloop 819ms -> 184ms (4.4x, target was <=150ms); fib 10ms ->
-  4ms (target met). Vayu vs Python on intloop went from 8.1x faster to 27x.
-
-Stage P1 -- optimise what the emitter can see (spec 28, 8, 23)
-
-  Status: LANDED (first two items) and measured.
-
-  - emit-time constant folding: fold_const_binop/fold_const_unary in
-    codegen_c.cpp fold int/float literals on Unary and Binary nodes, so
-    `2 * 3 + n` emits `6 + n` instead of three runtime calls.
-  - per-site pinned string literals: a literal now becomes a block-local
-    `static` initialised once through vy_str_lit() and pinned with
-    VY_HDR_PIN, so sweep() keeps it alive and a loop body referencing
-    `"hello world "` stops allocating it 40k times.
-  - emit small user functions as `static inline`: still open. fib is 243k
-    calls; the win is smaller now that the call body is all inline ops.
-  - keeping values in VyValue locals rather than re-materialising temporaries:
-    the emitter already does this for most shapes; no further change.
-
-  Measured: fib 10ms -> 4ms (within 12x of C's 0.34ms, not the <=2x target --
-  remainder is the call itself plus boxed arithmetic, i.e. work P3 owns);
-  startup unchanged at ~3-4ms.
-
-Stage P2 -- kill per-operation allocation (spec 9, 11, 12, 16)
-
-  Status: LANDED (all of it) and measured.
-
-  - render-to-stack buffer for scalars: vy_render() assembled every scalar
-    through a growable Buf (malloc 256 -> render -> copy into a fresh VyStr
-    -> free) even for `str(42)`. Ints and floats are now rendered into a
-    64-byte stack buffer with one allocation, and the int path uses a
-    hand-rolled digit loop instead of snprintf("%lld"), which alone cost
-    ~150ns of format parsing per call. nil/true/false are pinned singletons.
-  - strings are no longer copied by vy_render: every VyStr in the runtime is
-    immutable by construction (an audit of every `bytes[...] =` write shows
-    they all target a freshly allocated block), so render returns the same
-    object. This removed a per-append allocation from strconcat.
-  - per-site pinned string literals (P1) removed the literal side of the
-    same problem.
-  - `xs.push(x)`: the emitter used to call vy_h_value_method, an out-of-line
-    dispatch with a strcmp chain over the method name, once per push. The
-    call site now emits a tag guard -- `if (vy_tagof(base) == VY_LIST)
-    vy_list_push(...)` -- and falls through to the unchanged dispatch for
-    any other base, so error behaviour is identical. Only emitted for
-    arity <= 1, so every argument expression is still evaluated.
-  - str_build geometric growth: superseded. The builder already grows
-    geometrically, and the per-append allocation it was meant to remove is
-    gone via string sharing above.
-
-  Measured: mapops 982ms -> 191ms (5.1x; target was <=300ms). strconcat
-  29ms -> 13ms and it now beats CPython's in-place append (13ms vs 16-27ms
-  measured under load) instead of losing to it. listappend 58ms -> 33-35ms.
-
-Stage P2b -- the runtime bugs a micro-benchmark decomposition found
-
-  Method: instead of guessing why mapops was still slow, three throwaway
-  programs isolated the parts (key construction only; map inserts with int
-  keys and no allocation; a constant-key loop; a bare arithmetic loop). The
-  decomposition said inserts were 600ns each with zero allocations -- so the
-  cost was not allocation at all, and gprof then named the functions.
-
-  1. The hash map only grew when it was 100% full. map_insert_slot returns
-     NULL only when no free slot exists, so every table filled to load
-     factor ~1.0 and, with a well-avalanched hash, the trailing insertions
-     walked four- and five-figure probe chains each. The comment above
-     map_insert_slot already claimed a 0.75 load factor that the code never
-     enforced. vy_map_set now rehashes at 0.7; 100k ordered int keys went
-     from 176ms to 89ms, and the whole mapops case from 5x slower than
-     CPython to roughly parity/faster.
-
-  2. sweep() subtracted freed bytes from live_bytes *after* collect had
-     already zeroed and rebuilt it from the marked survivors, so live_bytes
-     came out too low -- and next_gc is live*2 + 8MB, so the collector ran
-     more often than the growth policy intended. Removed; heap_bytes was and
-     is a running total, so it keeps its subtraction.
-
-  3. mark_loop called mark_value for every list item and map key/value, and
-     mark_value returned immediately for nil/bool/int/float. Marking a
-     100k-entry map of ints cost 200k calls *per collection*. The tag enum
-     orders the container kinds at VY_STRING, so a tag compare now replaces
-     the call. b2_insonly (100k inserts, no lookup) went 63ms -> 51ms and
-     listappend 39ms -> 33ms.
-
-  The general lesson, recorded because it will recur: the first three
-  findings were invisible in the source and obvious in three 6-line
-  programs.
-
-Stage P3 -- unboxed specialisation (spec 5, 6, 7 -- the "next level")
-
-  Status: PARTIALLY LANDED.
-
-  - Sema tracks `is_proven_int`/`is_proven_float` for literal initializations
-  - Codegen emits raw `int64_t`/`double` locals instead of boxed `VyValue` for
-    proven types
-  - GC registration skipped for proven numeric locals
-  - Fast arithmetic paths on raw locals (add/sub/mul/div/mod, comparisons, bitwise)
-  - Specialized array types: `VyInt64Array`, `VyFloat64Array`, `VyStringArray`
-    with contiguous buffers and tag-guarded fast paths
-  - List literals of proven int/float now emit specialized arrays
-
-  What remains: values flowing through lists, maps, and function parameters
-  are still boxed. Full type-inference to reach every value is the larger
-  remaining task.
-
-  Verify + target: intloop within ~3-5x of C; no behavioural change (both
-  backends must agree per tests/interp.sh).
-
-Stage P4 -- make the document match the machine (spec 40)
-
-  - the pipeline diagram in section 41 shows Vayu IR -> Optimizer -> LLVM IR;
-    codegen_llvm.cpp is a 13-line stub and compiler/optimizer/ is empty.
-    Either date that diagram as "target architecture" or remove it until the
-    backend exists. The real backend today is: emitted C -> clang (which IS
-    LLVM, so sections 19-22 are partially free already -- within one
-    function; P0 is what buys back the cross-call part)
-  - resolve sections 14/15 against reality: the runtime IS a mark-sweep GC
-    plus refcounted strings; commit to that model, then optimise it
-    (generational collection, bump allocation) instead of speculating about
-    ownership systems (section 13 stays parked)
-  - add the missing benchmark cases section 34 already demands: float
-    arithmetic, sorting, closure calls -- and make every case report
-    allocation counts, not just time
-  - profiling tooling: `perf record` on a benchmark binary before ANY new
-    optimisation lands (section 36 without a tool is a wish)
+Vayu takes its simplicity from Python's example. It does not take
+Python's runtime architecture.
 
 ---
 
-Final Requirement
+## 43. Development priority
 
-Do not claim that Vayu is "high performance" merely because:
+Do not attempt everything above at once. The order is:
 
-- the compiler is written in C++
-- LLVM is used
-- the language is compiled
-- the binary is native
+1. **Correct compiler** — lexer, parser, AST, semantic analysis, IR.
+2. **Native execution** — backend, native executable, basic optimizer.
+3. **Efficient primitives** — integers, floats, strings, arrays, maps,
+   functions, memory.
+4. **Runtime efficiency** — allocation, ownership, copy elimination,
+   runtime minimisation.
+5. **Compiler optimization** — inlining, constant folding, DCE, loop
+   optimization, vectorization, LTO.
+6. **Concurrency** — tasks, async I/O, scheduler, channels.
+7. **Higher-level libraries** — HTTP, JSON, files, database.
 
-Performance must be demonstrated experimentally.
+Only after those foundations are strong does Vayu start adding specialised
+AI/RAG/agent capabilities.
 
-The project should continuously answer:
+---
 
-How fast is it?
-How much memory does it use?
-How many allocations occur?
-Where is the bottleneck?
-What changed after optimization?
-Did the optimization actually improve real workloads?
+## 44. Execution order: where the milliseconds actually are
 
-The ultimate objective is:
+Grounded in the code as it exists today (the C backend; measured numbers
+in `docs/PERFORMANCE.md` and `benchmarks/RESULTS.md`). Every stage below
+lands only if `make test` stays green and `benchmarks/run.sh` plus
+`benchmarks/compare.sh` are re-run with the new numbers recorded. This
+section exists because sections 1–43 say what to believe; they do not say
+what to do first.
 
-Python-like productivity
-        +
-native compilation
-        +
-low runtime overhead
-        +
-efficient memory model
-        +
-aggressive compiler optimization
-        +
-efficient concurrency
-        =
-high-performance Vayu
+### Stage P0 — make arithmetic inlineable
+
+*Status: LANDED and measured. Highest return, no language change.*
+
+The hot path for `a + b` used to be: `codegen_c.cpp` emits a real call to
+`vy_add`, which lives out-of-line in `value.c` and starts with about seven
+tag/branch tests (three for string, list, `is_num` twice, both-int) before
+reaching the int+int case — and `libvyrt.a` was built without LTO, so even
+a `--release` LTO build could never inline across the archive boundary.
+
+What was done:
+
+- `vy_add/sub/mul/div/mod`, `vy_neg/vy_pos/vy_not`, the bitwise ops,
+  `vy_eq`, `vy_cmp`, `vy_truthy` and `vy_is` all grew `static inline` fast
+  paths in `vyrt.h`: both tags `VY_INT` → `vy_int(a.i <op> b.i)`, floats
+  likewise, otherwise a call to the unchanged `*_slow` body in `value.c`,
+  so string coercion, list concat and nil handling are byte-for-byte the
+  same as before.
+- `vy_list_push`/`vy_list_get` got the same treatment (fast path in the
+  header, `*_slow` fallback in `vyrt.c`).
+- `-flto` on `libvyrt.a` was deliberately *not* added: `vyc` links the
+  emitted C with clang while the runtime archive is built by g++, so a
+  bitcode archive would not be readable in every configuration. With the
+  hot path in the header, LTO had nothing left to buy here anyway.
+
+Measured: `intloop` 819ms → 184ms (4.4x; the target had been ≤150ms),
+`fib` 10ms → 4ms (target met). Vayu vs Python on `intloop` went from 8.1x
+faster to 27x.
+
+### Stage P1 — optimise what the emitter can see
+
+*Status: LANDED (first two items) and measured.*
+
+- **Emit-time constant folding.** `fold_const_binop`/`fold_const_unary` in
+  `codegen_c.cpp` fold int/float literals on Unary and Binary nodes, so
+  `2 * 3 + n` emits `6 + n` instead of three runtime calls.
+- **Per-site pinned string literals.** A literal becomes a block-local
+  `static` initialised once through `vy_str_lit()` and pinned with
+  `VY_HDR_PIN`, so `sweep()` keeps it alive and a loop body that references
+  `"hello world "` stops allocating it 40,000 times.
+- **Emitting small user functions as `static inline`**: still open. `fib`
+  is 243k calls and the win is smaller now that the call body is all
+  inline ops.
+- **Keeping values in `VyValue` locals rather than re-materialising
+  temporaries**: the emitter already does this for most shapes; no further
+  change needed.
+
+Measured: `fib` 10ms → 4ms — within 12x of C's 0.34ms rather than the
+≤2x target; the remainder is the call itself plus boxed arithmetic, which
+is P3's work. Startup unchanged at ~3–4ms.
+
+### Stage P2 — kill per-operation allocation
+
+*Status: LANDED (all of it) and measured.*
+
+- **Render to a stack buffer for scalars.** `vy_render()` used to assemble
+  every scalar through a growable `Buf` (malloc 256 → render → copy into a
+  fresh `VyStr` → free) even for `str(42)`. Ints and floats now render
+  into a 64-byte stack buffer with one allocation, and the int path uses a
+  hand-rolled digit loop instead of `snprintf("%lld")`, which alone cost
+  ~150ns of format parsing per call. `nil`/`true`/`false` are pinned
+  singletons.
+- **`vy_render` no longer copies strings.** Every `VyStr` in the runtime is
+  immutable by construction (an audit of every `bytes[...] =` write showed
+  they all target a freshly allocated block), so render returns the same
+  object. That removed a per-append allocation from `strconcat`.
+- **Pinned string literals (P1)** removed the literal side of the same
+  problem.
+- **`xs.push(x)`.** The emitter used to call `vy_h_value_method`, an
+  out-of-line dispatch with a `strcmp` chain over the method name, once per
+  push. The call site now emits a tag guard —
+  `if (vy_tagof(base) == VY_LIST) vy_list_push(...)` — and falls through to
+  the unchanged dispatch for any other base, so error behaviour is
+  identical. Only emitted for arity ≤ 1, so every argument expression is
+  still evaluated.
+- **`str_build` geometric growth**: superseded. The builder already grew
+  geometrically, and the per-append allocation it targeted is gone via
+  string sharing above.
+
+Measured: `mapops` 982ms → 191ms (5.1x; target was ≤300ms). `strconcat`
+29ms → 13ms, and it went from losing to CPython's in-place append to
+beating it (13ms vs 16–27ms measured under load). `listappend` 58ms →
+33–35ms.
+
+### Stage P2b — the runtime bugs a micro-benchmark decomposition found
+
+*Method first, because it will recur:* instead of guessing why `mapops`
+was still slow, three throwaway programs isolated the parts — key
+construction only; map inserts with int keys and no allocation; a
+constant-key loop; a bare arithmetic loop. The decomposition said inserts
+were 600ns each with zero allocations, so the cost was not allocation at
+all, and `gprof` then named the functions.
+
+1. **The hash map only grew when it was 100% full.** `map_insert_slot`
+   returns NULL only when no free slot exists, so every table filled to
+   load factor ~1.0 and, with a well-avalanched hash, the trailing
+   insertions walked four- and five-figure probe chains each. The comment
+   above the function already claimed a 0.75 load factor the code never
+   enforced. `vy_map_set` now rehashes at 0.7: 100k ordered int keys went
+   from 176ms to 89ms, and `mapops` went from 5x slower than CPython to
+   roughly parity.
+2. **`sweep()` subtracted freed bytes from `live_bytes` *after* `collect`
+   had already zeroed and rebuilt it from the marked survivors**, so
+   `live_bytes` came out too low — and `next_gc` is `live*2 + 8MB`, so the
+   collector ran more often than the growth policy intended. Removed;
+   `heap_bytes` was and is a running total, so it keeps its subtraction.
+3. **`mark_loop` called `mark_value` for every list item and map
+   key/value**, and `mark_value` returned immediately for nil/bool/int/
+   float. Marking a 100k-entry map of ints cost 200k calls *per
+   collection*. The tag enum orders the container kinds at `VY_STRING`, so
+   a tag compare now replaces the call: `b2_insonly` (100k inserts, no
+   lookup) went 63ms → 51ms, `listappend` 39ms → 33ms.
+
+The general lesson, recorded because it will recur: the first three
+findings were invisible in the source and obvious in three 6-line
+programs.
+
+### Stage P3 — unboxed specialisation
+
+*Status: PARTIALLY LANDED.*
+
+Against sections 5, 6 and 7 — the "next level":
+
+- Sema tracks `is_proven_int`/`is_proven_float` for literal initialisations.
+- Codegen emits raw `int64_t`/`double` locals instead of boxed `VyValue`
+  for proven types, and skips GC registration for them.
+- Fast arithmetic paths on raw locals: add/sub/mul/div/mod, comparisons,
+  bitwise.
+- Specialized array types — `VyInt64Array`, `VyFloat64Array`,
+  `VyStringArray` — with contiguous buffers and tag-guarded fast paths;
+  list literals of proven int/float emit them.
+
+What remains: values flowing through lists, maps and function parameters
+are still boxed. Full type-inference that reaches every value is the
+larger remaining task. It is also where the payoff is: with unboxed
+locals, `intloop` now runs within 1.8x of `-O3` C (22ms vs 12.04ms,
+8 Oct 2026), while `listappend` — fully boxed — is 185x behind. Verify
+against both targets: keep `intloop` near C, and no behavioural change
+anywhere (both backends must agree per `tests/interp.sh`).
+
+### Benchmark integrity note (8 Oct 2026) — a case the optimiser deleted
+
+Re-running the suite for the docs rewrite, `intloop` reported 4ms for 20
+million iterations: impossible, and not true. At `-O2` and above, clang
+replaces the affine recurrence `total = total + i * 3 - 1` with its
+closed-form value, in plain C as well as in generated Vayu code — the
+binary contained `movabs $599999950000000` where the loop used to be. The
+C reference had only been protected by `volatile` trip counts, which also
+block vectorisation, so the old table had Vayu measured doing nothing
+while C was measured at a handicap.
+
+The case now uses `total + (i ^ (i >> 3)) - 1` — same shape, no closed
+form — identically in all three languages, and the corrected numbers
+(C 12.04ms, Vayu 22ms, Python 6827ms, all agreeing on the same answer)
+are what the documentation quotes. This is sections 36–37 applied to our
+own numbers: a result that is too good is a bug report, not a headline.
+
+### Stage P4 — make the document match the machine
+
+Against section 40:
+
+- The pipeline diagram in section 41 shows Vayu IR → Optimizer → LLVM IR,
+  but `codegen_llvm.cpp` is a 13-line stub and `compiler/optimizer/` is
+  empty. Section 41 now dates that diagram as the target architecture;
+  the real backend today is emitted C → clang (which *is* LLVM, so
+  sections 19–22 are partially free already — within one function; P0 is
+  what buys back the cross-call part).
+- Resolve sections 14/15 against reality: the runtime *is* a mark-sweep
+  GC plus refcounted strings. Commit to that model, then optimise it
+  (generational collection, bump allocation) instead of speculating about
+  ownership systems — section 13 stays parked.
+- Add the benchmark cases section 34 already demands: float arithmetic,
+  sorting, closure calls — and make every case report allocation counts,
+  not just time.
+- Profiling tooling: `perf record` on a benchmark binary before any new
+  optimisation lands. Section 36 without a tool is a wish.
+
+---
+
+## Final requirement
+
+Do not claim Vayu is "high performance" because the compiler is written in
+C++, because LLVM is used, because the language is compiled, or because
+the binary is native. None of those are performance. Performance is
+demonstrated experimentally, and the project answers these questions
+continuously:
+
+- How fast is it?
+- How much memory does it use?
+- How many allocations occur?
+- Where is the bottleneck?
+- What changed after the optimization?
+- Did the optimization actually improve real workloads?
+
+The objective all of this adds up to: Python-like productivity, native
+compilation, low runtime overhead, an efficient memory model, aggressive
+compiler optimization, efficient concurrency — and a high-performance
+Vayu that can show its work.

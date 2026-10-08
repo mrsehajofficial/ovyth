@@ -12,10 +12,13 @@ import time
 
 
 def bench_intloop(n=20_000_000):
+    # The xor/shift body has no closed form, so optimising compilers keep the
+    # real loop; a plain `i * 3 - 1` sum folds to a formula. Same body as
+    # benchmarks/cases/intloop.vy.
     total = 0
     i = 0
     while i < n:
-        total = total + i * 3 - 1
+        total = total + (i ^ (i >> 3)) - 1
         i = i + 1
     return total
 

@@ -3,7 +3,7 @@
  * The comparison baseline for benchmarks/compare.sh (spec section 35). C is the
  * right control for "how much of Vayu's cost is the language runtime rather
  * than the algorithm": the algorithms here are the same ones as
- * benchmarks/cases/*.vy, on the same inputs, doing the same work.
+ * benchmarks/cases/, on the same inputs, doing the same work.
  *
  * Timing is internal (clock_gettime around each case) so the numbers are not
  * dominated by process startup; the Vayu side reports whole-process wall clock
@@ -23,9 +23,12 @@ static double now_ms(void) {
 }
 
 /* --- intloop --- */
+/* The xor/shift body keeps clang from replacing the loop with its closed
+ * form; a plain `i * 3 - 1` sum folds to a formula at -O2 and reports a
+ * fictional 0.00ms. Same body as benchmarks/cases/intloop.vy. */
 static long long bench_intloop(long long n) {
   long long total = 0;
-  for (long long i = 0; i < n; i++) total = total + i * 3 - 1;
+  for (long long i = 0; i < n; i++) total = total + (i ^ (i >> 3)) - 1;
   return total;
 }
 
@@ -81,23 +84,24 @@ static long long map_get(struct kv *t, size_t cap, const char *k) {
   return 0;
 }
 
-/* Results are stored here so the optimiser cannot delete the work, and every
- * size below is read through a volatile at the call site: with a literal,
- * clang -O3 constant-folds bench_intloop/bench_listappend into a formula and
- * the reference reports a fictional 0.00ms. Timing is also taken in separate
- * statements -- inside printf() the clock read and the work are unordered
- * (argument evaluation order is unspecified). */
+/* Results are stored here so the optimiser cannot delete the work. The
+ * list size is read through a volatile at the call site: with a literal,
+ * clang -O3 folds bench_listappend's fill loop into a formula and the
+ * reference reports a fictional 0.00ms. bench_intloop takes a plain literal
+ * now -- its xor/shift body has no closed form, and the Vayu case passes a
+ * literal too. Timing is also taken in separate statements -- inside printf()
+ * the clock read and the work are unordered (argument evaluation order is
+ * unspecified). */
 static volatile long long g_sink;
 
 int main(void) {
-  volatile long long n_intloop = 20000000;
   volatile long long n_list = 500000;
   double t, dt;
   long long r;
   size_t sz;
 
   t = now_ms();
-  r = bench_intloop(n_intloop);
+  r = bench_intloop(20000000);
   dt = now_ms() - t;
   g_sink = r;
   printf("intloop %.2f %lld\n", dt, r);
