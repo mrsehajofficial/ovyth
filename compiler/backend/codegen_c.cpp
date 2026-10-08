@@ -860,17 +860,9 @@ std::string Gen::emit_assign(const Expr* target, const std::string& val) {
     case ExprKind::Identifier: {
       // A name shared with a closure through a box: store through the box so
       // both sides observe the write. box_of_[name] is the box VyValue.
-      std::cerr << "[DBG emit_assign] target=" << target->name
-                << " box_of_ size=" << box_of_.size()
-                << " box_writes_ size=" << box_writes_.size()
-                << " box_of_ has=" << (box_of_.count(target->name) ? "yes" : "no")
-                << " box_writes_ has=" << (box_writes_.count(target->name) ? "yes" : "no") << "\n";
       auto bit = box_of_.find(target->name);
-      if (bit != box_of_.end() && box_writes_.count(target->name)) {
-        std::cerr << "[DBG emit_assign] -> USING vy_list_set for " << target->name << "\n";
+      if (bit != box_of_.end() && box_writes_.count(target->name))
         return "(vy_list_set((" + bit->second + ").list, 0, " + val + "), " + val + ")";
-      }
-      std::cerr << "[DBG emit_assign] -> USING bind for " << target->name << "\n";
       return bind(target->name, val);
     }
     case ExprKind::Index: {
@@ -1078,22 +1070,12 @@ std::string Gen::emit_closure(const Expr* e) {
   auto saved_box_writes = box_writes_;
   box_writes_.clear();
   box_of_.clear();
-  std::cerr << "[DBG closure] captures.size=" << captures.size() << "\n";
   for (size_t i = 0; i < captures.size(); i++) {
-    std::cerr << "[DBG closure] capture[" << i << "]=" << captures[i] << "\n";
     scopes_.back()[captures[i]] =
         "vy_list_get(((VyValue*)_fn->upvals)[" + std::to_string(i) + "].list, 0)";
     box_writes_.insert(captures[i]);
     // The box VyValue in this closure's body is the upvals slot.
     box_of_[captures[i]] = "((VyValue*)_fn->upvals)[" + std::to_string(i) + "]";
-  }
-  std::cerr << "[DBG closure] after setup: box_of_ size=" << box_of_.size()
-            << " box_writes_ size=" << box_writes_.size() << "\n";
-  for (const auto& kv : box_of_) {
-    std::cerr << "[DBG closure]   box_of_[" << kv.first << "]=" << kv.second << "\n";
-  }
-  for (const auto& n : box_writes_) {
-    std::cerr << "[DBG closure]   box_writes_ has " << n << "\n";
   }
   for (size_t i = 0; i < e->params.size(); i++)
     scopes_.back()[e->params[i].name] = ident(e->params[i].name, i);
