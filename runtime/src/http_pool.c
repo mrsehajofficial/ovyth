@@ -1,8 +1,8 @@
-/* Vayu runtime :: src/http_pool.c
+/* Ovyth runtime :: src/http_pool.c
  *
  * HTTP connection pool built on libcurl multi + easy handle reuse.
  *
- * Problem: every vy_http_request() calls curl_easy_init() + curl_easy_cleanup()
+ * Problem: every ov_http_request() calls curl_easy_init() + curl_easy_cleanup()
  * which means each AI API call pays TCP + TLS handshake overhead (50-200ms)
  * even when talking to the same server repeatedly.
  *
@@ -16,13 +16,13 @@
  * roundtrip pays TLS re-negotiation.
  *
  * API:
- *   VyHttpPool* vy_http_pool_new(int max_conns);
- *   void        vy_http_pool_free(VyHttpPool* p);
- *   VyHttpResponse* vy_http_pool_request(VyHttpPool* p, ...same args as vy_http_request...);
+ *   OvHttpPool* ov_http_pool_new(int max_conns);
+ *   void        ov_http_pool_free(OvHttpPool* p);
+ *   OvHttpResponse* ov_http_pool_request(OvHttpPool* p, ...same args as ov_http_request...);
  *
  * Thread safety: not thread-safe -- use one pool per thread or add a mutex.
  */
-#include "vyrt.h"
+#include "ovrt.h"
 
 #include <curl/curl.h>
 #include <ctype.h>
@@ -33,24 +33,24 @@
 
 /* ----------------------------------------------------------------- pool */
 
-#define VY_POOL_MAX_DEFAULT 8
-#define VY_POOL_KEY_LEN     256
+#define OV_POOL_MAX_DEFAULT 8
+#define OV_POOL_KEY_LEN     256
 
 typedef struct PoolEntry {
   CURL* handle;
-  char  key[VY_POOL_KEY_LEN];  /* "scheme://host:port" */
+  char  key[OV_POOL_KEY_LEN];  /* "scheme://host:port" */
   int   in_use;
 } PoolEntry;
 
-struct VyHttpPool {
+struct OvHttpPool {
   PoolEntry* entries;
   int        cap;
   int        len;
 };
 
-VyHttpPool* vy_http_pool_new(int max_conns) {
-  if (max_conns <= 0) max_conns = VY_POOL_MAX_DEFAULT;
-  VyHttpPool* p = (VyHttpPool*)calloc(1, sizeof(VyHttpPool));
+OvHttpPool* ov_http_pool_new(int max_conns) {
+  if (max_conns <= 0) max_conns = OV_POOL_MAX_DEFAULT;
+  OvHttpPool* p = (OvHttpPool*)calloc(1, sizeof(OvHttpPool));
   if (!p) return NULL;
   p->entries = (PoolEntry*)calloc((size_t)max_conns, sizeof(PoolEntry));
   if (!p->entries) { free(p); return NULL; }
@@ -59,7 +59,7 @@ VyHttpPool* vy_http_pool_new(int max_conns) {
   return p;
 }
 
-void vy_http_pool_free(VyHttpPool* p) {
+void ov_http_pool_free(OvHttpPool* p) {
   if (!p) return;
   for (int i = 0; i < p->len; i++)
     if (p->entries[i].handle) curl_easy_cleanup(p->entries[i].handle);
@@ -81,7 +81,7 @@ static void url_key(const char* url, char* key, size_t klen) {
   key[hostlen] = '\0';
 }
 
-static CURL* pool_acquire(VyHttpPool* p, const char* key) {
+static CURL* pool_acquire(OvHttpPool* p, const char* key) {
   /* Look for an idle handle with a matching key. */
   for (int i = 0; i < p->len; i++) {
     if (!p->entries[i].in_use && strcmp(p->entries[i].key, key) == 0) {
@@ -96,15 +96,15 @@ static CURL* pool_acquire(VyHttpPool* p, const char* key) {
   /* Store in pool if there is room. */
   if (p->len < p->cap) {
     p->entries[p->len].handle = h;
-    strncpy(p->entries[p->len].key, key, VY_POOL_KEY_LEN - 1);
-    p->entries[p->len].key[VY_POOL_KEY_LEN - 1] = '\0';
+    strncpy(p->entries[p->len].key, key, OV_POOL_KEY_LEN - 1);
+    p->entries[p->len].key[OV_POOL_KEY_LEN - 1] = '\0';
     p->entries[p->len].in_use = 1;
     p->len++;
   }
   return h;
 }
 
-static void pool_release(VyHttpPool* p, CURL* h) {
+static void pool_release(OvHttpPool* p, CURL* h) {
   for (int i = 0; i < p->len; i++) {
     if (p->entries[i].handle == h) {
       p->entries[i].in_use = 0;
@@ -138,7 +138,7 @@ static size_t hsink_write(char* p, size_t sz, size_t nm, void* ud) {
 }
 
 static size_t hdr_write(char* data, size_t sz, size_t nm, void* ud) {
-  VyHttpResponse* r = (VyHttpResponse*)ud;
+  OvHttpResponse* r = (OvHttpResponse*)ud;
   size_t n = sz * nm;
   const char* colon = (const char*)memchr(data, ':', n);
   if (colon && r) {
@@ -153,19 +153,19 @@ static size_t hdr_write(char* data, size_t sz, size_t nm, void* ud) {
     if (nlen < sizeof(name) && vlen < sizeof(value)) {
       memcpy(name, data, nlen); name[nlen] = '\0';
       memcpy(value, data + vs, vlen); value[vlen] = '\0';
-      VyValue key = vy_str_val(name);
-      VyMap* m = r->headers.map;
-      if (vy_map_has(m, key)) {
-        VyValue prev = vy_map_get(m, key);
-        if (vy_tagof(prev) == VY_LIST) vy_list_push(prev.list, vy_str_val(value));
+      OvValue key = ov_str_val(name);
+      OvMap* m = r->headers.map;
+      if (ov_map_has(m, key)) {
+        OvValue prev = ov_map_get(m, key);
+        if (ov_tagof(prev) == OV_LIST) ov_list_push(prev.list, ov_str_val(value));
         else {
-          VyList* l = vy_list_new();
-          vy_list_push(l, prev);
-          vy_list_push(l, vy_str_val(value));
-          vy_map_set(m, key, vy_list(l));
+          OvList* l = ov_list_new();
+          ov_list_push(l, prev);
+          ov_list_push(l, ov_str_val(value));
+          ov_map_set(m, key, ov_list(l));
         }
       } else {
-        vy_map_set(m, key, vy_str_val(value));
+        ov_map_set(m, key, ov_str_val(value));
       }
     }
   }
@@ -180,25 +180,25 @@ static char* pool_url_encode(CURL* curl, const char* s) {
 
 /* ----------------------------------------------- pool request */
 
-VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
+OvHttpResponse* ov_http_pool_request(OvHttpPool* pool,
                                      const char* method, const char* url,
                                      const char* body, const char* content_type,
                                      const char* headers_json,
                                      const char* params_json,
                                      double timeout_s) {
-  VyHttpResponse* r = (VyHttpResponse*)calloc(1, sizeof(VyHttpResponse));
+  OvHttpResponse* r = (OvHttpResponse*)calloc(1, sizeof(OvHttpResponse));
   if (!r) return NULL;
   r->status  = 0;
-  r->body    = vy_str_new("", 0);
-  r->headers = vy_map(vy_map_new());
+  r->body    = ov_str_new("", 0);
+  r->headers = ov_map(ov_map_new());
   r->error   = NULL;
 
-  char key[VY_POOL_KEY_LEN];
+  char key[OV_POOL_KEY_LEN];
   url_key(url, key, sizeof(key));
 
   CURL* h = pool ? pool_acquire(pool, key) : curl_easy_init();
   if (!h) {
-    r->error = vy_str_cstr("failed to get HTTP handle");
+    r->error = ov_str_cstr("failed to get HTTP handle");
     return r;
   }
 
@@ -206,9 +206,9 @@ VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
   char* full_url = (char*)url;
   char* dyn_url  = NULL;
   if (params_json) {
-    VyValue pv = vy_json_parse(params_json, strlen(params_json));
-    if (vy_tagof(pv) == VY_MAP && pv.map->len > 0) {
-      VyList* pairs = vy_map_pairs(pv.map);
+    OvValue pv = ov_json_parse(params_json, strlen(params_json));
+    if (ov_tagof(pv) == OV_MAP && pv.map->len > 0) {
+      OvList* pairs = ov_map_pairs(pv.map);
       size_t ulen = strlen(url);
       /* Estimate new URL length. */
       char* nb = (char*)malloc(ulen + 4096);
@@ -217,11 +217,11 @@ VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
         nb[ulen] = '\0';
         int first = (strchr(url, '?') == NULL);
         for (uint32_t i = 0; i + 1 < pairs->len; i += 2) {
-          VyValue k = pairs->items[i];
-          VyValue v = pairs->items[i+1];
-          if (vy_tagof(k) != VY_STRING) continue;
+          OvValue k = pairs->items[i];
+          OvValue v = pairs->items[i+1];
+          if (ov_tagof(k) != OV_STRING) continue;
           char* ek = pool_url_encode(h, k.str->bytes);
-          VyStr* vs = vy_render(v);
+          OvStr* vs = ov_render(v);
           char* ev  = pool_url_encode(h, vs->bytes);
           size_t cur = strlen(nb);
           snprintf(nb + cur, 4096, "%s%s=%s", first ? "?" : "&", ek ? ek : "", ev ? ev : "");
@@ -238,16 +238,16 @@ VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
   /* Build headers. */
   struct curl_slist* hdrs = NULL;
   if (headers_json) {
-    VyValue hv = vy_json_parse(headers_json, strlen(headers_json));
-    if (vy_tagof(hv) == VY_MAP) {
-      VyList* pairs = vy_map_pairs(hv.map);
+    OvValue hv = ov_json_parse(headers_json, strlen(headers_json));
+    if (ov_tagof(hv) == OV_MAP) {
+      OvList* pairs = ov_map_pairs(hv.map);
       for (uint32_t i = 0; i + 1 < pairs->len; i += 2) {
-        VyValue k = pairs->items[i];
-        VyValue v = pairs->items[i+1];
-        if (vy_tagof(k) != VY_STRING) continue;
-        VyStr* vs = vy_render(v);
-        VyStr* line = vy_str_concat(k.str, vy_str_new(": ", 2));
-        line = vy_str_concat(line, vs);
+        OvValue k = pairs->items[i];
+        OvValue v = pairs->items[i+1];
+        if (ov_tagof(k) != OV_STRING) continue;
+        OvStr* vs = ov_render(v);
+        OvStr* line = ov_str_concat(k.str, ov_str_new(": ", 2));
+        line = ov_str_concat(line, vs);
         hdrs = curl_slist_append(hdrs, line->bytes);
       }
     }
@@ -292,7 +292,7 @@ VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
 
   CURLcode rc = curl_easy_perform(h);
   if (rc != CURLE_OK) {
-    r->error  = vy_str_cstr(errbuf[0] ? errbuf : curl_easy_strerror(rc));
+    r->error  = ov_str_cstr(errbuf[0] ? errbuf : curl_easy_strerror(rc));
     r->status = 0;
   } else {
     long code = 0;
@@ -304,7 +304,7 @@ VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
   }
 
   if (sink.buf) {
-    r->body = vy_str_new(sink.buf, sink.len);
+    r->body = ov_str_new(sink.buf, sink.len);
     free(sink.buf);
   }
   if (hdrs) curl_slist_free_all(hdrs);
@@ -316,16 +316,16 @@ VyHttpResponse* vy_http_pool_request(VyHttpPool* pool,
   return r;
 }
 
-/* Global default pool -- used by the Vayu language http.* builtins when no
+/* Global default pool -- used by the Ovyth language http.* builtins when no
  * explicit pool is specified.  Lazily initialised on first use. */
-static VyHttpPool* g_default_pool = NULL;
+static OvHttpPool* g_default_pool = NULL;
 
-VyHttpPool* vy_http_default_pool(void) {
-  if (!g_default_pool) g_default_pool = vy_http_pool_new(8);
+OvHttpPool* ov_http_default_pool(void) {
+  if (!g_default_pool) g_default_pool = ov_http_pool_new(8);
   return g_default_pool;
 }
 
-void vy_http_pool_cleanup(void) {
-  vy_http_pool_free(g_default_pool);
+void ov_http_pool_cleanup(void) {
+  ov_http_pool_free(g_default_pool);
   g_default_pool = NULL;
 }

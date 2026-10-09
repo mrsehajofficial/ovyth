@@ -1,6 +1,6 @@
-# How fast is Vayu?
+# How fast is Ovyth?
 
-The short, honest answer: **on loop-heavy code Vayu beats Python by 5x to
+The short, honest answer: **on loop-heavy code Ovyth beats Python by 5x to
 310x; where it loses to Python it loses by 1.2x to 1.6x (hash maps, string
 building); on AI-pipeline work it beats CPython on five of seven cases;
 and against `-O3 -march=native` C it runs within 1.8x on a tight integer
@@ -16,8 +16,8 @@ number is better than an invented one.
 Reproduce everything yourself:
 
 ```bash
-bash benchmarks/run.sh              # Vayu's own suite
-bash benchmarks/compare.sh          # Vayu vs C vs Python, same algorithms
+bash benchmarks/run.sh              # Ovyth's own suite
+bash benchmarks/compare.sh          # Ovyth vs C vs Python, same algorithms
 bash benchmarks/compare_ai.sh --release   # AI pipeline benchmark
 ```
 
@@ -25,13 +25,13 @@ bash benchmarks/compare_ai.sh --release   # AI pipeline benchmark
 
 ## 1. The headline numbers
 
-`benchmarks/compare.sh` runs the same algorithm on the same input in Vayu,
+`benchmarks/compare.sh` runs the same algorithm on the same input in Ovyth,
 C (`-O3 -march=native`), and Python — and **checks that all three compute
 the identical answer** before it reports a timing. A comparison where the
 programs compute different things proves nothing.
 
 ```
-case         Vayu (wall)       C -O3      Python   result check
+case         Ovyth (wall)       C -O3      Python   result check
 --------------------------------------------------------------------
 intloop              22ms    12.04ms     6827ms   identical, py: identical
 fib                   6ms     0.41ms       32ms   identical, py: identical
@@ -45,7 +45,7 @@ movement: two runs an hour apart gave `intloop` 21-22ms, Python's copy
 6827-7399ms, and Python's `fib` anywhere from 32ms to 91ms. Read the tables
 as orders of magnitude.
 
-| case | Vayu vs Python | Vayu vs C | what the case measures |
+| case | Ovyth vs Python | Ovyth vs C | what the case measures |
 |---|---|---|---|
 | `intloop` | **310x faster** | 1.8x slower | 20M-iteration integer loop (xor/shift body — see §6) |
 | `fib` | **5.3x faster** | 14.6x slower | recursive calls, `fib(25)` |
@@ -55,7 +55,7 @@ as orders of magnitude.
 
 How to read that honestly:
 
-- **Where Vayu wins against Python** — loops, recursion, list building —
+- **Where Ovyth wins against Python** — loops, recursion, list building —
   it wins because it is compiled native code, not an interpreter. 310x on
   the integer loop is what "compiled" buys.
 - **`mapops` is within 1.2x of CPython** (194ms vs 158ms) after the two
@@ -63,7 +63,7 @@ How to read that honestly:
   hash table, not the language model.
 - **`strconcat` is still 1.6x slower than Python**, and the reason is
   specific: CPython reuses the buffer for `s += x` and interns short
-  strings, while Vayu allocates one `VyStr` per append. It went 32,581ms →
+  strings, while Ovyth allocates one `OvStr` per append. It went 32,581ms →
   14ms; finishing the job needs small-string interning, not a new backend.
 - **`intloop` within 1.8x of C is the newest result.** Proven `int` locals
   now emit as raw `int64_t` with no boxing, so the loop body is close to
@@ -75,7 +75,7 @@ How to read that honestly:
 
 ---
 
-## 2. Vayu's own suite
+## 2. Ovyth's own suite
 
 `benchmarks/run.sh` times each native binary as a *whole process* — startup
 and runtime init included. Excluding startup would be the kind of
@@ -117,15 +117,15 @@ From `benchmarks/RESULTS.md` — measurements, not claims:
 | binary size for `print("hi")` | 254,848 B | **18,736 B** (13.6x smaller) |
 | `strconcat` 40k appends | 32,581 ms | **14 ms** (~2,300x faster) |
 | `mapops` 100k inserts + reads | infinite hang | **194 ms** |
-| scalar arithmetic (`a + b`) | a call into `libvyrt.a` + ~7 tag tests | **inlined in the header**, one tag test |
-| `xs.push(x)` | out-of-line method dispatch per push | **tag guard + direct `vy_list_push`** |
+| scalar arithmetic (`a + b`) | a call into `libovrt.a` + ~7 tag tests | **inlined in the header**, one tag test |
+| `xs.push(x)` | out-of-line method dispatch per push | **tag guard + direct `ov_list_push`** |
 | `str(i)` | `snprintf` + render `Buf`, 2 allocations | **digit loop into a stack buffer**, 1 allocation |
 | hash-map inserts | grew only at 100% load | **grows at 0.7 load**; 100k int keys 176ms → 89ms |
 | GC mark of int-keyed containers | 200k calls per collection | **tag compare**, no calls |
 | JSON field extraction | full AST build | **fast path extraction**; see §7 |
 | context assembly (`join`) | O(n²) repeated concat | **O(n) string builder**; see §7 |
 | unboxed numeric locals | proof-of-concept | **proven int/float** locals as raw `int64_t`/`double`, no GC registration |
-| specialized arrays | generic `VyList` for everything | `VyInt64Array` / `VyFloat64Array` / `VyStringArray`, contiguous buffers, tag-guarded fast paths |
+| specialized arrays | generic `OvList` for everything | `OvInt64Array` / `OvFloat64Array` / `OvStringArray`, contiguous buffers, tag-guarded fast paths |
 
 Writing the benchmarks exposed six real bugs that reading the code did
 not: a GC that never computed its live set (the collector ran on every
@@ -149,12 +149,12 @@ are in §6 and in `benchmarks/RESULTS.md`.
 
 ## 4. Why the gap with C exists
 
-Every Vayu value is currently a **16-byte tagged `VyValue`**, passed by
+Every Ovyth value is currently a **16-byte tagged `OvValue`**, passed by
 value. Several optimizations have closed most of the distance:
 
 | consequence | status |
 |---|---|
-| `a + b` was a **runtime call** into `libvyrt.a` with ~7 tag tests first | **fixed** — the fast path is `static inline` in `vyrt.h` |
+| `a + b` was a **runtime call** into `libovrt.a` with ~7 tag tests first | **fixed** — the fast path is `static inline` in `ovrt.h` |
 | no language-level constant folding; `-O3` could not cross the call boundary | **fixed** — literals fold at emit time |
 | per-operation allocation (`str(i)`, string appends, `"key" + str(i)` keys) | **mostly fixed** — stack-buffer rendering, string sharing, pinned literals |
 | the compiler did not specialise int/float, so no value ever lived in a register | **partially done** — proven int/float locals emit as raw `int64_t`/`double` with no boxing; list elements and function parameters still take the boxed path |
@@ -167,7 +167,7 @@ the rest is the work tracked under stage P3 in the performance spec.
 
 ---
 
-## 5. Where Vayu sits today, in one table
+## 5. Where Ovyth sits today, in one table
 
 | workload | verdict |
 |---|---|
@@ -187,13 +187,13 @@ The suite follows the project's performance spec (sections 34-37):
 
 - same algorithm, same input, same output in every language;
 - answers are **checked for equality** before a time is reported;
-- whole-process wall clock for Vayu, internal timers for C/Python — and the
+- whole-process wall clock for Ovyth, internal timers for C/Python — and the
   ~4ms startup difference is disclosed in the output, not hidden;
 - timing is taken in separate statements with the work, never inside the
   `printf` call that reports it (argument evaluation order is unspecified);
 - a case whose loop the optimiser can erase does not get published: when
-  `intloop`'s affine body proved away to closed form in both Vayu and C
-  (4ms "20M iterations" in Vayu, 0.00ms in C), the case was redesigned to
+  `intloop`'s affine body proved away to closed form in both Ovyth and C
+  (4ms "20M iterations" in Ovyth, 0.00ms in C), the case was redesigned to
   an xor/shift body with no closed form, identically in all three
   languages, and the old numbers were pulled. C's reference uses a
   `volatile` trip count only where folding is still a threat (`listappend`);
@@ -203,7 +203,7 @@ The suite follows the project's performance spec (sections 34-37):
 
 ## 7. AI pipeline benchmarks
 
-Vayu is aimed at automation and AI tooling, so `benchmarks/bench_ai.vy`
+Ovyth is aimed at automation and AI tooling, so `benchmarks/bench_ai.ov`
 measures the operations that dominate agent pipelines rather than integer
 arithmetic: JSON parsing, field extraction, context assembly, chunking,
 string-keyed maps.
@@ -214,7 +214,7 @@ granularity — older tables showing `0ms` rows and `0.0x faster` ratios were
 broken, not fast. It now uses `time.clock()`:
 
 ```
-case                 Vayu (ms)    C (ms)   Py (ms)        vs C   vs Python
+case                 Ovyth (ms)    C (ms)   Py (ms)        vs C   vs Python
 ------------------  ----------  --------  --------  ----------  ----------
 json_parse               351ms  119.39ms     604ms  2.9x slower  1.7x faster
 json_access               80ms    0.39ms     168ms  205.1x slower  2.1x faster
@@ -225,14 +225,14 @@ multi_parse               11ms    4.14ms     159ms  2.7x slower  14.5x faster
 string_scan              148ms    0.00ms     293ms         n/a  2.0x faster
 ```
 
-**Vayu beats Python on five of seven cases**, 1.6x to 14.5x. The losses:
+**Ovyth beats Python on five of seven cases**, 1.6x to 14.5x. The losses:
 context assembly (3.0x) and the chunk pipeline (5ms vs 3ms — below what a
 1ms timer can resolve). Iteration counts: 50k, 500k, 100k, 500 docs,
 10k+10k, 20k, 1M respectively.
 
 Two caveats before quoting a row:
 
-- **The algorithms differ on some cases.** Vayu re-extracts from the JSON
+- **The algorithms differ on some cases.** Ovyth re-extracts from the JSON
   string through a path on every iteration of `json_access`; Python parses
   once and does dict lookups; C's 0.39ms is a cached-length read, not a
   parse. Those `vs C` ratios compare different work. `compare.sh` is the
@@ -245,7 +245,7 @@ Two caveats before quoting a row:
 **`json.extract(json, path)`** — fast field extraction without building the
 full AST:
 
-```vayu
+```ovyth
 // Extract a nested field without parsing the entire JSON tree
 content = json.extract(response, "choices[0].message.content")
 ```
@@ -253,13 +253,13 @@ content = json.extract(response, "choices[0].message.content")
 - dot-path syntax with array indices (`key` or `array[index]`), recursive
   over nested objects and arrays;
 - parses only what it needs, skipping the rest;
-- v0.1.2: `memcmp` key matching with no per-key `VyStr` allocation, plus
+- v0.1.2: `memcmp` key matching with no per-key `OvStr` allocation, plus
   compile-time path specialization for string literals;
 - result: 50k extractions in 351ms (~7µs each), 1.7x faster than Python's
   `json.loads`-and-index.
 
 **`join()` with a string builder** — O(n²) repeated concatenation replaced
-by a geometrically-growing `VyStrBuilder`, with the compiler recognising
+by a geometrically-growing `OvStrBuilder`, with the compiler recognising
 `acc += x` in loops. Context assembly went from 6x slower than Python to
 3.0x; the remaining cost is per-element overhead in the builder, tracked
 as open work.
@@ -272,8 +272,8 @@ faster than CPython.
 ### How to run
 
 ```bash
-# Vayu side only
-./build/vyc benchmarks/bench_ai.vy --release -o /tmp/bench_ai && /tmp/bench_ai
+# Ovyth side only
+./build/ovc benchmarks/bench_ai.ov --release -o /tmp/bench_ai && /tmp/bench_ai
 
 # three-way comparison
 bash benchmarks/compare_ai.sh --release
@@ -283,7 +283,7 @@ bash benchmarks/compare_ai.sh --release
 
 These benchmarks measure the orchestration layer — JSON, context assembly,
 chunking, map ops — not LLM inference. Inference dominates at 100ms-10s;
-the layer Vayu optimises is the 1-50ms between calls. Full numbers, per-
+the layer Ovyth optimises is the 1-50ms between calls. Full numbers, per-
 case caveats and the open work are in
 [benchmarks/RESULTS_AI.md](../benchmarks/RESULTS_AI.md).
 
@@ -300,10 +300,10 @@ case caveats and the open work are in
 - **No escape analysis.** The compiler cannot yet prove that a temporary
   stays local, so everything gets GC-tracked.
 - **No small-string interning.** CPython interns short strings and reuses
-  `s += x` buffers; Vayu allocates per append.
+  `s += x` buffers; Ovyth allocates per append.
 
 The partial unboxing work is the first step toward full specialization —
 closing the remaining gap needs the type-inference pass to reach every
-value, not just locals. For now Vayu targets scripting and automation
+value, not just locals. For now Ovyth targets scripting and automation
 workloads, where the overhead is small next to the benefit of shipping one
 native binary.

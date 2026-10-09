@@ -1,17 +1,17 @@
-# Vayu
+# Ovyth
 
-A small compiled language for automation and AI tooling. You write `.vy`
-files, `vyc` compiles them to ordinary native executables — no interpreter,
+A small compiled language for automation and AI tooling. You write `.ov`
+files, `ovc` compiles them to ordinary native executables — no interpreter,
 no VM, no runtime to install on the target machine. The binary just runs.
 
-```vy
-name = "Vayu"
+```ov
+name = "Ovyth"
 print("hello from", name)
 ```
 
 ## Is it fast?
 
-Measured, not guessed: **Vayu beats Python by 2.5x–310x on loops,
+Measured, not guessed: **Ovyth beats Python by 2.5x–310x on loops,
 recursion and list building, beats CPython on five of the seven AI-pipeline
 cases (up to 14.5x), stays within 1.2x–1.6x of Python even where it loses,
 and runs within 1.8x of `-O3 -march=native` C on a tight integer loop.
@@ -36,7 +36,7 @@ operation allocates.** Startup is ~6ms and a hello-world binary is 18 KB.
 Numbers: `bash benchmarks/compare.sh` + `bash benchmarks/compare_ai.sh
 --release`, 8 Oct 2026, best-of-3 on a 4-core desktop. Desktop variance is
 ±20–40% run to run, so treat the ratios as orders of magnitude. Every row
-is checked — the driver refuses to print a timing unless Vayu's answer
+is checked — the driver refuses to print a timing unless Ovyth's answer
 equals C's and Python's. Full tables, the caveats, and the story of the
 benchmark the optimiser deleted are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
@@ -48,7 +48,7 @@ is tracked in [docs/PERFORMANCE-SPEC.md](docs/PERFORMANCE-SPEC.md).
 
 ## Setup
 
-Vayu targets Linux (x86-64). The compiler resolves the runtime archive and
+Ovyth targets Linux (x86-64). The compiler resolves the runtime archive and
 headers through `/proc/self/exe`, so a build on macOS or Windows will not
 find them yet. There is no prebuilt binary to download — you build it from
 source, which takes about a minute.
@@ -62,33 +62,33 @@ sudo apt install build-essential clang libcurl4-openssl-dev libssl-dev zlib1g-de
 Then build the compiler and runtime:
 
 ```bash
-make            # builds build/vyc and build/libvyrt.a
+make            # builds build/ovc and build/libovrt.a
 make test       # runs the full test suite (it should pass — if not, that's a bug worth reporting)
-./build/vyc version   # -> vyc 0.1.3 (Vayu)
+./build/ovc version   # -> ovc 0.1.3 (Ovyth)
 ```
 
 Install to PATH:
 
 ```bash
-./install.sh                 # ~/.local/bin/vyc (no sudo)
-./install.sh /usr/local      # /usr/local/bin/vyc (needs sudo)
+./install.sh                 # ~/.local/bin/ovc (no sudo)
+./install.sh /usr/local      # /usr/local/bin/ovc (needs sudo)
 make install PREFIX=$HOME/.local
 ```
 
-The installer copies three things: `bin/vyc`, `lib/libvyrt.a`,
-`include/vyrt.h`. `vyc` finds the last two relative to its own path — no
+The installer copies three things: `bin/ovc`, `lib/libovrt.a`,
+`include/ovrt.h`. `ovc` finds the last two relative to its own path — no
 environment variables, no pkg-config, relocatable.
 
 ## Your first program
 
 ```bash
-cat > hello.vy << 'EOF'
-name = "Vayu"
+cat > hello.ov << 'EOF'
+name = "Ovyth"
 print(name)
 EOF
 
-./build/vyc run hello.vy      # interpreter — instant, best while developing
-./build/vyc hello.vy          # compile to ./hello (native executable)
+./build/ovc run hello.ov      # interpreter — instant, best while developing
+./build/ovc hello.ov          # compile to ./hello (native executable)
 ./hello                       # run it
 ```
 
@@ -96,11 +96,11 @@ Ship the binary by copying it — it only needs the same libc.
 
 ## The language in 30 seconds
 
-```vy
+```ov
 # Values — no type annotations needed, the compiler infers
 count = 42
 ratio = 0.75
-name  = "Vayu"
+name  = "Ovyth"
 items = [1, 2, 3]
 cfg   = {"port": 8080}
 
@@ -115,7 +115,7 @@ print(add(b: 20, a: 10))      # 30
 double = function(x) { return x * 2 }
 
 # String interpolation — evaluates {expressions}, leaves invalid ones literal
-print("hi {name}, math={1 + 2 * 3}")   # hi Vayu, math=7
+print("hi {name}, math={1 + 2 * 3}")   # hi Ovyth, math=7
 
 # Errors
 try { throw "boom" } catch e { print("caught:", e) }
@@ -124,33 +124,33 @@ try { throw "boom" } catch e { print("caught:", e) }
 The full tour — lists, comprehensions, slices, tuples, the stdlib — is in
 [docs/USAGE.md](docs/USAGE.md).
 
-## The `vyc` command
+## The `ovc` command
 
 | command | what it does |
 |---|---|
-| `vyc init <dir>` | create a new project from a template |
-| `vyc run <file.vy>` | run with the tree-walking interpreter |
-| `vyc <file.vy>` | compile to a native executable |
-| `vyc <file.vy> --release` | optimized: -O3, LTO, stripped |
-| `vyc <file.vy> --target=native` | optimize for this CPU |
-| `vyc check <file.vy>` | parse + type-check only |
-| `vyc ast <file.vy>` | dump the AST |
-| `vyc tokens <file.vy>` | dump the token stream |
-| `vyc fmt <file.vy>` | canonical formatting (stdout) |
-| `vyc version` | print version |
+| `ovc init <dir>` | create a new project from a template |
+| `ovc run <file.ov>` | run with the tree-walking interpreter |
+| `ovc <file.ov>` | compile to a native executable |
+| `ovc <file.ov> --release` | optimized: -O3, LTO, stripped |
+| `ovc <file.ov> --target=native` | optimize for this CPU |
+| `ovc check <file.ov>` | parse + type-check only |
+| `ovc ast <file.ov>` | dump the AST |
+| `ovc tokens <file.ov>` | dump the token stream |
+| `ovc fmt <file.ov>` | canonical formatting (stdout) |
+| `ovc version` | print version |
 
 ## Examples
 
 ```bash
 # Chatbot with mock server
 python3 examples/chatbot/mock_server.py &
-AI_API_URL=http://localhost:8765 AI_API_KEY=dummy ./build/vyc run examples/chatbot/chatbot.vy
+AI_API_URL=http://localhost:8765 AI_API_KEY=dummy ./build/ovc run examples/chatbot/chatbot.ov
 
 # RAG pipeline
-./build/vyc run examples/rag/rag_pipeline.vy
+./build/ovc run examples/rag/rag_pipeline.ov
 
 # Tool agent
-./build/vyc run examples/tool_agent/tool_agent.vy
+./build/ovc run examples/tool_agent/tool_agent.ov
 ```
 
 ## Documentation
@@ -158,7 +158,7 @@ AI_API_URL=http://localhost:8765 AI_API_KEY=dummy ./build/vyc run examples/chatb
 | document | what's in it |
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | usage guide — install, language tour, stdlib reference, errors |
-| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | how fast Vayu is — measured numbers, vs C and Python, and why |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | how fast Ovyth is — measured numbers, vs C and Python, and why |
 | [docs/PERFORMANCE-SPEC.md](docs/PERFORMANCE-SPEC.md) | the performance engineering specification |
 | [benchmarks/RESULTS.md](benchmarks/RESULTS.md) | raw benchmark output and what each optimization bought |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | build, test, style, and the two-backend rule |
@@ -172,15 +172,13 @@ bash tests/interp.sh                   # language tests only
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 bash benchmarks/run.sh                 # benchmark suite
-bash benchmarks/compare.sh             # Vayu vs C vs Python
+bash benchmarks/compare.sh             # Ovyth vs C vs Python
 bash benchmarks/compare_ai.sh --release # AI pipeline vs C vs Python
-make install PREFIX=$HOME/.local       # put vyc on your PATH
+make install PREFIX=$HOME/.local       # put ovc on your PATH
 ```
 
 ## Known limitations
 
-- **Closures don't capture** their enclosing scope. A closure reading an
-  outer local is rejected at compile time rather than silently miscompiled.
 - **Partial unboxing**: proven `int`/`float` locals emit as raw `int64_t`/
   `double`, but values flowing through lists, maps and function parameters
   remain boxed. Tight numeric loops over locals are fast; collection
@@ -188,8 +186,14 @@ make install PREFIX=$HOME/.local       # put vyc on your PATH
 - **No files, modules, or imports yet**. One file per program.
 - **No async or concurrency**.
 
-I'm actively working on removing these. Specialized array types and value
+Closures *do* capture their enclosing scope — by reference, shared between the
+closure and the enclosing function — on both the interpreter and the native
+backend. A closure that reads or writes an outer local works as you'd expect;
+see `tests/interp/017_closures.ov` for the covered cases.
+
+I'm actively working on removing the rest. Specialized array types and value
 unboxing for proven int/float are implemented and working.
+
 
 ## License
 

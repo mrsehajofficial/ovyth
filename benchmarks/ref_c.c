@@ -1,12 +1,12 @@
-/* Reference implementation of the Vayu benchmark suite, in C.
+/* Reference implementation of the Ovyth benchmark suite, in C.
  *
  * The comparison baseline for benchmarks/compare.sh (spec section 35). C is the
- * right control for "how much of Vayu's cost is the language runtime rather
+ * right control for "how much of Ovyth's cost is the language runtime rather
  * than the algorithm": the algorithms here are the same ones as
  * benchmarks/cases/, on the same inputs, doing the same work.
  *
  * Timing is internal (clock_gettime around each case) so the numbers are not
- * dominated by process startup; the Vayu side reports whole-process wall clock
+ * dominated by process startup; the Ovyth side reports whole-process wall clock
  * too, and the driver prints both so the difference is visible rather than
  * hidden.
  */
@@ -25,7 +25,7 @@ static double now_ms(void) {
 /* --- intloop --- */
 /* The xor/shift body keeps clang from replacing the loop with its closed
  * form; a plain `i * 3 - 1` sum folds to a formula at -O2 and reports a
- * fictional 0.00ms. Same body as benchmarks/cases/intloop.vy. */
+ * fictional 0.00ms. Same body as benchmarks/cases/intloop.ov. */
 static long long bench_intloop(long long n) {
   long long total = 0;
   for (long long i = 0; i < n; i++) total = total + (i ^ (i >> 3)) - 1;
@@ -88,7 +88,7 @@ static long long map_get(struct kv *t, size_t cap, const char *k) {
  * list size is read through a volatile at the call site: with a literal,
  * clang -O3 folds bench_listappend's fill loop into a formula and the
  * reference reports a fictional 0.00ms. bench_intloop takes a plain literal
- * now -- its xor/shift body has no closed form, and the Vayu case passes a
+ * now -- its xor/shift body has no closed form, and the Ovyth case passes a
  * literal too. Timing is also taken in separate statements -- inside printf()
  * the clock read and the work are unordered (argument evaluation order is
  * unspecified). */

@@ -1,11 +1,11 @@
-// Vayu :: examples/rag/rag_pipeline.vy
+// Ovyth :: examples/rag/rag_pipeline.ov
 //
 // A minimal but realistic RAG (Retrieval Augmented Generation) pipeline.
 //
 // Stages:
 //   documents → chunk → embed (mock) → store → query → retrieve → generate
 //
-// This example demonstrates how Vayu handles the AI data pipeline:
+// This example demonstrates how Ovyth handles the AI data pipeline:
 //   - Zero unnecessary copies between stages (documents shared as slices)
 //   - JSON parsing for API responses
 //   - HTTP POST to LLM with assembled context
@@ -13,7 +13,7 @@
 //
 // Run against the mock server:
 //   AI_API_KEY=test AI_API_URL=http://127.0.0.1:8642/v1/chat AI_MODEL=mock-model \
-//     vyc run examples/rag/rag_pipeline.vy
+//     ovc run examples/rag/rag_pipeline.ov
 //
 // Or against a real OpenAI-compatible API with your key set.
 
@@ -25,7 +25,7 @@ model   = env_or("AI_MODEL",   "my-model")
 
 // Our document corpus (would be loaded from disk in production)
 documents = [
-    "Vayu is a compiled language for AI automation and agent workloads. It compiles .vy files to native executables with zero VM overhead.",
+    "Ovyth is a compiled language for AI automation and agent workloads. It compiles .ov files to native executables with zero VM overhead.",
     "RAG stands for Retrieval Augmented Generation. It retrieves relevant context from a knowledge base before sending a prompt to an LLM.",
     "Vector search finds the most semantically similar chunks to a query by computing cosine similarity between embedding vectors.",
     "Arena allocators free all objects in O(1) by releasing an entire memory block, avoiding per-object malloc/free overhead.",
@@ -174,7 +174,7 @@ function retrieve(query, k) {
     return results
 }
 
-query = "How does Vayu handle memory allocation for AI workloads?"
+query = "How does Ovyth handle memory allocation for AI workloads?"
 
 t0 = now()
 top_chunks = retrieve(query, 3)

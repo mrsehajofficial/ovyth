@@ -2,7 +2,7 @@
 
 #include <sstream>
 
-namespace vy {
+namespace ov {
 namespace ast {
 
 static const char* type_name(ExprKind k) {
@@ -170,4 +170,4 @@ void dump_ast(const Program& p, std::string& out) {
 }
 
 }  // namespace ast
-}  // namespace vy
+}  // namespace ov

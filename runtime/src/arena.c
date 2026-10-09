@@ -1,4 +1,4 @@
-/* Vayu runtime :: src/arena.c
+/* Ovyth runtime :: src/arena.c
  *
  * Region/arena allocator for request-scoped allocations.
  *
@@ -10,16 +10,16 @@
  * fragmentation, and cache-friendly bump-pointer allocation.
  *
  * Usage:
- *   VyArena* a = vy_arena_new(64 * 1024);   // 64 KB initial block
- *   void* p    = vy_arena_alloc(a, 128);     // bump pointer -- O(1)
- *   VyStr* s   = vy_arena_str(a, ptr, len);  // string inside the arena
- *   vy_arena_reset(a);                        // free everything, keep block
- *   vy_arena_free(a);                         // return block to OS
+ *   OvArena* a = ov_arena_new(64 * 1024);   // 64 KB initial block
+ *   void* p    = ov_arena_alloc(a, 128);     // bump pointer -- O(1)
+ *   OvStr* s   = ov_arena_str(a, ptr, len);  // string inside the arena
+ *   ov_arena_reset(a);                        // free everything, keep block
+ *   ov_arena_free(a);                         // return block to OS
  *
  * Arena strings are NOT registered with the GC -- they are valid only while
  * the arena lives. Do not store them in GC-managed containers across a reset.
  */
-#include "vyrt.h"
+#include "ovrt.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -30,17 +30,17 @@
 
 /* ------------------------------------------------------------------ types */
 
-typedef struct VyArenaBlock VyArenaBlock;
-struct VyArenaBlock {
-  VyArenaBlock* next;
+typedef struct OvArenaBlock OvArenaBlock;
+struct OvArenaBlock {
+  OvArenaBlock* next;
   size_t        cap;
   size_t        used;
   /* data follows immediately */
 };
 
-struct VyArena {
-  VyArenaBlock* head;       /* current block (bump pointer here)           */
-  VyArenaBlock* spare;      /* one recycled block kept after reset()        */
+struct OvArena {
+  OvArenaBlock* head;       /* current block (bump pointer here)           */
+  OvArenaBlock* spare;      /* one recycled block kept after reset()        */
   size_t        block_size; /* minimum new-block size                       */
   size_t        total_bytes;/* bytes handed to caller so far (stats)        */
   size_t        peak_bytes; /* peak total_bytes (stats)                     */
@@ -48,9 +48,9 @@ struct VyArena {
 
 /* ---------------------------------------------------------------- helpers */
 
-static VyArenaBlock* block_new(size_t cap) {
-  VyArenaBlock* b = (VyArenaBlock*)malloc(sizeof(VyArenaBlock) + cap);
-  if (!b) { fprintf(stderr, "vayu: arena out of memory\n"); exit(70); }
+static OvArenaBlock* block_new(size_t cap) {
+  OvArenaBlock* b = (OvArenaBlock*)malloc(sizeof(OvArenaBlock) + cap);
+  if (!b) { fprintf(stderr, "ovyth: arena out of memory\n"); exit(70); }
   b->next = NULL;
   b->cap  = cap;
   b->used = 0;
@@ -59,10 +59,10 @@ static VyArenaBlock* block_new(size_t cap) {
 
 /* -------------------------------------------------------------- public API */
 
-VyArena* vy_arena_new(size_t block_size) {
+OvArena* ov_arena_new(size_t block_size) {
   if (block_size < 4096) block_size = 4096;
-  VyArena* a = (VyArena*)malloc(sizeof(VyArena));
-  if (!a) { fprintf(stderr, "vayu: arena out of memory\n"); exit(70); }
+  OvArena* a = (OvArena*)malloc(sizeof(OvArena));
+  if (!a) { fprintf(stderr, "ovyth: arena out of memory\n"); exit(70); }
   a->head        = block_new(block_size);
   a->spare       = NULL;
   a->block_size  = block_size;
@@ -71,12 +71,12 @@ VyArena* vy_arena_new(size_t block_size) {
   return a;
 }
 
-void* vy_arena_alloc(VyArena* a, size_t n) {
-  /* Align to 8 bytes -- covers all VyValue/pointer requirements. */
+void* ov_arena_alloc(OvArena* a, size_t n) {
+  /* Align to 8 bytes -- covers all OvValue/pointer requirements. */
   n = (n + 7u) & ~7u;
   if (!n) return NULL;
 
-  VyArenaBlock* b = a->head;
+  OvArenaBlock* b = a->head;
   if (b->used + n <= b->cap) {
     /* Fast path: bump pointer in current block. */
     void* p = (char*)(b + 1) + b->used;
@@ -89,7 +89,7 @@ void* vy_arena_alloc(VyArena* a, size_t n) {
   /* Need a new block: at least block_size or the request itself. */
   size_t cap = a->block_size;
   if (n > cap) cap = n;
-  VyArenaBlock* nb = block_new(cap);
+  OvArenaBlock* nb = block_new(cap);
   nb->next = a->head;
   a->head  = nb;
   void* p  = (char*)(nb + 1);
@@ -100,30 +100,30 @@ void* vy_arena_alloc(VyArena* a, size_t n) {
 }
 
 /* Allocate n zeroed bytes. */
-void* vy_arena_calloc(VyArena* a, size_t n) {
-  void* p = vy_arena_alloc(a, n);
+void* ov_arena_calloc(OvArena* a, size_t n) {
+  void* p = ov_arena_alloc(a, n);
   memset(p, 0, n);
   return p;
 }
 
 /* Copy a C string into the arena, returning a NUL-terminated pointer. */
-char* vy_arena_strdup(VyArena* a, const char* s, size_t n) {
-  char* p = (char*)vy_arena_alloc(a, n + 1);
+char* ov_arena_strdup(OvArena* a, const char* s, size_t n) {
+  char* p = (char*)ov_arena_alloc(a, n + 1);
   if (n) memcpy(p, s, n);
   p[n] = '\0';
   return p;
 }
 
-/* Build a VyStr whose payload lives inside the arena.
- * The VyStr header itself is also in the arena (not GC-tracked).
+/* Build a OvStr whose payload lives inside the arena.
+ * The OvStr header itself is also in the arena (not GC-tracked).
  * Callers must NOT put this string into GC-managed containers that outlive
  * the arena. Safe for: local temporaries, JSON field names, chunk slices. */
-VyStr* vy_arena_str(VyArena* a, const char* p, size_t n) {
-  /* Layout: VyStr{len,hash,bytes[1]} then n-1 more bytes then NUL. */
-  size_t total = sizeof(VyStr) + n; /* bytes[1] in struct counts as 1 */
-  VyStr* s = (VyStr*)vy_arena_alloc(a, total);
+OvStr* ov_arena_str(OvArena* a, const char* p, size_t n) {
+  /* Layout: OvStr{len,hash,bytes[1]} then n-1 more bytes then NUL. */
+  size_t total = sizeof(OvStr) + n; /* bytes[1] in struct counts as 1 */
+  OvStr* s = (OvStr*)ov_arena_alloc(a, total);
   s->len  = (uint32_t)n;
-  s->hash = vy_str_hash_n(p, n);
+  s->hash = ov_str_hash_n(p, n);
   if (n) memcpy(s->bytes, p, n);
   s->bytes[n] = '\0';
   return s;
@@ -131,11 +131,11 @@ VyStr* vy_arena_str(VyArena* a, const char* p, size_t n) {
 
 /* Reset: free all blocks except the first (kept as spare), rewind used=0.
  * After reset the arena is reusable with zero OS calls. */
-void vy_arena_reset(VyArena* a) {
+void ov_arena_reset(OvArena* a) {
   /* Walk the chain, keeping the largest block as a spare. */
-  VyArenaBlock* cur = a->head;
+  OvArenaBlock* cur = a->head;
   while (cur->next) {
-    VyArenaBlock* next = cur->next;
+    OvArenaBlock* next = cur->next;
     if (!a->spare || cur->cap > a->spare->cap) {
       free(a->spare);
       a->spare = cur;
@@ -153,11 +153,11 @@ void vy_arena_reset(VyArena* a) {
 }
 
 /* Free everything including the arena struct itself. */
-void vy_arena_free(VyArena* a) {
+void ov_arena_free(OvArena* a) {
   if (!a) return;
-  VyArenaBlock* b = a->head;
+  OvArenaBlock* b = a->head;
   while (b) {
-    VyArenaBlock* n = b->next;
+    OvArenaBlock* n = b->next;
     free(b);
     b = n;
   }
@@ -165,5 +165,5 @@ void vy_arena_free(VyArena* a) {
   free(a);
 }
 
-size_t vy_arena_used(VyArena* a)  { return a ? a->total_bytes : 0; }
-size_t vy_arena_peak(VyArena* a)  { return a ? a->peak_bytes  : 0; }
+size_t ov_arena_used(OvArena* a)  { return a ? a->total_bytes : 0; }
+size_t ov_arena_peak(OvArena* a)  { return a ? a->peak_bytes  : 0; }

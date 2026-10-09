@@ -1,16 +1,16 @@
-/* Vayu runtime :: src/json_extract.c (optimized)
+/* Ovyth runtime :: src/json_extract.c (optimized)
  *
  * Fast JSON field extraction without building the full AST.
  * Extracts a single value by path from JSON string directly.
  * 
  * KEY OPTIMIZATIONS:
- *   1. NO VyStr allocation during key comparison - use direct memcmp
+ *   1. NO OvStr allocation during key comparison - use direct memcmp
  *   2. Single reusable buffer for key parsing (stack-allocated)
  *   3. Early termination on match
  *   4. Minimal stack usage
  */
-#include "vyrt.h"
-#include "vy_sb.h"
+#include "ovrt.h"
+#include "ov_sb.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +55,7 @@ static int hex4(const char* p, uint32_t* out) {
     return 1;
 }
 
-static void emit_utf8(VyJsonBuf* sb, uint32_t cp) {
+static void emit_utf8(OvJsonBuf* sb, uint32_t cp) {
     char buf[4];
     int n = 0;
     if (cp < 0x80) {
@@ -73,14 +73,14 @@ static void emit_utf8(VyJsonBuf* sb, uint32_t cp) {
         buf[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
         buf[n++] = (char)(0x80 | (cp & 0x3F));
     }
-    vy_jbuf_append(sb, buf, (size_t)n);
+    ov_jbuf_append(sb, buf, (size_t)n);
 }
 
 /* Parse a JSON string value into buffer, return 1 on success */
-static int parse_json_string_val(J* j, VyJsonBuf* sb) {
+static int parse_json_string_val(J* j, OvJsonBuf* sb) {
     if (!at(j, '"')) return 0;
     j->p++;
-    vy_jbuf_init(sb);
+    ov_jbuf_init(sb);
     while (j->p < j->end && *j->p != '"') {
         unsigned char c = (unsigned char)*j->p;
         if (c == '\\') {
@@ -88,14 +88,14 @@ static int parse_json_string_val(J* j, VyJsonBuf* sb) {
             if (j->p >= j->end) break;
             char e = *j->p++;
             switch (e) {
-                case '"':  vy_jbuf_putc(sb, '"');  break;
-                case '\\': vy_jbuf_putc(sb, '\\'); break;
-                case '/':  vy_jbuf_putc(sb, '/');  break;
-                case 'b':  vy_jbuf_putc(sb, '\b'); break;
-                case 'f':  vy_jbuf_putc(sb, '\f'); break;
-                case 'n':  vy_jbuf_putc(sb, '\n'); break;
-                case 'r':  vy_jbuf_putc(sb, '\r'); break;
-                case 't':  vy_jbuf_putc(sb, '\t'); break;
+                case '"':  ov_jbuf_putc(sb, '"');  break;
+                case '\\': ov_jbuf_putc(sb, '\\'); break;
+                case '/':  ov_jbuf_putc(sb, '/');  break;
+                case 'b':  ov_jbuf_putc(sb, '\b'); break;
+                case 'f':  ov_jbuf_putc(sb, '\f'); break;
+                case 'n':  ov_jbuf_putc(sb, '\n'); break;
+                case 'r':  ov_jbuf_putc(sb, '\r'); break;
+                case 't':  ov_jbuf_putc(sb, '\t'); break;
                 case 'u': {
                     uint32_t cp;
                     if (!hex4(j->p, &cp)) { j->failed = 1; return 0; }
@@ -111,10 +111,10 @@ static int parse_json_string_val(J* j, VyJsonBuf* sb) {
                     emit_utf8(sb, cp);
                     break;
                 }
-                default: vy_jbuf_putc(sb, e); break;
+                default: ov_jbuf_putc(sb, e); break;
             }
         } else {
-            vy_jbuf_putc(sb, (char)c);
+            ov_jbuf_putc(sb, (char)c);
             j->p++;
         }
     }
@@ -127,10 +127,10 @@ static int parse_json_string_val(J* j, VyJsonBuf* sb) {
 static void skip_value(J* j) {
     skip_ws(j);
     if (at(j, '"')) {
-        VyJsonBuf sb;
-        vy_jbuf_init(&sb);
+        OvJsonBuf sb;
+        ov_jbuf_init(&sb);
         parse_json_string_val(j, &sb);
-        vy_jbuf_free(&sb);
+        ov_jbuf_free(&sb);
     } else if (at(j, '{')) {
         j->depth++;
         j->p++;
@@ -138,10 +138,10 @@ static void skip_value(J* j) {
         if (at(j, '}')) { j->p++; j->depth--; return; }
         while (1) {
             skip_ws(j);
-            VyJsonBuf ksb;
-            vy_jbuf_init(&ksb);
+            OvJsonBuf ksb;
+            ov_jbuf_init(&ksb);
             if (!parse_json_string_val(j, &ksb)) { j->depth--; return; }
-            vy_jbuf_free(&ksb);
+            ov_jbuf_free(&ksb);
             skip_ws(j);
             if (!at(j, ':')) { j->depth--; return; }
             j->p++;
@@ -219,7 +219,7 @@ static int parse_path_seg(const char** pp, char* name, size_t namelen, int* is_a
 }
 
 /* ============================================================
- * OPTIMIZED VERSION: Avoids VyStr allocation for key comparison
+ * OPTIMIZED VERSION: Avoids OvStr allocation for key comparison
  * ============================================================ */
 
 /* Fast string parsing into a fixed buffer - no heap allocation */
@@ -255,10 +255,10 @@ static size_t parse_key_to_buf(J* j, char* buf, size_t bufsz) {
 
 /*
  * Optimized extraction using buffer-based key comparison.
- * Eliminates the VyStr allocation per key lookup.
+ * Eliminates the OvStr allocation per key lookup.
  */
-VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
-    if (!json || !path) return vy_nil();
+OvValue ov_json_extract_field(const char* json, size_t len, const char* path) {
+    if (!json || !path) return ov_nil();
     
     J j;
     j.p = json;
@@ -267,7 +267,7 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
     j.failed = 0;
     
     skip_ws(&j);
-    if (!at(&j, '{')) return vy_nil();
+    if (!at(&j, '{')) return ov_nil();
     j.p++;
     
     char seg_name[128];
@@ -280,25 +280,25 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
     
     while (*path_p) {
         if (!parse_path_seg(&path_p, seg_name, sizeof(seg_name), &is_array, &arr_idx)) {
-            return vy_nil();
+            return ov_nil();
         }
         
         /* Find the key in current object */
         int found = 0;
         while (j.p < j.end) {
             skip_ws(&j);
-            if (at(&j, '}')) return vy_nil();
+            if (at(&j, '}')) return ov_nil();
             if (at(&j, ',')) { j.p++; continue; }
             
-            /* Parse key DIRECTLY INTO BUFFER - NO VyStr allocation! */
+            /* Parse key DIRECTLY INTO BUFFER - NO OvStr allocation! */
             size_t key_len = parse_key_to_buf(&j, key_buf, sizeof(key_buf));
             if (key_len == 0) {
-                return vy_nil();
+                return ov_nil();
             }
             
             skip_ws(&j);
             if (!at(&j, ':')) {
-                return vy_nil();
+                return ov_nil();
             }
             j.p++;
             
@@ -313,20 +313,20 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
             skip_value(&j);
         }
         
-        if (!found) return vy_nil();
+        if (!found) return ov_nil();
         
         /* Now we're positioned at the value for the matching key */
         skip_ws(&j);
         
         if (is_array) {
             /* Must be an array - extract element at arr_idx */
-            if (!at(&j, '[')) return vy_nil();
+            if (!at(&j, '[')) return ov_nil();
             j.p++;
             
             int idx = 0;
             while (1) {
                 skip_ws(&j);
-                if (at(&j, ']')) return vy_nil();
+                if (at(&j, ']')) return ov_nil();
                 
                 if (idx == arr_idx) {
                     /* Save the position of this element so we can continue parsing */
@@ -339,25 +339,25 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
                         size_t elem_len = j.p - elem_start;
                         
                         /* Re-run extraction on this element with remaining path */
-                        VyValue val = vy_json_extract_field(elem_start, elem_len, path_p);
+                        OvValue val = ov_json_extract_field(elem_start, elem_len, path_p);
                         return val;
                     }
                     
                     /* No more path - extract the value directly */
-                    VyValue val = vy_nil();
+                    OvValue val = ov_nil();
                     skip_ws(&j);
                     
                     if (at(&j, '"')) {
-                        VyJsonBuf sb;
-                        vy_jbuf_init(&sb);
+                        OvJsonBuf sb;
+                        ov_jbuf_init(&sb);
                         if (parse_json_string_val(&j, &sb)) {
-                            VyStr* s = vy_jbuf_finish(&sb);
-                            val = vy_str(s);
+                            OvStr* s = ov_jbuf_finish(&sb);
+                            val = ov_str(s);
                         }
-                        vy_jbuf_free(&sb);
+                        ov_jbuf_free(&sb);
                     } else if (at(&j, '{') || at(&j, '[')) {
                         /* Nested structure with no more path - return nil for now */
-                        return vy_nil();
+                        return ov_nil();
                     } else {
                         /* Number or literal */
                         const char* start = j.p;
@@ -370,15 +370,15 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
                         char* end;
                         double d = strtod(buf, &end);
                         if (end == buf + n) {
-                            val = vy_float(d);
+                            val = ov_float(d);
                         } else {
                             long long ll = strtoll(buf, &end, 10);
-                            if (end == buf + n) val = vy_int(ll);
-                            else val = vy_bool(0);
+                            if (end == buf + n) val = ov_int(ll);
+                            else val = ov_bool(0);
                         }
-                        if (lit(&j, "true")) val = vy_bool(1);
-                        else if (lit(&j, "false")) val = vy_bool(0);
-                        else if (lit(&j, "null")) val = vy_nil();
+                        if (lit(&j, "true")) val = ov_bool(1);
+                        else if (lit(&j, "false")) val = ov_bool(0);
+                        else if (lit(&j, "null")) val = ov_nil();
                     }
                     
                     /* Skip remaining array elements */
@@ -394,7 +394,7 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
                 /* Skip this element */
                 skip_value(&j);
                 skip_ws(&j);
-                if (at(&j, ']')) { j.p++; return vy_nil(); }
+                if (at(&j, ']')) { j.p++; return ov_nil(); }
                 if (at(&j, ',')) j.p++;
                 idx++;
             }
@@ -402,19 +402,19 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
             /* Object key - check if there are more path segments */
             if (!*path_p) {
                 /* No more path - extract and return this value */
-                VyValue val = vy_nil();
+                OvValue val = ov_nil();
                 
                 if (at(&j, '"')) {
-                    VyJsonBuf sb;
-                    vy_jbuf_init(&sb);
+                    OvJsonBuf sb;
+                    ov_jbuf_init(&sb);
                     if (parse_json_string_val(&j, &sb)) {
-                        VyStr* s = vy_jbuf_finish(&sb);
-                        val = vy_str(s);
+                        OvStr* s = ov_jbuf_finish(&sb);
+                        val = ov_str(s);
                     }
-                    vy_jbuf_free(&sb);
+                    ov_jbuf_free(&sb);
                 } else if (at(&j, '{') || at(&j, '[')) {
                     /* Nested structure - not supported for simple extraction */
-                    return vy_nil();
+                    return ov_nil();
                 } else {
                     /* Number or literal */
                     const char* start = j.p;
@@ -427,15 +427,15 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
                     char* end;
                     double d = strtod(buf, &end);
                     if (end == buf + n) {
-                        val = vy_float(d);
+                        val = ov_float(d);
                     } else {
                         long long ll = strtoll(buf, &end, 10);
-                        if (end == buf + n) val = vy_int(ll);
-                        else val = vy_bool(0);
+                        if (end == buf + n) val = ov_int(ll);
+                        else val = ov_bool(0);
                     }
-                    if (lit(&j, "true")) val = vy_bool(1);
-                    else if (lit(&j, "false")) val = vy_bool(0);
-                    else if (lit(&j, "null")) val = vy_nil();
+                    if (lit(&j, "true")) val = ov_bool(1);
+                    else if (lit(&j, "false")) val = ov_bool(0);
+                    else if (lit(&j, "null")) val = ov_nil();
                 }
                 return val;
             }
@@ -473,7 +473,7 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
                         size_t elem_len = j.p - elem_start;
                         
                         /* Re-run extraction on this element */
-                        VyValue val = vy_json_extract_field(elem_start, elem_len, path_p);
+                        OvValue val = ov_json_extract_field(elem_start, elem_len, path_p);
                         return val;
                     }
                     
@@ -483,20 +483,20 @@ VyValue vy_json_extract_field(const char* json, size_t len, const char* path) {
                     if (at(&j, ',')) j.p++;
                     idx++;
                 }
-                return vy_nil();
+                return ov_nil();
             } else {
-                return vy_nil();
+                return ov_nil();
             }
         }
     }
     
-    return vy_nil();
+    return ov_nil();
 }
 
 /* Fast numeric field accessor - finds "key":<number> and extracts as double
  * Returns 1 on success, 0 on not found/error. */
-int vy_json_get_float(VyValue obj, const char* key, double* out) {
-    if (vy_tagof(obj) != VY_STRING) return 0;
+int ov_json_get_float(OvValue obj, const char* key, double* out) {
+    if (ov_tagof(obj) != OV_STRING) return 0;
     const char* json = obj.str->bytes;
     size_t len = obj.str->len;
     
@@ -529,15 +529,15 @@ int vy_json_get_float(VyValue obj, const char* key, double* out) {
     return 0;
 }
 
-int vy_json_get_int(VyValue obj, const char* key, int64_t* out) {
+int ov_json_get_int(OvValue obj, const char* key, int64_t* out) {
     double d;
-    if (!vy_json_get_float(obj, key, &d)) return 0;
+    if (!ov_json_get_float(obj, key, &d)) return 0;
     *out = (int64_t)d;
     return 1;
 }
 
-int vy_json_get_str(VyValue obj, const char* key, const char** out_data, size_t* out_len) {
-    if (vy_tagof(obj) != VY_STRING) return 0;
+int ov_json_get_str(OvValue obj, const char* key, const char** out_data, size_t* out_len) {
+    if (ov_tagof(obj) != OV_STRING) return 0;
     const char* json = obj.str->bytes;
     size_t len = obj.str->len;
     
@@ -571,7 +571,7 @@ int vy_json_get_str(VyValue obj, const char* key, const char** out_data, size_t*
     return 0;
 }
 
-VyValue vy_json_get_array(VyValue obj, const char* key) {
+OvValue ov_json_get_array(OvValue obj, const char* key) {
     // For now just return nil - would need full parsing
-    return vy_nil();
+    return ov_nil();
 }

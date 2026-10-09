@@ -1,4 +1,4 @@
-// Vayu :: lexer/lexer.h
+// Ovyth :: lexer/lexer.h
 // Hand-written scanner. Produces a vector<Token> for the whole file.
 #pragma once
 
@@ -10,7 +10,7 @@
 #include "diagnostic.h"
 #include "token.h"
 
-namespace vy {
+namespace ov {
 
 struct CompileError : std::runtime_error {
   CompileError(const std::string& msg, int line, int col)
@@ -50,4 +50,4 @@ class Lexer {
   std::vector<Diagnostic> diags_;
 };
 
-}  // namespace vy
+}  // namespace ov

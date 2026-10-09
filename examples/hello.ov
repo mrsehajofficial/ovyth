@@ -1,4 +1,4 @@
-// hello.vy -- the smallest possible Vayu program
+// hello.ov -- the smallest possible Ovyth program
 name = "Sehaj"
 age = 18
 print("Hello, " + name + "!")

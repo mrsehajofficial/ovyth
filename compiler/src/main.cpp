@@ -1,14 +1,14 @@
-// Vayu :: main.cpp
+// Ovyth :: main.cpp
 //
-//   vyc init <dir>           create a new project from a template
-//   vyc <file.vy>            compile to a native executable (default)
-//   vyc run <file.vy>        run with the tree-walking backend
-//   vyc build <file.vy>      alias for the default
-//   vyc check <file.vy>      parse + type check only
-//   vyc fmt <file.vy>        reformat (canonical layout)
-//   vyc ast <file.vy>        dump the AST
-//   vyc tokens <file.vy>     dump the token stream
-//   vyc version
+//   ovc init <dir>           create a new project from a template
+//   ovc <file.ov>            compile to a native executable (default)
+//   ovc run <file.ov>        run with the tree-walking backend
+//   ovc build <file.ov>      alias for the default
+//   ovc check <file.ov>      parse + type check only
+//   ovc fmt <file.ov>        reformat (canonical layout)
+//   ovc ast <file.ov>        dump the AST
+//   ovc tokens <file.ov>     dump the token stream
+//   ovc version
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -33,17 +33,17 @@ constexpr const char* kVersion = "0.1.3";
 
 void usage() {
   std::printf(
-      "vyc %s -- the Vayu compiler\n"
+      "ovc %s -- the Ovyth compiler\n"
       "\n"
       "usage:\n"
-      "  vyc init <dir>             create a new project from a template\n"
-      "  vyc <file.vy>              compile to a native executable\n"
-      "  vyc run <file.vy>          run with the tree-walking backend\n"
-      "  vyc check <file.vy>        parse + type check only\n"
-      "  vyc ast <file.vy>          dump the AST\n"
-      "  vyc tokens <file.vy>       dump the token stream\n"
-      "  vyc fmt <file.vy>          canonical formatting (stdout)\n"
-      "  vyc version\n"
+      "  ovc init <dir>             create a new project from a template\n"
+      "  ovc <file.ov>              compile to a native executable\n"
+      "  ovc run <file.ov>          run with the tree-walking backend\n"
+      "  ovc check <file.ov>        parse + type check only\n"
+      "  ovc ast <file.ov>          dump the AST\n"
+      "  ovc tokens <file.ov>       dump the token stream\n"
+      "  ovc fmt <file.ov>          canonical formatting (stdout)\n"
+      "  ovc version\n"
       "\n"
       "options:\n"
       "  -O<n>        optimisation level (0-3, default 2)\n"
@@ -66,16 +66,16 @@ bool read_file(const std::string& path, std::string& out) {
   return true;
 }
 
-void print_diags(const std::vector<vy::Diagnostic>& diags) {
+void print_diags(const std::vector<ov::Diagnostic>& diags) {
   for (const auto& d : diags) std::fprintf(stderr, "%s\n", d.render().c_str());
 }
 
 void init_usage() {
   std::printf(
       "usage:\n"
-      "  vyc init <dir> [--template=<name>]\n"
+      "  ovc init <dir> [--template=<name>]\n"
       "\n"
-      "creates <dir> with a starter main.vy, a Makefile, a README and a\n"
+      "creates <dir> with a starter main.ov, a Makefile, a README and a\n"
       ".gitignore. An existing directory is accepted only while it is empty.\n"
       "\n"
       "templates:\n"
@@ -84,8 +84,8 @@ void init_usage() {
       "  cli      a small interactive command loop\n"
       "\n"
       "examples:\n"
-      "  vyc init myapp\n"
-      "  vyc init scraper --template=http\n");
+      "  ovc init myapp\n"
+      "  ovc init scraper --template=http\n");
 }
 
 int run_init(const std::vector<std::string>& args, size_t i) {
@@ -100,12 +100,12 @@ int run_init(const std::vector<std::string>& args, size_t i) {
       init_usage();
       return 0;
     } else if (a.rfind("-", 0) == 0 && a.size() > 1) {
-      std::fprintf(stderr, "vyc: unknown option '%s'\n", a.c_str());
+      std::fprintf(stderr, "ovc: unknown option '%s'\n", a.c_str());
       return 2;
     } else if (dir.empty()) {
       dir = a;
     } else {
-      std::fprintf(stderr, "vyc: init takes a single directory\n");
+      std::fprintf(stderr, "ovc: init takes a single directory\n");
       return 2;
     }
   }
@@ -116,8 +116,8 @@ int run_init(const std::vector<std::string>& args, size_t i) {
   }
 
   std::string err;
-  if (!vy::scaffold_project(dir, tmpl, err)) {
-    std::fprintf(stderr, "vyc: %s\n", err.c_str());
+  if (!ov::scaffold_project(dir, tmpl, err)) {
+    std::fprintf(stderr, "ovc: %s\n", err.c_str());
     return 1;
   }
 
@@ -126,7 +126,7 @@ int run_init(const std::vector<std::string>& args, size_t i) {
   std::printf("\ncreated %s/ with the '%s' template\n\n", path.c_str(), tmpl.c_str());
   std::printf("next:\n");
   std::printf("  cd %s\n", dir.c_str());
-  std::printf("  vyc run main.vy      run it with the interpreter\n");
+  std::printf("  ovc run main.ov      run it with the interpreter\n");
   std::printf("  make build           compile to %s/build/app\n", path.c_str());
   return 0;
 }
@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (args[0] == "version" || args[0] == "--version" || args[0] == "-v") {
-    std::printf("vyc %s (Vayu)\n", kVersion);
+    std::printf("ovc %s (Ovyth)\n", kVersion);
     return 0;
   }
   if (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
   // compiler option parser below, so it is handled before it.
   if (cmd == "init") return run_init(args, i);
 
-  vy::Options opt;
+  ov::Options opt;
   std::string input;
   for (; i < args.size(); i++) {
     const std::string& a = args[i];
@@ -188,13 +188,13 @@ int main(int argc, char** argv) {
       if (t == "native") {
         opt.target_native = true;
       } else {
-        std::fprintf(stderr, "vyc: unknown target '%s' (try: native)\n", t.c_str());
+        std::fprintf(stderr, "ovc: unknown target '%s' (try: native)\n", t.c_str());
         return 2;
       }
     } else if (a == "--no-strip") {
       opt.no_strip = true;
     } else if (a.rfind("-", 0) == 0 && a.size() > 1) {
-      std::fprintf(stderr, "vyc: unknown option '%s'\n", a.c_str());
+      std::fprintf(stderr, "ovc: unknown option '%s'\n", a.c_str());
       return 2;
     } else if (input.empty()) {
       input = a;
@@ -210,20 +210,20 @@ int main(int argc, char** argv) {
 
   std::string source;
   if (!read_file(input, source)) {
-    std::fprintf(stderr, "vyc: cannot open '%s'\n", input.c_str());
+    std::fprintf(stderr, "ovc: cannot open '%s'\n", input.c_str());
     return 2;
   }
 
   // ---- front end --------------------------------------------------------
-  vy::Lexer lexer(source, input);
-  std::vector<vy::Token> tokens = lexer.scan();
+  ov::Lexer lexer(source, input);
+  std::vector<ov::Token> tokens = lexer.scan();
   if (!lexer.diagnostics().empty()) {
     print_diags(lexer.diagnostics());
     return 1;
   }
 
-  vy::Parser parser(std::move(tokens), input);
-  vy::ast::Program program = parser.parse();
+  ov::Parser parser(std::move(tokens), input);
+  ov::ast::Program program = parser.parse();
   if (!program.diags.empty()) {
     print_diags(program.diags);
     return 1;
@@ -231,26 +231,26 @@ int main(int argc, char** argv) {
 
   if (cmd == "tokens") {
     // re-scan for display (the parser consumed the vector)
-    vy::Lexer lx(source, input);
+    ov::Lexer lx(source, input);
     for (const auto& t : lx.scan())
-      std::printf("%-14s %-4d:%-3d  %s\n", vy::tok_name(t.kind), t.line, t.col,
+      std::printf("%-14s %-4d:%-3d  %s\n", ov::tok_name(t.kind), t.line, t.col,
                   std::string(t.text).c_str());
     return 0;
   }
 
   if (cmd == "ast") {
     std::string out;
-    vy::ast::dump_ast(program, out);
+    ov::ast::dump_ast(program, out);
     std::printf("%s", out.c_str());
     return 0;
   }
 
   if (cmd == "fmt") {
-    std::printf("%s", vy::format_program(program, source).c_str());
+    std::printf("%s", ov::format_program(program, source).c_str());
     return 0;
   }
 
-  vy::Sema sema;
+  ov::Sema sema;
   bool ok = sema.run(program);
   if (!program.diags.empty()) {
     print_diags(program.diags);
@@ -260,7 +260,7 @@ int main(int argc, char** argv) {
   if (opt.stats) {
     for (const auto& kv : sema.globals) {
       std::fprintf(stderr, "  %-20s %s\n", kv.first.c_str(),
-                   vy::ty_name(kv.second));
+                   ov::ty_name(kv.second));
     }
   }
 
@@ -271,11 +271,11 @@ int main(int argc, char** argv) {
 
   // ---- backend ----------------------------------------------------------
   if (cmd == "run") {
-    vy::Interp interp(program, input);
+    ov::Interp interp(program, input);
     return interp.run();
   }
 
   // native compilation
-  vy::Driver driver(input, opt);
+  ov::Driver driver(input, opt);
   return driver.compile(program, sema, source);
 }

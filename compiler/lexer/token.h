@@ -1,12 +1,12 @@
-// Vayu :: lexer/token.h
-// Token vocabulary for the Vayu language.
+// Ovyth :: lexer/token.h
+// Token vocabulary for the Ovyth language.
 #pragma once
 
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-namespace vy {
+namespace ov {
 
 enum class Tok : uint8_t {
   // ---- literals / names -------------------------------------------------
@@ -65,4 +65,4 @@ struct Token {
   bool is(Tok k) const { return kind == k; }
 };
 
-}  // namespace vy
+}  // namespace ov

@@ -1,6 +1,6 @@
-# Vayu build
+# Ovyth build
 #
-#   make            -> build compiler (vyc) + runtime (libvyrt.a)
+#   make            -> build compiler (ovc) + runtime (libovrt.a)
 #   make test       -> build everything and run the test suite
 #   make clean
 
@@ -18,7 +18,7 @@ LDFLAGS  :=
 # --- runtime ---------------------------------------------------------------
 RT_SRC   := $(wildcard runtime/src/*.c)
 RT_OBJ   := $(patsubst %.c,$(BUILD)/%.o,$(RT_SRC))
-RT_LIB   := $(BUILD)/libvyrt.a
+RT_LIB   := $(BUILD)/libovrt.a
 
 RT_INC   := $(shell $(LLVM_CONFIG) --includedir)
 # -ffunction-sections/-fdata-sections let the linker's --gc-sections drop the
@@ -38,11 +38,11 @@ CC_OBJ   := $(patsubst %.cpp,$(BUILD)/%.o,$(CC_CPP))
 # Header dependency tracking: without this, editing runtime/include/*.h left
 # stale objects that still referenced the old symbols (undefined refs at link).
 -include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d)
-VYC      := $(BUILD)/vyc
+OVC      := $(BUILD)/ovc
 
 .PHONY: all test clean runtime examples chatbot install uninstall
 
-all: $(VYC) $(RT_LIB)
+all: $(OVC) $(RT_LIB)
 
 # --- compile rules ---------------------------------------------------------
 # The runtime is C and must go through the C compiler; the explicit pattern
@@ -66,7 +66,7 @@ $(RT_LIB): $(RT_OBJ)
 	$(AR) rcs $@ $^
 	@echo "  AR    $@"
 
-$(VYC): $(CC_OBJ) $(RT_LIB)
+$(OVC): $(CC_OBJ) $(RT_LIB)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(CC_OBJ) $(RT_LIB) $(RT_LDLIBS) -o $@
 	@echo "  LINK  $@"
@@ -76,15 +76,15 @@ $(VYC): $(CC_OBJ) $(RT_LIB)
 # key and a network, so it is filtered out rather than breaking `make examples`
 # for someone who just cloned the repo -- `make chatbot` runs it against the
 # bundled mock server instead.
-EXAMPLES := $(filter-out examples/chatbot/chatbot.vy, \
-              $(wildcard examples/*/*.vy examples/*.vy))
+EXAMPLES := $(filter-out examples/chatbot/chatbot.ov, \
+              $(wildcard examples/*/*.ov examples/*.ov))
 
-examples: $(VYC)
+examples: $(OVC)
 	@set -e; for f in $(EXAMPLES); do \
 	  echo "  ---- running $$f"; \
-	  $(VYC) run "$$f" < /dev/null; \
+	  $(OVC) run "$$f" < /dev/null; \
 	done
-	@echo "  ---- skipped examples/chatbot/chatbot.vy (it needs AI_API_KEY)"
+	@echo "  ---- skipped examples/chatbot/chatbot.ov (it needs AI_API_KEY)"
 	@echo "       run it offline against the mock server: make chatbot"
 
 # A full round trip through examples/chatbot: start the mock OpenAI-compatible
@@ -92,14 +92,14 @@ examples: $(VYC)
 # port with `make chatbot MOCK_PORT=9000` if 8642 is taken.
 MOCK_PORT ?= 8642
 
-chatbot: $(VYC)
+chatbot: $(OVC)
 	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
 	@python3 examples/chatbot/mock_server.py $(MOCK_PORT) & mock=$$!; \
 	 trap 'kill $$mock 2>/dev/null' EXIT; \
 	 sleep 1; \
 	 printf 'hello from make\nexit\n' | \
 	   AI_API_KEY=test AI_API_URL=http://127.0.0.1:$(MOCK_PORT)/v1/chat AI_MODEL=mock-model \
-	   $(VYC) run examples/chatbot/chatbot.vy
+	   $(OVC) run examples/chatbot/chatbot.ov
 
 # --- runtime self-test ----------------------------------------------------
 RT_TEST := $(BUILD)/runtime_test
@@ -109,14 +109,14 @@ $(RT_TEST): tests/runtime_test.c $(RT_LIB)
 	$(CC) $(RT_CFLAGS) $< $(RT_LIB) $(RT_LDLIBS) -o $@
 
 # --- language test suite --------------------------------------------------
-test: $(VYC) $(RT_TEST)
+test: $(OVC) $(RT_TEST)
 	@$(RT_TEST)
 	@bash tests/interp.sh
 
 # --- install --------------------------------------------------------------
-# vyc resolves libvyrt.a and the runtime headers relative to its own path (see
+# ovc resolves libovrt.a and the runtime headers relative to its own path (see
 # runtime_archive_path in compiler/src/driver.cpp), so the resulting prefix is
-# self-contained: bin/vyc + lib/libvyrt.a + include/vyrt.h. Nothing else has to
+# self-contained: bin/ovc + lib/libovrt.a + include/ovrt.h. Nothing else has to
 # be configured, and the prefix can be moved.
 #
 #   make install                      -> /usr/local (needs root)
@@ -127,16 +127,16 @@ DESTDIR ?=
 
 install: all
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/lib $(DESTDIR)$(PREFIX)/include
-	install -m 755 $(VYC) $(DESTDIR)$(PREFIX)/bin/vyc
-	install -m 644 $(RT_LIB) $(DESTDIR)$(PREFIX)/lib/libvyrt.a
-	install -m 644 runtime/include/vyrt.h runtime/include/vyrt_helpers.h $(DESTDIR)$(PREFIX)/include/
-	@echo "installed vyc into $(DESTDIR)$(PREFIX)"
+	install -m 755 $(OVC) $(DESTDIR)$(PREFIX)/bin/ovc
+	install -m 644 $(RT_LIB) $(DESTDIR)$(PREFIX)/lib/libovrt.a
+	install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h $(DESTDIR)$(PREFIX)/include/
+	@echo "installed ovc into $(DESTDIR)$(PREFIX)"
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/vyc \
-	      $(DESTDIR)$(PREFIX)/lib/libvyrt.a \
-	      $(DESTDIR)$(PREFIX)/include/vyrt.h \
-	      $(DESTDIR)$(PREFIX)/include/vyrt_helpers.h
+	rm -f $(DESTDIR)$(PREFIX)/bin/ovc \
+	      $(DESTDIR)$(PREFIX)/lib/libovrt.a \
+	      $(DESTDIR)$(PREFIX)/include/ovrt.h \
+	      $(DESTDIR)$(PREFIX)/include/ovrt_helpers.h
 
 clean:
 	rm -rf $(BUILD)

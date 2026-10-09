@@ -1,14 +1,14 @@
-/* Vayu runtime :: src/json_fast.c
+/* Ovyth runtime :: src/json_fast.c
  *
  * Fast JSON parser that reuses a temporary buffer instead of allocating
- * a fresh VyStr for every character in a string literal.  This reduces
+ * a fresh OvStr for every character in a string literal.  This reduces
  * a 60-char JSON string from ~61 calloc calls down to ~1-2.
  *
  * The parsed map/list values are still normal GC-tracked objects so they
  * survive beyond the parse call.
  */
-#include "vyrt.h"
-#include "vy_sb.h"
+#include "ovrt.h"
+#include "ov_sb.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -25,7 +25,7 @@ typedef struct {
   char        err[192];
 } J;
 
-static VyValue parse_value(J* j, VyJsonBuf* sb);
+static OvValue parse_value(J* j, OvJsonBuf* sb);
 
 static void fail(J* j, const char* msg) {
   if (!j->failed) {
@@ -65,7 +65,7 @@ static int hex4(const char* p, uint32_t* out) {
   return 1;
 }
 
-static void emit_utf8(VyJsonBuf* sb, uint32_t cp) {
+static void emit_utf8(OvJsonBuf* sb, uint32_t cp) {
   char buf[4];
   int n = 0;
   if (cp < 0x80) {
@@ -83,18 +83,18 @@ static void emit_utf8(VyJsonBuf* sb, uint32_t cp) {
     buf[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
     buf[n++] = (char)(0x80 | (cp & 0x3F));
   }
-  vy_jbuf_append(sb, buf, (size_t)n);
+  ov_jbuf_append(sb, buf, (size_t)n);
 }
 
 /*
  * Parse a JSON string value into `sb`.
- * Reuses the same VyJsonBuf across calls — only one heap block per
+ * Reuses the same OvJsonBuf across calls — only one heap block per
  * logical string regardless of escape sequence count.
  */
-static int parse_json_string(J* j, VyJsonBuf* sb) {
+static int parse_json_string(J* j, OvJsonBuf* sb) {
   if (!at(j, '"')) return 0;
   j->p++;
-  vy_jbuf_init(sb);
+  ov_jbuf_init(sb);
   while (j->p < j->end && *j->p != '"') {
     unsigned char c = (unsigned char)*j->p;
     if (c == '\\') {
@@ -102,14 +102,14 @@ static int parse_json_string(J* j, VyJsonBuf* sb) {
       if (j->p >= j->end) break;
       char e = *j->p++;
       switch (e) {
-        case '"':  vy_jbuf_putc(sb, '"');  break;
-        case '\\': vy_jbuf_putc(sb, '\\'); break;
-        case '/':  vy_jbuf_putc(sb, '/');  break;
-        case 'b':  vy_jbuf_putc(sb, '\b'); break;
-        case 'f':  vy_jbuf_putc(sb, '\f'); break;
-        case 'n':  vy_jbuf_putc(sb, '\n'); break;
-        case 'r':  vy_jbuf_putc(sb, '\r'); break;
-        case 't':  vy_jbuf_putc(sb, '\t'); break;
+        case '"':  ov_jbuf_putc(sb, '"');  break;
+        case '\\': ov_jbuf_putc(sb, '\\'); break;
+        case '/':  ov_jbuf_putc(sb, '/');  break;
+        case 'b':  ov_jbuf_putc(sb, '\b'); break;
+        case 'f':  ov_jbuf_putc(sb, '\f'); break;
+        case 'n':  ov_jbuf_putc(sb, '\n'); break;
+        case 'r':  ov_jbuf_putc(sb, '\r'); break;
+        case 't':  ov_jbuf_putc(sb, '\t'); break;
         case 'u': {
           uint32_t cp;
           if (!hex4(j->p, &cp)) { fail(j, "bad unicode escape"); return 0; }
@@ -138,7 +138,7 @@ static int parse_json_string(J* j, VyJsonBuf* sb) {
           fail(j, "bad escape"); return 0;
       }
     } else {
-      vy_jbuf_putc(sb, (char)c);
+      ov_jbuf_putc(sb, (char)c);
       j->p++;
     }
   }
@@ -147,24 +147,24 @@ static int parse_json_string(J* j, VyJsonBuf* sb) {
   return 1;
 }
 
-static VyValue parse_value(J* j, VyJsonBuf* sb) {
+static OvValue parse_value(J* j, OvJsonBuf* sb) {
   skip_ws(j);
-  if (j->p >= j->end) { fail(j, "unexpected EOF"); return vy_nil(); }
+  if (j->p >= j->end) { fail(j, "unexpected EOF"); return ov_nil(); }
 
   char c = *j->p;
 
   /* --- string --------------------------------------------------------- */
   if (c == '"') {
-    if (!parse_json_string(j, sb)) return vy_nil();
-    VyStr* s = vy_jbuf_finish(sb);
-    return vy_str(s);
+    if (!parse_json_string(j, sb)) return ov_nil();
+    OvStr* s = ov_jbuf_finish(sb);
+    return ov_str(s);
   }
 
   /* --- number --------------------------------------------------------- */
   if (c == '-' || (c >= '0' && c <= '9')) {
     char* end;
     double d = strtod(j->p, &end);
-    if (end == j->p) { fail(j, "bad number"); return vy_nil(); }
+    if (end == j->p) { fail(j, "bad number"); return ov_nil(); }
     j->p = end;
     skip_ws(j);
     if (*j->p == '.') {
@@ -183,74 +183,74 @@ static VyValue parse_value(J* j, VyJsonBuf* sb) {
         buf[m] = '\0';
         d = strtod(buf, NULL);
       }
-      return vy_float(d);
+      return ov_float(d);
     }
     int64_t i64 = (int64_t)d;
-    if ((double)i64 == d) return vy_int(i64);
-    return vy_float(d);
+    if ((double)i64 == d) return ov_int(i64);
+    return ov_float(d);
   }
 
   /* --- object --------------------------------------------------------- */
   if (c == '{') {
     j->p++;
-    if (j->depth++ > JSON_MAX_DEPTH) { fail(j, "object too deep"); return vy_nil(); }
-    VyMap* m = vy_map_new();
+    if (j->depth++ > JSON_MAX_DEPTH) { fail(j, "object too deep"); return ov_nil(); }
+    OvMap* m = ov_map_new();
     skip_ws(j);
-    if (at(j, '}')) { j->p++; j->depth--; return vy_map(m); }
+    if (at(j, '}')) { j->p++; j->depth--; return ov_map(m); }
     while (1) {
       skip_ws(j);
       /* key must be a string */
-      VyJsonBuf key_sb;
-      if (!parse_json_string(j, &key_sb)) { j->depth--; return vy_nil(); }
-      VyStr* key_s = vy_jbuf_finish(&key_sb);
-      VyValue key_v = vy_str(key_s);
+      OvJsonBuf key_sb;
+      if (!parse_json_string(j, &key_sb)) { j->depth--; return ov_nil(); }
+      OvStr* key_s = ov_jbuf_finish(&key_sb);
+      OvValue key_v = ov_str(key_s);
       skip_ws(j);
-      if (!at(j, ':')) { fail(j, "expected ':'"); j->depth--; return vy_nil(); }
+      if (!at(j, ':')) { fail(j, "expected ':'"); j->depth--; return ov_nil(); }
       j->p++;
       skip_ws(j);
-      VyValue val = parse_value(j, sb);
-      vy_map_set(m, key_v, val);
+      OvValue val = parse_value(j, sb);
+      ov_map_set(m, key_v, val);
       skip_ws(j);
       if (at(j, ',')) { j->p++; continue; }
       if (at(j, '}')) { j->p++; break; }
-      fail(j, "expected ',' or '}'"); j->depth--; return vy_nil();
+      fail(j, "expected ',' or '}'"); j->depth--; return ov_nil();
     }
     j->depth--;
-    return vy_map(m);
+    return ov_map(m);
   }
 
   /* --- array ---------------------------------------------------------- */
   if (c == '[') {
     j->p++;
-    if (j->depth++ > JSON_MAX_DEPTH) { fail(j, "array too deep"); return vy_nil(); }
-    VyList* l = vy_list_new();
+    if (j->depth++ > JSON_MAX_DEPTH) { fail(j, "array too deep"); return ov_nil(); }
+    OvList* l = ov_list_new();
     skip_ws(j);
-    if (at(j, ']')) { j->p++; j->depth--; return vy_list(l); }
+    if (at(j, ']')) { j->p++; j->depth--; return ov_list(l); }
     while (1) {
       skip_ws(j);
-      VyValue elem = parse_value(j, sb);
-      vy_list_push(l, elem);
+      OvValue elem = parse_value(j, sb);
+      ov_list_push(l, elem);
       skip_ws(j);
       if (at(j, ',')) { j->p++; continue; }
       if (at(j, ']')) { j->p++; break; }
-      fail(j, "expected ',' or ']'"); j->depth--; return vy_nil();
+      fail(j, "expected ',' or ']'"); j->depth--; return ov_nil();
     }
     j->depth--;
-    return vy_list(l);
+    return ov_list(l);
   }
 
   /* --- literals ------------------------------------------------------- */
-  if (lit(j, "true"))  return vy_bool(1);
-  if (lit(j, "false")) return vy_bool(0);
-  if (lit(j, "null"))  return vy_nil();
+  if (lit(j, "true"))  return ov_bool(1);
+  if (lit(j, "false")) return ov_bool(0);
+  if (lit(j, "null"))  return ov_nil();
 
   fail(j, "unexpected character");
-  return vy_nil();
+  return ov_nil();
 }
 
 /* --------------------------------------------------------------------- public */
 
-VyValue vy_json_parse_fast(const char* text, size_t len, VyArena* arena) {
+OvValue ov_json_parse_fast(const char* text, size_t len, OvArena* arena) {
   (void)arena;
   J j;
   j.p      = text;
@@ -258,19 +258,19 @@ VyValue vy_json_parse_fast(const char* text, size_t len, VyArena* arena) {
   j.depth  = 0;
   j.failed = 0;
   /* One reusable buffer per parse call. */
-  VyJsonBuf sb;
-  vy_jbuf_init(&sb);
-  /* Disable GC for the duration: intermediate C-stack locals (VyMap*, VyStr*,
-   * sub-value VyValues) are not registered as GC roots. A collection triggered
+  OvJsonBuf sb;
+  ov_jbuf_init(&sb);
+  /* Disable GC for the duration: intermediate C-stack locals (OvMap*, OvStr*,
+   * sub-value OvValues) are not registered as GC roots. A collection triggered
    * by any allocation inside parse_value would free live objects. */
-  vy_gc_begin_mutation();
-  VyValue v = parse_value(&j, &sb);
-  vy_gc_end_mutation();
-  vy_jbuf_free(&sb);
+  ov_gc_begin_mutation();
+  OvValue v = parse_value(&j, &sb);
+  ov_gc_end_mutation();
+  ov_jbuf_free(&sb);
   if (j.failed) {
     /* On failure, try the legacy parser for the error message. */
-    (void)vy_json_parse(text, len);
-    return vy_nil();
+    (void)ov_json_parse(text, len);
+    return ov_nil();
   }
   skip_ws(&j);
   if (j.p < j.end) fail(&j, "trailing data");

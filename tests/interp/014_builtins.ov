@@ -3,10 +3,10 @@
 // runs this through BOTH backends, so any drift between them fails here.
 
 // env_or falls back when the variable is unset; env reads what setenv wrote.
-print(env_or("VAYU_TEST_UNSET_NAME", "fallback"))
-setenv("VAYU_TEST_SET_NAME", "written")
-print(env("VAYU_TEST_SET_NAME"))
-print(env_or("VAYU_TEST_SET_NAME", "fallback"))
+print(env_or("OVYTH_TEST_UNSET_NAME", "fallback"))
+setenv("OVYTH_TEST_SET_NAME", "written")
+print(env("OVYTH_TEST_SET_NAME"))
+print(env_or("OVYTH_TEST_SET_NAME", "fallback"))
 
 // pad pads on the left by default, with an optional fill character, and never
 // truncates. The function form takes the string as its first argument.

@@ -3,7 +3,7 @@
 #include <cmath>
 #include <sstream>
 
-namespace vy {
+namespace ov {
 using namespace ast;
 
 namespace {
@@ -290,4 +290,4 @@ std::string format_program(const Program& program, const std::string& source) {
   return f.o.str();
 }
 
-}  // namespace vy
+}  // namespace ov

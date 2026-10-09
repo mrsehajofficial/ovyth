@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vayu :: benchmarks/compare.sh
+# Ovyth :: benchmarks/compare.sh
 #
 # Like-for-like comparison against other implementations of the same
 # algorithms (spec section 35). Same input, same algorithm, same output -- and
@@ -10,19 +10,19 @@
 #
 # Methodology: every implementation prints "<case> <ms> <result>" lines and
 # times its own cases internally, so these numbers exclude process startup.
-# Vayu's whole-process wall clock is reported separately by run.sh; the gap is
+# Ovyth's whole-process wall clock is reported separately by run.sh; the gap is
 # the ~4 ms of process start, which is disclosed rather than hidden.
 set -u
 cd "$(dirname "$0")/.."
 
-VYC="${VYC:-build/vyc}"
+OVC="${OVC:-build/ovc}"
 REPS="${REPS:-3}"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
 CASES="intloop fib strconcat listappend mapops"
 
-echo "=== Vayu vs C vs Python -- same algorithms, same outputs ==="
+echo "=== Ovyth vs C vs Python -- same algorithms, same outputs ==="
 echo
 
 # --- build the references ---
@@ -36,7 +36,7 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 
 for c in $CASES; do
-  "$VYC" "benchmarks/cases/$c.vy" --release -o "$OUT/$c" >/dev/null 2>&1
+  "$OVC" "benchmarks/cases/$c.ov" --release -o "$OUT/$c" >/dev/null 2>&1
 done
 
 # best-of-N wall clock for one whole binary; echoes "ms"
@@ -51,7 +51,7 @@ wall_ms() {
   echo "$best"
 }
 
-printf '%-12s %11s %11s %11s   %s\n' case "Vayu (wall)" "C -O3" Python "result check"
+printf '%-12s %11s %11s %11s   %s\n' case "Ovyth (wall)" "C -O3" Python "result check"
 printf '%s\n' "--------------------------------------------------------------------"
 
 for c in $CASES; do
@@ -74,11 +74,11 @@ for c in $CASES; do
   fi
 
   # Compare only the part that is the computed answer.
-  chk="vy/c: "
+  chk="ov/c: "
   if [[ -n "$c_out" ]]; then
     v_ans=$(echo "$v_out" | tr -d ' ')
     c_ans=$(echo "$c_out" | tr -d ' ')
-    if [[ "$v_ans" == "$c_ans" ]]; then chk="identical"; else chk="DIFFERS vy=[$v_ans] c=[$c_ans]"; fi
+    if [[ "$v_ans" == "$c_ans" ]]; then chk="identical"; else chk="DIFFERS ov=[$v_ans] c=[$c_ans]"; fi
   else
     chk="(no C)"
   fi
@@ -95,10 +95,10 @@ done
 
 echo
 if (( HAVE_C && HAVE_PY )); then
-  echo "Result columns are checked, not assumed: Vayu's answer must match C's."
+  echo "Result columns are checked, not assumed: Ovyth's answer must match C's."
 else
   echo "Some references were unavailable; columns are omitted rather than estimated."
 fi
 echo "Rust and Go are not installed on this machine, so they are omitted too."
-echo "Vayu numbers are whole-process wall clock; C/Python time their cases"
-echo "internally, so Vayu's column additionally carries ~4ms of process start."
+echo "Ovyth numbers are whole-process wall clock; C/Python time their cases"
+echo "internally, so Ovyth's column additionally carries ~4ms of process start."

@@ -1,4 +1,4 @@
-// Vayu :: ast/ast.h
+// Ovyth :: ast/ast.h
 // AST node definitions. Arena-allocated by the parser (see ast/arena.h).
 #pragma once
 
@@ -9,7 +9,7 @@
 #include "../lexer/diagnostic.h"
 #include "../lexer/token.h"
 
-namespace vy {
+namespace ov {
 namespace ast {
 
 struct Expr;
@@ -173,8 +173,8 @@ struct Program {
   std::vector<Diagnostic> diags;
 };
 
-// AST dumper used by `vyc --dump-ast`.
+// AST dumper used by `ovc --dump-ast`.
 void dump_ast(const Program& p, std::string& out);
 
 }  // namespace ast
-}  // namespace vy
+}  // namespace ov

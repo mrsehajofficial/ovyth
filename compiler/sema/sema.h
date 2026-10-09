@@ -1,4 +1,4 @@
-// Vayu :: sema/sema.h
+// Ovyth :: sema/sema.h
 // Type inference + static checks. No annotations required; annotations are
 // honoured when present (function greet(name: String) -> String { ... }).
 #pragma once
@@ -9,7 +9,7 @@
 
 #include "../ast/ast.h"
 
-namespace vy {
+namespace ov {
 
 enum class Ty {
   Unknown, Nil, Bool, Int, Float, Str, List, Map, Func, Any, Never, Error
@@ -46,7 +46,7 @@ class Sema {
   const std::vector<Diagnostic>& diagnostics() const { return diags_; }
   const std::unordered_map<std::string, FuncSig>& functions() const { return funcs_; }
 
-  // Inferred type of a top-level variable, for `vyc --types`.
+  // Inferred type of a top-level variable, for `ovc --types`.
   std::unordered_map<std::string, Ty> globals;
   
   // Proven type info for codegen optimization.
@@ -87,4 +87,4 @@ class Sema {
   int errors_ = 0;
 };
 
-}  // namespace vy
+}  // namespace ov

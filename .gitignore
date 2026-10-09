@@ -7,8 +7,8 @@ build/
 *.ll
 *.bc
 
-# ---- binaries from running `vyc <file>.vy` in place ------------------------
-# (vyc writes the executable next to the source, with the extension removed)
+# ---- binaries from running `ovc <file>.ov` in place ------------------------
+# (ovc writes the executable next to the source, with the extension removed)
 examples/chatbot/chatbot
 tests/gemini_ask
 /hello

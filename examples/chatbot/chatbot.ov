@@ -1,4 +1,4 @@
-// Vayu :: examples/chatbot/chatbot.vy
+// Ovyth :: examples/chatbot/chatbot.ov
 //
 // An automation-focused chatbot with tool support.
 //
@@ -14,8 +14,8 @@
 //   AI_MODEL     - model name   (default: my-model)
 //
 // Run:
-//   vyc run chatbot.vy          # interpreter mode
-//   vyc chatbot.vy --release    # native binary
+//   ovc run chatbot.ov          # interpreter mode
+//   ovc chatbot.ov --release    # native binary
 
 // --- Helpers (must be defined before use) ---
 
@@ -47,7 +47,7 @@ if api_key == "" {
 history = [{"role": "system", "content": "You are a helpful automation assistant."}]
 turn_count = 0
 
-print("=== Vayu Automation Chatbot ===")
+print("=== Ovyth Automation Chatbot ===")
 print("Type 'exit' to quit\n")
 
 // --- Main Loop ---

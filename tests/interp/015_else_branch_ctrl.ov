@@ -1,4 +1,4 @@
-// 015_else_branch_ctrl.vy -- `continue` / `break` living only in an else branch
+// 015_else_branch_ctrl.ov -- `continue` / `break` living only in an else branch
 //
 // The code generator asks the loop body whether it uses `continue` / `break` to
 // decide whether to emit the jump label. That walk used to inspect only the

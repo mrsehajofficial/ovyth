@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace vy {
+namespace ov {
 
 using namespace ast;
 
@@ -650,4 +650,4 @@ Ty Sema::check_expr(Expr* e) {
   return Ty::Unknown;
 }
 
-}  // namespace vy
+}  // namespace ov

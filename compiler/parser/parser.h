@@ -1,4 +1,4 @@
-// Vayu :: parser/parser.h
+// Ovyth :: parser/parser.h
 // Recursive-descent parser producing the AST.
 #pragma once
 
@@ -8,7 +8,7 @@
 #include "../ast/ast.h"
 #include "../lexer/lexer.h"
 
-namespace vy {
+namespace ov {
 
 // Thrown to abandon a parse once a diagnostic has been recorded. See
 // Parser::error for why in-place recovery is not safe.
@@ -88,4 +88,4 @@ class Parser {
   int fn_depth_ = 0;
 };
 
-}  // namespace vy
+}  // namespace ov

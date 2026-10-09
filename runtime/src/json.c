@@ -1,14 +1,14 @@
-/* Vayu runtime :: src/json.c
+/* Ovyth runtime :: src/json.c
  *
  * JSON <-> native values. Parsing builds the language's own list/map values,
  * so `response.json["choices"][0]["message"]["content"]` needs no glue code:
- * this is the single place where JSON shapes become Vayu shapes.
+ * this is the single place where JSON shapes become Ovyth shapes.
  *
  * Hand-written recursive-descent parser with an explicit depth limit and
  * strict trailing-comma / duplicate handling, because an API response is
  * untrusted input.
  */
-#include "vyrt.h"
+#include "ovrt.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -25,7 +25,7 @@ typedef struct {
   char err[192];
 } J;
 
-static VyValue parse_value(J* j);
+static OvValue parse_value(J* j);
 
 static void fail(J* j, const char* msg) {
   if (!j->failed) {
@@ -51,7 +51,7 @@ static int lit(J* j, const char* s) {
   return 1;
 }
 
-static void encode_utf8(VyStr** out, uint32_t cp) {
+static void encode_utf8(OvStr** out, uint32_t cp) {
   char buf[4];
   int n = 0;
   if (cp < 0x80) {
@@ -69,7 +69,7 @@ static void encode_utf8(VyStr** out, uint32_t cp) {
     buf[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
     buf[n++] = (char)(0x80 | (cp & 0x3F));
   }
-  *out = vy_str_concat(*out, vy_str_new(buf, (size_t)n));
+  *out = ov_str_concat(*out, ov_str_new(buf, (size_t)n));
 }
 
 static int hex4(const char* p, uint32_t* out) {
@@ -86,10 +86,10 @@ static int hex4(const char* p, uint32_t* out) {
   return 1;
 }
 
-static VyValue parse_string(J* j) {
-  if (!at(j, '"')) { fail(j, "expected a string"); return vy_nil(); }
+static OvValue parse_string(J* j) {
+  if (!at(j, '"')) { fail(j, "expected a string"); return ov_nil(); }
   j->p++;
-  VyStr* out = vy_str_new("", 0);
+  OvStr* out = ov_str_new("", 0);
   while (j->p < j->end && *j->p != '"') {
     unsigned char c = (unsigned char)*j->p;
     if (c == '\\') {
@@ -97,17 +97,17 @@ static VyValue parse_string(J* j) {
       if (j->p >= j->end) break;
       char e = *j->p++;
       switch (e) {
-        case '"':  out = vy_str_concat(out, vy_str_new("\"", 1)); break;
-        case '\\': out = vy_str_concat(out, vy_str_new("\\", 1)); break;
-        case '/':  out = vy_str_concat(out, vy_str_new("/", 1));  break;
-        case 'b':  out = vy_str_concat(out, vy_str_new("\b", 1)); break;
-        case 'f':  out = vy_str_concat(out, vy_str_new("\f", 1)); break;
-        case 'n':  out = vy_str_concat(out, vy_str_new("\n", 1)); break;
-        case 'r':  out = vy_str_concat(out, vy_str_new("\r", 1)); break;
-        case 't':  out = vy_str_concat(out, vy_str_new("\t", 1)); break;
+        case '"':  out = ov_str_concat(out, ov_str_new("\"", 1)); break;
+        case '\\': out = ov_str_concat(out, ov_str_new("\\", 1)); break;
+        case '/':  out = ov_str_concat(out, ov_str_new("/", 1));  break;
+        case 'b':  out = ov_str_concat(out, ov_str_new("\b", 1)); break;
+        case 'f':  out = ov_str_concat(out, ov_str_new("\f", 1)); break;
+        case 'n':  out = ov_str_concat(out, ov_str_new("\n", 1)); break;
+        case 'r':  out = ov_str_concat(out, ov_str_new("\r", 1)); break;
+        case 't':  out = ov_str_concat(out, ov_str_new("\t", 1)); break;
         case 'u': {
           uint32_t cp;
-          if (j->end - j->p < 4 || !hex4(j->p, &cp)) { fail(j, "bad \\u escape"); return vy_nil(); }
+          if (j->end - j->p < 4 || !hex4(j->p, &cp)) { fail(j, "bad \\u escape"); return ov_nil(); }
           j->p += 4;
           /* surrogate pair */
           if (cp >= 0xD800 && cp <= 0xDBFF && j->end - j->p >= 6 &&
@@ -121,20 +121,20 @@ static VyValue parse_string(J* j) {
           encode_utf8(&out, cp);
           break;
         }
-        default: fail(j, "unknown escape"); return vy_nil();
+        default: fail(j, "unknown escape"); return ov_nil();
       }
       continue;
     }
-    if (c < 0x20) { fail(j, "control character in string"); return vy_nil(); }
-    out = vy_str_concat(out, vy_str_new((const char*)j->p, 1));
+    if (c < 0x20) { fail(j, "control character in string"); return ov_nil(); }
+    out = ov_str_concat(out, ov_str_new((const char*)j->p, 1));
     j->p++;
   }
-  if (!at(j, '"')) { fail(j, "unterminated string"); return vy_nil(); }
+  if (!at(j, '"')) { fail(j, "unterminated string"); return ov_nil(); }
   j->p++;
-  return vy_str(out);
+  return ov_str(out);
 }
 
-static VyValue parse_number(J* j) {
+static OvValue parse_number(J* j) {
   const char* start = j->p;
   if (at(j, '-')) j->p++;
   while (j->p < j->end && *j->p >= '0' && *j->p <= '9') j->p++;
@@ -150,96 +150,96 @@ static VyValue parse_number(J* j) {
     if (j->p < j->end && (*j->p == '+' || *j->p == '-')) j->p++;
     while (j->p < j->end && *j->p >= '0' && *j->p <= '9') j->p++;
   }
-  if (j->p == start) { fail(j, "expected a number"); return vy_nil(); }
+  if (j->p == start) { fail(j, "expected a number"); return ov_nil(); }
   size_t n = (size_t)(j->p - start);
   char buf[64];
-  if (n >= sizeof(buf)) { fail(j, "number too long"); return vy_nil(); }
+  if (n >= sizeof(buf)) { fail(j, "number too long"); return ov_nil(); }
   memcpy(buf, start, n);
   buf[n] = '\0';
   if (!is_float) {
     char* endp = NULL;
     long long v = strtoll(buf, &endp, 10);
-    if (endp && *endp == '\0') return vy_int((int64_t)v);
+    if (endp && *endp == '\0') return ov_int((int64_t)v);
   }
-  return vy_float(strtod(buf, NULL));
+  return ov_float(strtod(buf, NULL));
 }
 
-static VyValue parse_array(J* j) {
+static OvValue parse_array(J* j) {
   j->p++;  /* [ */
-  VyList* out = vy_list_new();
+  OvList* out = ov_list_new();
   skip_ws(j);
-  if (at(j, ']')) { j->p++; return vy_list(out); }
+  if (at(j, ']')) { j->p++; return ov_list(out); }
   for (;;) {
-    VyValue v = parse_value(j);
-    if (j->failed) return vy_nil();
-    vy_list_push(out, v);
+    OvValue v = parse_value(j);
+    if (j->failed) return ov_nil();
+    ov_list_push(out, v);
     skip_ws(j);
     if (at(j, ',')) { j->p++; skip_ws(j); continue; }
     break;
   }
-  if (!at(j, ']')) { fail(j, "expected ',' or ']'"); return vy_nil(); }
+  if (!at(j, ']')) { fail(j, "expected ',' or ']'"); return ov_nil(); }
   j->p++;
-  return vy_list(out);
+  return ov_list(out);
 }
 
-static VyValue parse_object(J* j) {
+static OvValue parse_object(J* j) {
   j->p++;  /* { */
-  VyMap* out = vy_map_new();
+  OvMap* out = ov_map_new();
   skip_ws(j);
-  if (at(j, '}')) { j->p++; return vy_map(out); }
+  if (at(j, '}')) { j->p++; return ov_map(out); }
   for (;;) {
     skip_ws(j);
-    VyValue key = parse_string(j);
-    if (j->failed) return vy_nil();
+    OvValue key = parse_string(j);
+    if (j->failed) return ov_nil();
     skip_ws(j);
-    if (!at(j, ':')) { fail(j, "expected ':'"); return vy_nil(); }
+    if (!at(j, ':')) { fail(j, "expected ':'"); return ov_nil(); }
     j->p++;
-    VyValue val = parse_value(j);
-    if (j->failed) return vy_nil();
-    vy_map_set(out, key, val);
+    OvValue val = parse_value(j);
+    if (j->failed) return ov_nil();
+    ov_map_set(out, key, val);
     skip_ws(j);
     if (at(j, ',')) { j->p++; skip_ws(j); continue; }
     break;
   }
-  if (!at(j, '}')) { fail(j, "expected ',' or '}'"); return vy_nil(); }
+  if (!at(j, '}')) { fail(j, "expected ',' or '}'"); return ov_nil(); }
   j->p++;
-  return vy_map(out);
+  return ov_map(out);
 }
 
-static VyValue parse_value(J* j) {
+static OvValue parse_value(J* j) {
   skip_ws(j);
-  if (j->p >= j->end) { fail(j, "unexpected end of input"); return vy_nil(); }
-  if (++j->depth > JSON_MAX_DEPTH) { fail(j, "nesting too deep"); j->depth--; return vy_nil(); }
-  VyValue out;
+  if (j->p >= j->end) { fail(j, "unexpected end of input"); return ov_nil(); }
+  if (++j->depth > JSON_MAX_DEPTH) { fail(j, "nesting too deep"); j->depth--; return ov_nil(); }
+  OvValue out;
   char c = *j->p;
   if (c == '{') out = parse_object(j);
   else if (c == '[') out = parse_array(j);
   else if (c == '"') out = parse_string(j);
-  else if (lit(j, "true")) out = vy_bool(1);
-  else if (lit(j, "false")) out = vy_bool(0);
-  else if (lit(j, "null")) out = vy_nil();
+  else if (lit(j, "true")) out = ov_bool(1);
+  else if (lit(j, "false")) out = ov_bool(0);
+  else if (lit(j, "null")) out = ov_nil();
   else if (c == '-' || (c >= '0' && c <= '9')) out = parse_number(j);
-  else { fail(j, "unexpected character"); out = vy_nil(); }
+  else { fail(j, "unexpected character"); out = ov_nil(); }
   j->depth--;
   return out;
 }
 
-VyValue vy_json_parse(const char* text, size_t len) {
+OvValue ov_json_parse(const char* text, size_t len) {
   J j = {.p = text, .end = text + len, .depth = 0, .failed = 0, .err = {0}};
-  vy_gc_begin_mutation();
-  VyValue v = parse_value(&j);
-  vy_gc_end_mutation();
-  if (j.failed) return vy_nil();
+  ov_gc_begin_mutation();
+  OvValue v = parse_value(&j);
+  ov_gc_end_mutation();
+  if (j.failed) return ov_nil();
   skip_ws(&j);
-  if (j.p != j.end) return vy_nil();
+  if (j.p != j.end) return ov_nil();
   return v;
 }
 
-int vy_json_valid(const char* text, size_t len) {
+int ov_json_valid(const char* text, size_t len) {
   J j = {.p = text, .end = text + len, .depth = 0, .failed = 0, .err = {0}};
-  vy_gc_begin_mutation();
-  VyValue v = parse_value(&j);
-  vy_gc_end_mutation();
+  ov_gc_begin_mutation();
+  OvValue v = parse_value(&j);
+  ov_gc_end_mutation();
   (void)v;
   if (j.failed) return 0;
   skip_ws(&j);
@@ -247,13 +247,13 @@ int vy_json_valid(const char* text, size_t len) {
 }
 
 /* The error text of the last failed parse, for `json.parse` diagnostics. */
-const char* vy_json_last_error(void) {
-  extern const char* vy_json_error_slot(void);
-  return vy_json_error_slot();
+const char* ov_json_last_error(void) {
+  extern const char* ov_json_error_slot(void);
+  return ov_json_error_slot();
 }
 
 static char g_json_err[192];
-const char* vy_json_error_slot(void) { return g_json_err; }
+const char* ov_json_error_slot(void) { return g_json_err; }
 
 /* ------------------------------------------------------------ stringify */
 
@@ -330,22 +330,22 @@ static void s_double(S* s, double d) {
   s_str(s, buf);
 }
 
-static void s_value(S* s, VyValue v) {
+static void s_value(S* s, OvValue v) {
   if (s->failed) return;
   if (++s->depth > JSON_MAX_DEPTH) { s->failed = 1; s->depth--; return; }
-  switch (vy_tagof(v)) {
-    case VY_NIL:    s_str(s, "null"); break;
-    case VY_BOOL:   s_str(s, v.b ? "true" : "false"); break;
-    case VY_INT: {
+  switch (ov_tagof(v)) {
+    case OV_NIL:    s_str(s, "null"); break;
+    case OV_BOOL:   s_str(s, v.b ? "true" : "false"); break;
+    case OV_INT: {
       char buf[24];
       snprintf(buf, sizeof(buf), "%lld", (long long)v.i);
       s_str(s, buf);
       break;
     }
-    case VY_FLOAT:  s_double(s, v.f); break;
-    case VY_STRING: s_json_string(s, v.str->bytes, v.str->len); break;
-    case VY_LIST: {
-      VyList* l = v.list;
+    case OV_FLOAT:  s_double(s, v.f); break;
+    case OV_STRING: s_json_string(s, v.str->bytes, v.str->len); break;
+    case OV_LIST: {
+      OvList* l = v.list;
       s_ch(s, '[');
       for (uint32_t i = 0; i < l->len; i++) {
         if (i) s_ch(s, ',');
@@ -354,18 +354,18 @@ static void s_value(S* s, VyValue v) {
       s_ch(s, ']');
       break;
     }
-    case VY_MAP: {
-      VyMap* m = v.map;
+    case OV_MAP: {
+      OvMap* m = v.map;
       s_ch(s, '{');
       for (uint32_t i = 0; i < m->cap; i++) {
         if (m->entries[i].key.tag == 0 && m->entries[i].val.tag == 0 &&
             m->entries[i].key.i == 0 && m->entries[i].val.i == 0)
           continue;  /* empty slot */
         if (s->len && s->buf[s->len - 1] != '{') s_ch(s, ',');
-        VyValue k = m->entries[i].key;
-        if (vy_tagof(k) == VY_STRING) s_json_string(s, k.str->bytes, k.str->len);
+        OvValue k = m->entries[i].key;
+        if (ov_tagof(k) == OV_STRING) s_json_string(s, k.str->bytes, k.str->len);
         else {
-          VyStr* ks = vy_json_stringify(k);
+          OvStr* ks = ov_json_stringify(k);
           s_raw(s, ks->bytes, ks->len);
         }
         s_ch(s, ':');
@@ -379,16 +379,16 @@ static void s_value(S* s, VyValue v) {
   s->depth--;
 }
 
-VyStr* vy_json_stringify(VyValue v) {
+OvStr* ov_json_stringify(OvValue v) {
   S s;
   s_init(&s);
   s_value(&s, v);
   if (s.failed) {
     s_free(&s);
     snprintf(g_json_err, sizeof(g_json_err), "value cannot be serialised to JSON");
-    return vy_str_new("", 0);
+    return ov_str_new("", 0);
   }
-  VyStr* out = vy_str_new(s.buf, s.len);
+  OvStr* out = ov_str_new(s.buf, s.len);
   s_free(&s);
   return out;
 }

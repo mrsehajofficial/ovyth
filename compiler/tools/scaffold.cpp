@@ -1,6 +1,6 @@
-// Vayu :: compiler/tools/scaffold.cpp
+// Ovyth :: compiler/tools/scaffold.cpp
 //
-// `vyc init` turns an empty directory into a project that builds. The
+// `ovc init` turns an empty directory into a project that builds. The
 // templates live in the compiler rather than in a templates/ directory on
 // disk, so the command behaves the same from a build tree, an installed
 // prefix, or a tarball: there is no data file to lose track of.
@@ -14,7 +14,7 @@
 #include <cstring>
 #include <string>
 
-namespace vy {
+namespace ov {
 namespace {
 
 bool exists(const std::string& p) {
@@ -70,26 +70,26 @@ bool write_file(const std::string& path, const std::string& body, std::string& e
 // ---- templates -----------------------------------------------------------
 
 std::string hello_main() {
-  return R"VY(// main.vy -- a Vayu starter program
+  return R"OV(// main.ov -- a Ovyth starter program
 //
-//   vyc run main.vy     run it instantly with the interpreter
-//   vyc main.vy         compile it to a native executable
+//   ovc run main.ov     run it instantly with the interpreter
+//   ovc main.ov         compile it to a native executable
 
 function greet(name) {
     return "Hello, " + name + "!"
 }
 
-for name in ["world", "Vayu"] {
+for name in ["world", "Ovyth"] {
     print(greet(name))
 }
-)VY";
+)OV";
 }
 
 std::string http_main() {
-  return R"VY(// main.vy -- call an HTTP API and read the JSON reply
+  return R"OV(// main.ov -- call an HTTP API and read the JSON reply
 //
-//   vyc run main.vy     try it now
-//   vyc main.vy         compile a standalone executable
+//   ovc run main.ov     try it now
+//   ovc main.ov         compile a standalone executable
 //
 // Point `url` at your own service; the environment variable API_URL
 // overrides it without touching the source.
@@ -110,14 +110,14 @@ try {
 } catch error {
     print("request failed:", error)
 }
-)VY";
+)OV";
 }
 
 std::string cli_main() {
-  return R"VY(// main.vy -- a small interactive command loop
+  return R"OV(// main.ov -- a small interactive command loop
 //
-//   vyc run main.vy     try it now
-//   vyc main.vy         compile a standalone executable
+//   ovc run main.ov     try it now
+//   ovc main.ov         compile a standalone executable
 
 print("type something, or 'quit' to exit")
 
@@ -130,26 +130,26 @@ while true {
 }
 
 print("bye")
-)VY";
+)OV";
 }
 
 std::string project_readme(const std::string& name) {
   return "# " + name + "\n\n"
-         "A Vayu program.\n\n"
+         "A Ovyth program.\n\n"
          "## Build and run\n\n"
          "```bash\n"
          "make run       # interpreter -- instant, best while coding\n"
          "make build     # compile to build/app\n"
          "make release   # -O3, LTO, symbols stripped\n"
          "```\n\n"
-         "The generated Makefile calls `vyc`, so the compiler needs to be on\n"
+         "The generated Makefile calls `ovc`, so the compiler needs to be on\n"
          "your `PATH`. To use a compiler somewhere else:\n\n"
          "```bash\n"
-         "make run VYC=/path/to/vyc\n"
+         "make run OVC=/path/to/ovc\n"
          "```\n\n"
          "## Files\n\n"
          "```\n"
-         "main.vy      the program\n"
+         "main.ov      the program\n"
          "Makefile     build commands\n"
          "```\n";
 }
@@ -158,7 +158,7 @@ std::string project_gitignore() {
   return "# build output\n"
          "build/\n"
          "\n"
-         "# a binary produced by a bare `vyc main.vy`\n"
+         "# a binary produced by a bare `ovc main.ov`\n"
          "app\n"
          "main\n"
          "\n"
@@ -171,23 +171,23 @@ std::string project_gitignore() {
 // assembled with escapes instead of a raw string literal.
 std::string project_makefile(const std::string& name) {
   std::string s;
-  s += "# " + name + " -- build with the Vayu compiler\n";
+  s += "# " + name + " -- build with the Ovyth compiler\n";
   s += "#\n";
   s += "#   make run       interpreter, instant\n";
   s += "#   make build     native executable at build/app\n";
   s += "#   make release   -O3, LTO, stripped\n";
   s += "\n";
-  s += "VYC ?= vyc\n";
-  s += "SRC ?= main.vy\n";
+  s += "OVC ?= ovc\n";
+  s += "SRC ?= main.ov\n";
   s += "OUT ?= build/app\n";
   s += "\n";
   s += ".PHONY: run build release clean\n";
   s += "\n";
-  s += "run:\n\t$(VYC) run $(SRC)\n";
+  s += "run:\n\t$(OVC) run $(SRC)\n";
   s += "\n";
-  s += "build:\n\t@mkdir -p build\n\t$(VYC) $(SRC) -o $(OUT)\n";
+  s += "build:\n\t@mkdir -p build\n\t$(OVC) $(SRC) -o $(OUT)\n";
   s += "\n";
-  s += "release:\n\t@mkdir -p build\n\t$(VYC) $(SRC) --release -o $(OUT)\n";
+  s += "release:\n\t@mkdir -p build\n\t$(OVC) $(SRC) --release -o $(OUT)\n";
   s += "\n";
   s += "clean:\n\trm -rf build\n";
   return s;
@@ -238,7 +238,7 @@ bool scaffold_project(const std::string& dir, const std::string& tmpl, std::stri
     const char* file;
     std::string body;
   } files[] = {
-      {"main.vy", main_src},
+      {"main.ov", main_src},
       {"README.md", project_readme(name)},
       {".gitignore", project_gitignore()},
       {"Makefile", project_makefile(name)},
@@ -251,4 +251,4 @@ bool scaffold_project(const std::string& dir, const std::string& tmpl, std::stri
   return true;
 }
 
-}  // namespace vy
+}  // namespace ov

@@ -1,7 +1,7 @@
-# Vayu maximum performance engineering specification
+# Ovyth maximum performance engineering specification
 
 This is the document the project measures itself against. It says what
-performance means for Vayu, what principles the compiler and runtime must
+performance means for Ovyth, what principles the compiler and runtime must
 follow to get there, and — in section 44 — what to actually do first,
 with the measured results of each stage as it landed. Sections 1–43 are
 the principles; section 44 is the scorecard.
@@ -10,7 +10,7 @@ the principles; section 44 is the scorecard.
 
 ## 1. Primary goal
 
-Vayu must be designed as a high-performance native compiled language. The
+Ovyth must be designed as a high-performance native compiled language. The
 priority order is fixed:
 
 1. Correctness
@@ -21,7 +21,7 @@ priority order is fixed:
 6. Developer ergonomics
 
 Two things the goal is *not*. It is not to imitate Python's internal
-behaviour at the cost of runtime speed, and it is not to claim that Vayu
+behaviour at the cost of runtime speed, and it is not to claim that Ovyth
 will beat every existing language. The goal is simpler and more testable:
 remove unnecessary overhead wherever technically possible, and let the
 compiler generate highly optimized native machine code. When we cannot
@@ -34,7 +34,7 @@ section 40).
 
 The compiler may stay implemented in C++. There is no reason to rewrite
 it merely because the implementation language is C++, and C++ is only the
-implementation language — Vayu is the target language.
+implementation language — Ovyth is the target language.
 
 The architecture stays as it is: source goes through lexer, parser, AST,
 semantic analysis, an IR, an optimizer, and then to native code. Replace a
@@ -45,7 +45,7 @@ theoretical one.
 
 ## 3. Native code must be the normal execution path
 
-Production Vayu programs execute as native machine code: program.vy →
+Production Ovyth programs execute as native machine code: program.ov →
 compiler → optimized IR → machine code → executable.
 
 The interpreter exists for debugging, development, a REPL, tests and rapid
@@ -78,7 +78,7 @@ Object
  ├── metadata
  └── payload
 ```
-is exactly the cost Vayu exists not to pay. Prefer native representations:
+is exactly the cost Ovyth exists not to pay. Prefer native representations:
 an int is a native integer, a float a native floating-point value, a bool
 a native boolean, a byte a native byte.
 
@@ -90,11 +90,11 @@ dispatch in between.
 
 ## 6. Static typing with inference
 
-Vayu provides static typing without annotation noise:
+Ovyth provides static typing without annotation noise:
 
-```vy
+```ov
 x = 10
-name = "Vayu"
+name = "Ovyth"
 active = true
 ```
 
@@ -107,7 +107,7 @@ never the default execution model.
 
 ## 7. Dynamic features must be explicit
 
-If Vayu eventually supports genuinely dynamic values, they must be opt-in.
+If Ovyth eventually supports genuinely dynamic values, they must be opt-in.
 The normal path stays statically typed; anything dynamic is written
 dynamically. Avoid `everything → dynamic Value` as a representation — it
 hands the optimizer nothing to work with. Normal code should be statically
@@ -121,7 +121,7 @@ at the source.
 A language feature should cost nothing at runtime once the compiler can
 prove the abstraction has no observable effect. A small function like
 
-```vy
+```ov
 function add(a, b) {
     return a + b
 }
@@ -150,7 +150,7 @@ scalar replacement, stack allocation and lifetime analysis where practical.
 Local values that do not escape their scope should be eligible for stack
 allocation. A function like
 
-```vy
+```ov
 function calculate() {
     x = 10
     y = 20
@@ -195,7 +195,7 @@ can say clearly what happens to `data` when it is handed to `process(data)`:
 who owns it, whether it is borrowed or moved, what mutability applies.
 
 The warning that comes with this section: do not copy Rust's entire
-ownership system blindly. Design only what Vayu actually needs — and note
+ownership system blindly. Design only what Ovyth actually needs — and note
 that this section stays parked until the runtime model in sections 14–15
 is resolved against what the runtime really is (see section 44, P4).
 
@@ -289,14 +289,14 @@ LLVM is the native optimization and backend infrastructure, not merely a
 way to emit basic machine code. Release builds use aggressive optimization
 levels — inlining, dead-code elimination, vectorization, LTO,
 target-specific optimization — where appropriate, exposed as something
-equivalent to `vyc build --release program.vy`.
+equivalent to `ovc build --release program.ov`.
 
 ---
 
 ## 21. Target the actual CPU
 
-Vayu should allow target-specific optimization — `vyc build --release
---target=native program.vy` — so the backend can use the CPU features of
+Ovyth should allow target-specific optimization — `ovc build --release
+--target=native program.ov` — so the backend can use the CPU features of
 the machine it is compiling on: SSE/AVX/AVX2/AVX-512, AES, BMI, FMA where
 supported. The constraint is symmetric: never emit instructions that make
 the binary incompatible with its declared target.
@@ -306,7 +306,7 @@ the binary incompatible with its declared target.
 ## 22. SIMD and vectorization
 
 CPU-heavy operations should be vectorizable, and LLVM can do that
-automatic vectorization well. The preferred path is high-level Vayu →
+automatic vectorization well. The preferred path is high-level Ovyth →
 optimized IR → LLVM vectorization → SIMD machine code. Manual SIMD and
 intrinsics are introduced only for proven hotspots, never as the default
 way to write a loop.
@@ -334,7 +334,7 @@ generics until the core language actually needs them.
 
 ## 25. Async must have low overhead
 
-Eventually Vayu should support asynchronous programming, and it must not
+Eventually Ovyth should support asynchronous programming, and it must not
 be designed around heavyweight task objects or expensive task creation.
 The targets are cheap tasks, cheap suspension, cheap wake-up and an
 efficient scheduler. It must not be built before the synchronous native
@@ -411,7 +411,7 @@ would write, use it.
 
 If a mature native library is significantly faster and more reliable,
 integrate it. Do not hand-write cryptography, compression, BLAS, TLS or
-cpu primitives just so the project can say Vayu implemented them. The
+cpu primitives just so the project can say Ovyth implemented them. The
 objective is performance, not a maximum amount of handwritten code.
 
 ---
@@ -429,7 +429,7 @@ solely on intuition.
 
 ## 35. Compare against real implementations
 
-Compare Vayu against Python, C, C++, Rust and Go when appropriate — using
+Compare Ovyth against Python, C, C++, Rust and Go when appropriate — using
 equivalent algorithms, equivalent inputs, equivalent outputs and
 equivalent compiler settings. Toy programs and mismatched workloads are
 not comparisons. If a toolchain is not installed, the column is omitted,
@@ -451,7 +451,7 @@ optimized.
 Do not: remove work from a benchmark; use different algorithms without
 documenting it; selectively exclude initialization; ignore memory
 allocation; ignore compilation or runtime startup where it matters;
-compare debug Vayu against optimized C++; or compare different workloads.
+compare debug Ovyth against optimized C++; or compare different workloads.
 Benchmarks must represent real programs. (The `intloop` story in section
 44 is what this looks like when it is enforced against ourselves.)
 
@@ -460,9 +460,9 @@ Benchmarks must represent real programs. (The `intloop` story in section
 ## 38. Have multiple performance modes
 
 Support, eventually: Debug, Release, Release + native CPU, Release + LTO,
-and PGO — as `vyc build program.vy`, `vyc build --release program.vy`,
-`vyc build --release --target=native program.vy`, and later
-`vyc profile` / `vyc build --pgo`.
+and PGO — as `ovc build program.ov`, `ovc build --release program.ov`,
+`ovc build --release --target=native program.ov`, and later
+`ovc profile` / `ovc build --pgo`.
 
 ---
 
@@ -478,7 +478,7 @@ lifting. Safety and performance are not mutually exclusive.
 ## 40. Don't optimize for "looks fast"
 
 "C++ is fast, therefore this must be fast" and "LLVM is used, therefore
-Vayu is automatically fast" are both false. Actual performance comes from
+Ovyth is automatically fast" are both false. Actual performance comes from
 the whole stack together: language semantics, type system, memory model,
 data structures, compiler IR, optimizer, runtime, and the generated
 machine code. Any decision that cannot be measured goes back on the
@@ -491,13 +491,13 @@ shelf.
 The intended final architecture looks like this:
 
 ```
-              VAYU SOURCE
+              OVYTH SOURCE
                    |
                    v
         Lexer → Parser → AST → Semantic Analysis
                    |
                    v
-                Vayu IR
+                Ovyth IR
               /         \
      Optimization      Analysis
               \         /
@@ -531,7 +531,7 @@ Four sentences to argue from:
 - If the compiler cannot prove it, measure it before optimizing it.
 - Do not inherit overhead merely because another language does it that way.
 
-Vayu takes its simplicity from Python's example. It does not take
+Ovyth takes its simplicity from Python's example. It does not take
 Python's runtime architecture.
 
 ---
@@ -551,7 +551,7 @@ Do not attempt everything above at once. The order is:
 6. **Concurrency** — tasks, async I/O, scheduler, channels.
 7. **Higher-level libraries** — HTTP, JSON, files, database.
 
-Only after those foundations are strong does Vayu start adding specialised
+Only after those foundations are strong does Ovyth start adding specialised
 AI/RAG/agent capabilities.
 
 ---
@@ -570,28 +570,28 @@ what to do first.
 *Status: LANDED and measured. Highest return, no language change.*
 
 The hot path for `a + b` used to be: `codegen_c.cpp` emits a real call to
-`vy_add`, which lives out-of-line in `value.c` and starts with about seven
+`ov_add`, which lives out-of-line in `value.c` and starts with about seven
 tag/branch tests (three for string, list, `is_num` twice, both-int) before
-reaching the int+int case — and `libvyrt.a` was built without LTO, so even
+reaching the int+int case — and `libovrt.a` was built without LTO, so even
 a `--release` LTO build could never inline across the archive boundary.
 
 What was done:
 
-- `vy_add/sub/mul/div/mod`, `vy_neg/vy_pos/vy_not`, the bitwise ops,
-  `vy_eq`, `vy_cmp`, `vy_truthy` and `vy_is` all grew `static inline` fast
-  paths in `vyrt.h`: both tags `VY_INT` → `vy_int(a.i <op> b.i)`, floats
+- `ov_add/sub/mul/div/mod`, `ov_neg/ov_pos/ov_not`, the bitwise ops,
+  `ov_eq`, `ov_cmp`, `ov_truthy` and `ov_is` all grew `static inline` fast
+  paths in `ovrt.h`: both tags `OV_INT` → `ov_int(a.i <op> b.i)`, floats
   likewise, otherwise a call to the unchanged `*_slow` body in `value.c`,
   so string coercion, list concat and nil handling are byte-for-byte the
   same as before.
-- `vy_list_push`/`vy_list_get` got the same treatment (fast path in the
-  header, `*_slow` fallback in `vyrt.c`).
-- `-flto` on `libvyrt.a` was deliberately *not* added: `vyc` links the
+- `ov_list_push`/`ov_list_get` got the same treatment (fast path in the
+  header, `*_slow` fallback in `ovrt.c`).
+- `-flto` on `libovrt.a` was deliberately *not* added: `ovc` links the
   emitted C with clang while the runtime archive is built by g++, so a
   bitcode archive would not be readable in every configuration. With the
   hot path in the header, LTO had nothing left to buy here anyway.
 
 Measured: `intloop` 819ms → 184ms (4.4x; the target had been ≤150ms),
-`fib` 10ms → 4ms (target met). Vayu vs Python on `intloop` went from 8.1x
+`fib` 10ms → 4ms (target met). Ovyth vs Python on `intloop` went from 8.1x
 faster to 27x.
 
 ### Stage P1 — optimise what the emitter can see
@@ -602,13 +602,13 @@ faster to 27x.
   `codegen_c.cpp` fold int/float literals on Unary and Binary nodes, so
   `2 * 3 + n` emits `6 + n` instead of three runtime calls.
 - **Per-site pinned string literals.** A literal becomes a block-local
-  `static` initialised once through `vy_str_lit()` and pinned with
-  `VY_HDR_PIN`, so `sweep()` keeps it alive and a loop body that references
+  `static` initialised once through `ov_str_lit()` and pinned with
+  `OV_HDR_PIN`, so `sweep()` keeps it alive and a loop body that references
   `"hello world "` stops allocating it 40,000 times.
 - **Emitting small user functions as `static inline`**: still open. `fib`
   is 243k calls and the win is smaller now that the call body is all
   inline ops.
-- **Keeping values in `VyValue` locals rather than re-materialising
+- **Keeping values in `OvValue` locals rather than re-materialising
   temporaries**: the emitter already does this for most shapes; no further
   change needed.
 
@@ -620,23 +620,23 @@ is P3's work. Startup unchanged at ~3–4ms.
 
 *Status: LANDED (all of it) and measured.*
 
-- **Render to a stack buffer for scalars.** `vy_render()` used to assemble
+- **Render to a stack buffer for scalars.** `ov_render()` used to assemble
   every scalar through a growable `Buf` (malloc 256 → render → copy into a
-  fresh `VyStr` → free) even for `str(42)`. Ints and floats now render
+  fresh `OvStr` → free) even for `str(42)`. Ints and floats now render
   into a 64-byte stack buffer with one allocation, and the int path uses a
   hand-rolled digit loop instead of `snprintf("%lld")`, which alone cost
   ~150ns of format parsing per call. `nil`/`true`/`false` are pinned
   singletons.
-- **`vy_render` no longer copies strings.** Every `VyStr` in the runtime is
+- **`ov_render` no longer copies strings.** Every `OvStr` in the runtime is
   immutable by construction (an audit of every `bytes[...] =` write showed
   they all target a freshly allocated block), so render returns the same
   object. That removed a per-append allocation from `strconcat`.
 - **Pinned string literals (P1)** removed the literal side of the same
   problem.
-- **`xs.push(x)`.** The emitter used to call `vy_h_value_method`, an
+- **`xs.push(x)`.** The emitter used to call `ov_h_value_method`, an
   out-of-line dispatch with a `strcmp` chain over the method name, once per
   push. The call site now emits a tag guard —
-  `if (vy_tagof(base) == VY_LIST) vy_list_push(...)` — and falls through to
+  `if (ov_tagof(base) == OV_LIST) ov_list_push(...)` — and falls through to
   the unchanged dispatch for any other base, so error behaviour is
   identical. Only emitted for arity ≤ 1, so every argument expression is
   still evaluated.
@@ -663,7 +663,7 @@ all, and `gprof` then named the functions.
    load factor ~1.0 and, with a well-avalanched hash, the trailing
    insertions walked four- and five-figure probe chains each. The comment
    above the function already claimed a 0.75 load factor the code never
-   enforced. `vy_map_set` now rehashes at 0.7: 100k ordered int keys went
+   enforced. `ov_map_set` now rehashes at 0.7: 100k ordered int keys went
    from 176ms to 89ms, and `mapops` went from 5x slower than CPython to
    roughly parity.
 2. **`sweep()` subtracted freed bytes from `live_bytes` *after* `collect`
@@ -674,7 +674,7 @@ all, and `gprof` then named the functions.
 3. **`mark_loop` called `mark_value` for every list item and map
    key/value**, and `mark_value` returned immediately for nil/bool/int/
    float. Marking a 100k-entry map of ints cost 200k calls *per
-   collection*. The tag enum orders the container kinds at `VY_STRING`, so
+   collection*. The tag enum orders the container kinds at `OV_STRING`, so
    a tag compare now replaces the call: `b2_insonly` (100k inserts, no
    lookup) went 63ms → 51ms, `listappend` 39ms → 33ms.
 
@@ -689,12 +689,12 @@ programs.
 Against sections 5, 6 and 7 — the "next level":
 
 - Sema tracks `is_proven_int`/`is_proven_float` for literal initialisations.
-- Codegen emits raw `int64_t`/`double` locals instead of boxed `VyValue`
+- Codegen emits raw `int64_t`/`double` locals instead of boxed `OvValue`
   for proven types, and skips GC registration for them.
 - Fast arithmetic paths on raw locals: add/sub/mul/div/mod, comparisons,
   bitwise.
-- Specialized array types — `VyInt64Array`, `VyFloat64Array`,
-  `VyStringArray` — with contiguous buffers and tag-guarded fast paths;
+- Specialized array types — `OvInt64Array`, `OvFloat64Array`,
+  `OvStringArray` — with contiguous buffers and tag-guarded fast paths;
   list literals of proven int/float emit them.
 
 What remains: values flowing through lists, maps and function parameters
@@ -710,15 +710,15 @@ anywhere (both backends must agree per `tests/interp.sh`).
 Re-running the suite for the docs rewrite, `intloop` reported 4ms for 20
 million iterations: impossible, and not true. At `-O2` and above, clang
 replaces the affine recurrence `total = total + i * 3 - 1` with its
-closed-form value, in plain C as well as in generated Vayu code — the
+closed-form value, in plain C as well as in generated Ovyth code — the
 binary contained `movabs $599999950000000` where the loop used to be. The
 C reference had only been protected by `volatile` trip counts, which also
-block vectorisation, so the old table had Vayu measured doing nothing
+block vectorisation, so the old table had Ovyth measured doing nothing
 while C was measured at a handicap.
 
 The case now uses `total + (i ^ (i >> 3)) - 1` — same shape, no closed
 form — identically in all three languages, and the corrected numbers
-(C 12.04ms, Vayu 22ms, Python 6827ms, all agreeing on the same answer)
+(C 12.04ms, Ovyth 22ms, Python 6827ms, all agreeing on the same answer)
 are what the documentation quotes. This is sections 36–37 applied to our
 own numbers: a result that is too good is a bug report, not a headline.
 
@@ -726,7 +726,7 @@ own numbers: a result that is too good is a bug report, not a headline.
 
 Against section 40:
 
-- The pipeline diagram in section 41 shows Vayu IR → Optimizer → LLVM IR,
+- The pipeline diagram in section 41 shows Ovyth IR → Optimizer → LLVM IR,
   but `codegen_llvm.cpp` is a 13-line stub and `compiler/optimizer/` is
   empty. Section 41 now dates that diagram as the target architecture;
   the real backend today is emitted C → clang (which *is* LLVM, so
@@ -746,7 +746,7 @@ Against section 40:
 
 ## Final requirement
 
-Do not claim Vayu is "high performance" because the compiler is written in
+Do not claim Ovyth is "high performance" because the compiler is written in
 C++, because LLVM is used, because the language is compiled, or because
 the binary is native. None of those are performance. Performance is
 demonstrated experimentally, and the project answers these questions
@@ -762,4 +762,4 @@ continuously:
 The objective all of this adds up to: Python-like productivity, native
 compilation, low runtime overhead, an efficient memory model, aggressive
 compiler optimization, efficient concurrency — and a high-performance
-Vayu that can show its work.
+Ovyth that can show its work.

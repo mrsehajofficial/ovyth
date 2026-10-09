@@ -1,4 +1,4 @@
-// Vayu :: benchmarks/bench.vy
+// Ovyth :: benchmarks/bench.ov
 //
 // The permanent benchmark suite (spec section 34). Each benchmark runs a
 // fixed workload and reports elapsed milliseconds plus, where the runtime can
@@ -7,15 +7,15 @@
 //
 // Run natively for numbers that mean anything:
 //
-//   vyc benchmarks/bench.vy --release -o /tmp/bench && /tmp/bench
+//   ovc benchmarks/bench.ov --release -o /tmp/bench && /tmp/bench
 //
 // Each case prints "name<TAB>ms<TAB>allocs" so a driver can parse it.
 
-print("=== Vayu benchmarks ===")
+print("=== Ovyth benchmarks ===")
 
 // --- integer arithmetic --------------------------------------------------
 // xor/shift body: a plain `total + n * 3 - 1` sum has a closed form, and at
-// -O2 the whole loop proves away. See benchmarks/cases/intloop.vy.
+// -O2 the whole loop proves away. See benchmarks/cases/intloop.ov.
 total = 0
 n = 0
 while n < 20000000 {
@@ -59,7 +59,7 @@ while i < 50000 {
 print("map-set    len=", len(m), " m[k12345]=", m["k12345"])
 
 // --- JSON ----------------------------------------------------------------
-doc = json.parse("{\"name\":\"vayu\",\"tags\":[\"a\",\"b\",\"c\"],\"n\":42,\"ok\":true}")
+doc = json.parse("{\"name\":\"ovyth\",\"tags\":[\"a\",\"b\",\"c\"],\"n\":42,\"ok\":true}")
 print("json-parse name=", doc["name"], " n=", doc["n"], " ok=", doc["ok"])
 
 // --- startup / trivial ----------------------------------------------------

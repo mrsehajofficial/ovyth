@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Reference implementation of the Vayu benchmark suite, in Python.
+"""Reference implementation of the Ovyth benchmark suite, in Python.
 
 Used by benchmarks/compare.sh for a like-for-like comparison (spec section 35):
-same algorithm, same input, same output as benchmarks/cases/*.vy. Python here is
+same algorithm, same input, same output as benchmarks/cases/*.ov. Python here is
 the dynamic baseline -- it is not expected to lose on expressiveness, only on
 raw loop throughput.
 """
@@ -14,7 +14,7 @@ import time
 def bench_intloop(n=20_000_000):
     # The xor/shift body has no closed form, so optimising compilers keep the
     # real loop; a plain `i * 3 - 1` sum folds to a formula. Same body as
-    # benchmarks/cases/intloop.vy.
+    # benchmarks/cases/intloop.ov.
     total = 0
     i = 0
     while i < n:
@@ -67,7 +67,7 @@ def bench_mapops(n=100_000):
 
 def bench_json():
     doc = json.loads(
-        '{"name":"vayu","tags":["a","b","c"],"n":42,"ok":true,'
+        '{"name":"ovyth","tags":["a","b","c"],"n":42,"ok":true,'
         '"nested":{"x":1,"y":[1,2,3]}}'
     )
     return doc["name"], doc["n"], doc["ok"]

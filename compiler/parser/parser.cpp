@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace vy {
+namespace ov {
 
 using namespace ast;
 
@@ -262,7 +262,7 @@ Stmt* Parser::var_decl() {
   }
   if (values.empty()) {
     error(start, "variable '" + names[0] +
-                       "' has no value (Vayu has no implicit null initialiser)");
+                       "' has no value (Ovyth has no implicit null initialiser)");
     while ((int)values.size() < n_names) values.push_back(error_expr(start));
   }
   // NOTE: a single value for multiple names is left as-is (`a, b = [1, 2]`
@@ -906,4 +906,4 @@ Expr* Parser::primary() {
   return error_expr(t);
 }
 
-}  // namespace vy
+}  // namespace ov

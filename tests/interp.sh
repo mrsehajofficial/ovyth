@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Vayu regression suite: runs every test in tests/interp/ through BOTH
+# Ovyth regression suite: runs every test in tests/interp/ through BOTH
 # backends and requires them to agree with the golden output.
 #
-#   1. the tree-walking interpreter   (`vyc run`)
-#   2. the native backend             (`vyc <file> -o exe`, then run exe)
+#   1. the tree-walking interpreter   (`ovc run`)
+#   2. the native backend             (`ovc <file> -o exe`, then run exe)
 #
 # Checking both is the point: a native backend that silently diverges from the
 # interpreter is the failure mode that matters. Exit non-zero on any failure.
 set -u
 cd "$(dirname "$0")/.."
 
-VYC="${VYC:-build/vyc}"
-if [[ ! -x "$VYC" ]]; then
-  echo "vyc not built ($VYC); run 'make' first" >&2
+OVC="${OVC:-build/ovc}"
+if [[ ! -x "$OVC" ]]; then
+  echo "ovc not built ($OVC); run 'make' first" >&2
   exit 2
 fi
 
@@ -27,15 +27,15 @@ report_fail() { # name backend detail
   fail=$((fail+1))
 }
 
-for f in tests/interp/*.vy; do
+for f in tests/interp/*.ov; do
   [[ -e "$f" ]] || continue
   name="$(basename "$f")"
-  golden="${f%.vy}.want"
+  golden="${f%.ov}.want"
   want=""
   [[ -f "$golden" ]] && want="$(cat "$golden")"
 
   # ---- interpreter ----
-  iout="$("$VYC" run "$f" 2>"$BIN/err")"; irc=$?
+  iout="$("$OVC" run "$f" 2>"$BIN/err")"; irc=$?
   if [[ $irc -ne 0 ]]; then
     report_fail "$name" interp "rc=$irc $(head -c 200 "$BIN/err")"
   elif [[ -n "$want" && "$iout" != "$want" ]]; then
@@ -45,8 +45,8 @@ for f in tests/interp/*.vy; do
   fi
 
   # ---- native ----
-  exe="$BIN/$(basename "${f%.vy}")"
-  if ! err="$("$VYC" "$f" -o "$exe" 2>&1)"; then
+  exe="$BIN/$(basename "${f%.ov}")"
+  if ! err="$("$OVC" "$f" -o "$exe" 2>&1)"; then
     report_fail "$name" native "compile failed: $(echo "$err" | head -c 300)"
     continue
   fi
@@ -64,5 +64,5 @@ for f in tests/interp/*.vy; do
 done
 
 echo
-echo "vyc regression: $pass passed, $fail failed (both backends)"
+echo "ovc regression: $pass passed, $fail failed (both backends)"
 [[ $fail -eq 0 ]]

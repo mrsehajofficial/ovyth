@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Vayu :: examples/chatbot/mock_server.py
+Ovyth :: examples/chatbot/mock_server.py
 A mock OpenAI-compatible API server for testing the chatbot without an API key.
 
 Run this in one terminal:
     python3 examples/chatbot/mock_server.py
 
 Then run the chatbot:
-    AI_API_URL=http://localhost:8765 AI_API_KEY=dummy vyc run examples/chatbot/chatbot.vy
+    AI_API_URL=http://localhost:8765 AI_API_KEY=dummy ovc run examples/chatbot/chatbot.ov
 """
 
 from http.server import HTTPServer, BaseHTTPRequestHandler

@@ -1,6 +1,6 @@
 #include "token.h"
 
-namespace vy {
+namespace ov {
 
 const char* tok_name(Tok t) {
   switch (t) {
@@ -76,4 +76,4 @@ const char* tok_name(Tok t) {
   return "?";
 }
 
-}  // namespace vy
+}  // namespace ov

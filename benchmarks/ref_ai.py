@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# Vayu :: benchmarks/ref_ai.py
+# Ovyth :: benchmarks/ref_ai.py
 #
 # Python reference for the AI pipeline benchmark.
-# Matches bench_ai.vy and ref_ai.c case-for-case.
+# Matches bench_ai.ov and ref_ai.c case-for-case.
 #
 # Run: python3 benchmarks/ref_ai.py
 

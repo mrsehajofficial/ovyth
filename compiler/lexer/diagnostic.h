@@ -1,10 +1,10 @@
-// Vayu :: compiler/lexer/diagnostic.h
+// Ovyth :: compiler/lexer/diagnostic.h
 // A source position plus a human-readable message, shared by every stage.
 #pragma once
 
 #include <string>
 
-namespace vy {
+namespace ov {
 
 struct Diagnostic {
   std::string file;
@@ -19,4 +19,4 @@ struct Diagnostic {
   }
 };
 
-}  // namespace vy
+}  // namespace ov

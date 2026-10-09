@@ -1,11 +1,11 @@
-// Vayu :: compiler/tools/fmt.h
+// Ovyth :: compiler/tools/fmt.h
 #pragma once
 
 #include <string>
 
 #include "../ast/ast.h"
 
-namespace vy {
+namespace ov {
 
 // Re-render a parsed program in canonical layout. The formatter works from
 // the AST rather than the text so it cannot invent syntax the parser did not
@@ -13,4 +13,4 @@ namespace vy {
 // `\n` inside a string round-trips correctly.
 std::string format_program(const ast::Program& program, const std::string& source);
 
-}  // namespace vy
+}  // namespace ov

@@ -1,7 +1,7 @@
-/* Vayu :: benchmarks/ref_ai.c
+/* Ovyth :: benchmarks/ref_ai.c
  *
  * C reference implementation of the AI pipeline benchmark.
- * Matches benchmarks/bench_ai.vy case-for-case so the comparison
+ * Matches benchmarks/bench_ai.ov case-for-case so the comparison
  * is honest: same algorithms, same inputs, same outputs.
  *
  * Build: clang -O3 -std=c11 benchmarks/ref_ai.c -o /tmp/ref_ai -lm && /tmp/ref_ai
@@ -45,7 +45,7 @@ static void arena_free(Arena* a)  { free(a->p); a->p = NULL; }
 /* --------------------------------------------------------------------- mini JSON */
 
 /* A trivial JSON parser that only extracts the "content" field from a
- * choices[0].message.content path -- the exact same access bench_ai.vy uses.
+ * choices[0].message.content path -- the exact same access bench_ai.ov uses.
  * Not a full parser; just enough to match the workload. */
 
 static const char* skip_ws(const char* p) {

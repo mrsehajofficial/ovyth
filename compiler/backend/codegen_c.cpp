@@ -2,14 +2,14 @@
 // Lowering the AST to C.
 //
 // The driver compiles the emitted C with clang and links it against
-// libvyrt.a, so the result is an ordinary native executable: no interpreter,
+// libovrt.a, so the result is an ordinary native executable: no interpreter,
 // no VM, no runtime dependency beyond libcurl/OpenSSL/zlib. The C compiler on
 // the box *is* the LLVM toolchain, so `-O3 -flto` and
 // `-ffunction-sections -fdata-sections` in the perf phase apply to generated
 // code exactly as they would to hand-written C.
 //
-// Every Vayu value is one `VyValue` (tag + unboxed payload), so an expression
-// lowers to a single C expression of type VyValue. Constructs needing
+// Every Ovyth value is one `OvValue` (tag + unboxed payload), so an expression
+// lowers to a single C expression of type OvValue. Constructs needing
 // temporaries (list literals, calls, comparisons, interpolation) use Clang's
 // statement-expression extension `({ ...; value; })`, which keeps the emitter
 // small without changing the runtime ABI.
@@ -32,7 +32,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace vy {
+namespace ov {
 namespace {
 
 using namespace ast;
@@ -61,11 +61,11 @@ std::string quote_c(const std::string& s) {
   return r + "\"";
 }
 
-// C identifiers for Vayu names, and C function names for Vayu functions.
+// C identifiers for Ovyth names, and C function names for Ovyth functions.
 std::string ident(const std::string& n, int uniq) {
   return "v_" + n + "_" + std::to_string(uniq);
 }
-std::string funcname(const std::string& n) { return "vy_fn_" + n; }
+std::string funcname(const std::string& n) { return "ov_fn_" + n; }
 
 // A loop's label pair. `break`/`continue` lower to `goto` at these, so they
 // also work from inside a `try` block (where a bare C break would bind to
@@ -79,7 +79,7 @@ struct LoopLabels {
 // (spec section 12). Deliberately narrow: it only fires for that shape.
 struct BuilderInfo {
   bool active = false;
-  std::string var;    // Vayu name of the accumulator
+  std::string var;    // Ovyth name of the accumulator
   std::string cvar;   // generated C variable for the builder
 };
 
@@ -216,7 +216,7 @@ class Gen {
   std::set<std::string> inline_roots_; // roots already declared at their use site
   int loop_depth_ = 0;                 // nesting, for builder ownership
   // Closure boxes: names currently shared through a 1-element box list.
-  // box_of_[name] is the box VyValue expression in the enclosing scope;
+  // box_of_[name] is the box OvValue expression in the enclosing scope;
   // box_writes_ marks names whose assignments must store through the box.
   // Saved/restored around closure bodies (which get their own box set).
   std::unordered_map<std::string, std::string> box_of_;
@@ -226,7 +226,7 @@ class Gen {
   std::unordered_set<std::string> proven_ints_;
   std::unordered_set<std::string> proven_floats_;
 
-  // Check if a Vayu variable name is proven int/float from sema in any scope
+  // Check if a Ovyth variable name is proven int/float from sema in any scope
   bool is_proven_int_any_scope(const std::string& name) const {
     for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
       auto it = scopes_[i].find(name);
@@ -254,7 +254,7 @@ class Gen {
     for (const auto& kv : sema_.proven_types) {
       const std::string& name = kv.first;
       const TyInfo& info = kv.second;
-      // Use the C variable name that will be generated for this Vayu name
+      // Use the C variable name that will be generated for this Ovyth name
       std::string cname = ident(name, 0);  // base name, uniq=0 for globals/params
       if (info.is_proven_int) proven_ints_.insert(cname);
       if (info.is_proven_float) proven_floats_.insert(cname);
@@ -286,10 +286,10 @@ class Gen {
   // Assign `name = rhs`. Because every function declares its locals up front
   // (and registers them as GC roots there), this always emits an assignment --
   // never a declaration.
-  // For proven Int/Float, we use raw C types instead of VyValue and skip GC registration.
+  // For proven Int/Float, we use raw C types instead of OvValue and skip GC registration.
   std::string bind(const std::string& name, const std::string& rhs, bool is_proven_int = false, bool is_proven_float = false) {
     if (box_writes_.count(name) && box_of_.count(name)) {
-      return "vy_list_set((" + box_of_[name] + ").list, 0, " + rhs + ")";
+      return "ov_list_set((" + box_of_[name] + ").list, 0, " + rhs + ")";
     }
     if (is_proven_int || is_proven_float) {
       // Use raw C type, no GC registration needed
@@ -306,7 +306,7 @@ class Gen {
         return "double " + c + " = " + rhs;
       }
     }
-    // Regular VyValue - needs GC registration
+    // Regular OvValue - needs GC registration
     if (std::string* c = lookup(name)) return *c + " = " + rhs;
     std::string c = ident(name, tmp_++);
     scopes_.back()[name] = c;
@@ -339,8 +339,8 @@ class Gen {
       if (inline_roots_.count(slot)) continue;
       if (!first) { decls += " "; regs += " "; }
       first = false;
-      decls += "VyValue " + slot + " = vy_nil();";
-      regs += "vy_gc_register_root(&" + slot + ");";
+      decls += "OvValue " + slot + " = ov_nil();";
+      regs += "ov_gc_register_root(&" + slot + ");";
     }
     if (!decls.empty()) line(decls);
     if (!regs.empty()) line(regs);
@@ -392,13 +392,13 @@ class Gen {
 
 // ----------------------------------------------------------- const folding
 // Fold literal arithmetic at emit time (performance spec section 28). After
-// the vyrt.h fast paths, clang folds most of this again at -O3, so this is
+// the ovrt.h fast paths, clang folds most of this again at -O3, so this is
 // what makes -O0/debug builds and constant subexpressions free too.
 // Deliberately NOT folded: division/modulo by literal zero and int edges
-// (the runtime must still raise its usual error), and `**` (vy_pow always
+// (the runtime must still raise its usual error), and `**` (ov_pow always
 // returns Float -- folding it to an Int would change observable types).
 static std::string fold_int(int64_t v) {
-  return "vy_int(" + std::to_string(v) + "LL)";
+  return "ov_int(" + std::to_string(v) + "LL)";
 }
 static std::string fold_float(double v) {
   std::ostringstream o;
@@ -408,7 +408,7 @@ static std::string fold_float(double v) {
   if (s.find('.') == std::string::npos && s.find('e') == std::string::npos &&
       s.find("inf") == std::string::npos && s.find("nan") == std::string::npos)
     s += ".0";
-  return "vy_float(" + s + ")";
+  return "ov_float(" + s + ")";
 }
 
 static bool fold_const_binop(const Expr* e, std::string& out) {
@@ -419,9 +419,9 @@ static bool fold_const_binop(const Expr* e, std::string& out) {
   const bool yi = y->kind == ExprKind::IntLit, yf = y->kind == ExprKind::FloatLit;
   if (!(xi || xf) || !(yi || yf)) return false;
   const bool allint = xi && yi;
-  auto emit_bool = [&](bool v) { out = v ? "vy_bool(1)" : "vy_bool(0)"; return true; };
+  auto emit_bool = [&](bool v) { out = v ? "ov_bool(1)" : "ov_bool(0)"; return true; };
 
-  // Comparisons: same semantics as vy_eq / vy_cmp for every literal numeric
+  // Comparisons: same semantics as ov_eq / ov_cmp for every literal numeric
   // combination (mixed int/float promotes to double, exactly as the runtime).
   switch (e->op) {
     case Tok::EQUAL:
@@ -517,7 +517,7 @@ static bool fold_const_unary(const Expr* e, std::string& out) {
       if (x->kind == ExprKind::IntLit) { out = fold_int(~x->ival); return true; }
       return false;
     case Tok::KW_NOT:
-      if (x->kind == ExprKind::BoolLit) { out = x->bval ? "vy_bool(0)" : "vy_bool(1)"; return true; }
+      if (x->kind == ExprKind::BoolLit) { out = x->bval ? "ov_bool(0)" : "ov_bool(1)"; return true; }
       return false;
     default: return false;
   }
@@ -528,7 +528,7 @@ static bool fold_const_unary(const Expr* e, std::string& out) {
 //   - IntLit
 //   - Identifier whose C name is in proven_ints_
 //   - Binary(+,-,*,%,&,|,^,<<,>>) of two such expressions
-// Does NOT include SLASH (might be int/int but we still want vy_div's
+// Does NOT include SLASH (might be int/int but we still want ov_div's
 // zero-check semantics in the general case; fold_const_binop handles literals).
 bool Gen::is_int_expr(const Expr* e) const {
   if (!e) return false;
@@ -576,7 +576,7 @@ std::string Gen::ex_int(const Expr* e) {
     case Tok::PLUS:    return "(" + ai + ")+(" + bi + ")";
     case Tok::MINUS:   return "(" + ai + ")-(" + bi + ")";
     case Tok::STAR:    return "(" + ai + ")*(" + bi + ")";
-    case Tok::PERCENT: return "(" + bi + ")?(" + ai + ")%(" + bi + "):(vy_zero_error(),0LL)";
+    case Tok::PERCENT: return "(" + bi + ")?(" + ai + ")%(" + bi + "):(ov_zero_error(),0LL)";
     case Tok::AMP:     return "(" + ai + ")&(" + bi + ")";
     case Tok::PIPE:    return "(" + ai + ")|(" + bi + ")";
     case Tok::CARET:   return "(" + ai + ")^(" + bi + ")";
@@ -639,18 +639,18 @@ std::string Gen::ex_float(const Expr* e) {
     case Tok::PLUS:  return "(" + af + ")+(" + bf + ")";
     case Tok::MINUS: return "(" + af + ")-(" + bf + ")";
     case Tok::STAR:  return "(" + af + ")*(" + bf + ")";
-    case Tok::SLASH: return "(" + bf + ")?(" + af + ")/(" + bf + "):(vy_zero_error(),0.0)";
+    case Tok::SLASH: return "(" + bf + ")?(" + af + ")/(" + bf + "):(ov_zero_error(),0.0)";
     default: return "0.0";
   }
 }
 
 // ---------------------------------------------------------------- literals
 std::string Gen::ex(const Expr* e) {
-  if (!e) return "vy_nil()";
+  if (!e) return "ov_nil()";
 
   switch (e->kind) {
     case ExprKind::IntLit:
-      return "vy_int(" + std::to_string(e->ival) + "LL)";
+      return "ov_int(" + std::to_string(e->ival) + "LL)";
     case ExprKind::FloatLit: {
       std::ostringstream o;
       o.precision(17);
@@ -659,30 +659,30 @@ std::string Gen::ex(const Expr* e) {
       if (s.find('.') == std::string::npos && s.find('e') == std::string::npos &&
           s.find("inf") == std::string::npos && s.find("nan") == std::string::npos)
         s += ".0";
-      return "vy_float(" + s + ")";
+      return "ov_float(" + s + ")";
     }
-    case ExprKind::BoolLit:  return e->bval ? "vy_bool(1)" : "vy_bool(0)";
-    case ExprKind::NullLit:  return "vy_nil()";
+    case ExprKind::BoolLit:  return e->bval ? "ov_bool(1)" : "ov_bool(0)";
+    case ExprKind::NullLit:  return "ov_nil()";
     case ExprKind::StringLit:
       // One pinned allocation per literal site, cached in a block-local
-      // static. The old shape calloc'd a fresh VyStr on EVERY evaluation --
+      // static. The old shape calloc'd a fresh OvStr on EVERY evaluation --
       // that was most of strconcat's cost (40k literal allocs per run) and
       // half of mapops' (200k "key" allocs).
-      return "({ static VyStr* vy_lit_; if (!vy_lit_) vy_lit_ = vy_str_lit(" +
+      return "({ static OvStr* ov_lit_; if (!ov_lit_) ov_lit_ = ov_str_lit(" +
              quote_c(e->sval) + ", " + std::to_string(e->sval.size()) +
-             "); vy_str(vy_lit_); })";
+             "); ov_str(ov_lit_); })";
 
     case ExprKind::Identifier: {
       if (std::string* c = lookup(e->name)) {
-        // If this is a proven int/float variable, wrap it in VyValue for general use.
+        // If this is a proven int/float variable, wrap it in OvValue for general use.
         // The fast paths (is_int_expr/ex_int, is_float_expr/ex_float) bypass this.
-        if (proven_ints_.count(*c)) return "vy_int(" + *c + ")";
-        if (proven_floats_.count(*c)) return "vy_float(" + *c + ")";
+        if (proven_ints_.count(*c)) return "ov_int(" + *c + ")";
+        if (proven_floats_.count(*c)) return "ov_float(" + *c + ")";
         return *c;
       }
-      if (userfns_.count(e->name)) return "vy_nil()";
+      if (userfns_.count(e->name)) return "ov_nil()";
       fail("unknown name '" + e->name + "'");
-      return "vy_nil()";
+      return "ov_nil()";
     }
 
     case ExprKind::ListLit: {
@@ -695,53 +695,53 @@ std::string Gen::ex(const Expr* e) {
       }
       
       if (all_int && !e->items.empty()) {
-        // Emit as VyInt64Array
+        // Emit as OvInt64Array
         std::string arr = fresh(), idx = fresh();
-        std::string s = "({ VyInt64Array* " + arr + " = vy_i64a_new_cap(" + std::to_string(e->items.size()) + "); ";
+        std::string s = "({ OvInt64Array* " + arr + " = ov_i64a_new_cap(" + std::to_string(e->items.size()) + "); ";
         for (size_t i = 0; i < e->items.size(); i++) {
           s += arr + "->data[" + std::to_string(i) + "] = " + ex_int(e->items[i]) + "; ";
         }
         s += arr + "->len = " + std::to_string(e->items.size()) + "; ";
-        s += "vy_i64a_val(" + arr + "); })";
+        s += "ov_i64a_val(" + arr + "); })";
         return s;
       }
       if (all_float && !e->items.empty()) {
-        // Emit as VyFloat64Array
+        // Emit as OvFloat64Array
         std::string arr = fresh(), idx = fresh();
-        std::string s = "({ VyFloat64Array* " + arr + " = vy_f64a_new_cap(" + std::to_string(e->items.size()) + "); ";
+        std::string s = "({ OvFloat64Array* " + arr + " = ov_f64a_new_cap(" + std::to_string(e->items.size()) + "); ";
         for (size_t i = 0; i < e->items.size(); i++) {
           s += arr + "->data[" + std::to_string(i) + "] = " + ex_float(e->items[i]) + "; ";
         }
         s += arr + "->len = " + std::to_string(e->items.size()) + "; ";
-        s += "vy_f64a_val(" + arr + "); })";
+        s += "ov_f64a_val(" + arr + "); })";
         return s;
       }
       if (all_string && !e->items.empty()) {
-        // Emit as VyStringArray
+        // Emit as OvStringArray
         std::string arr = fresh(), idx = fresh();
-        std::string s = "({ VyStringArray* " + arr + " = vy_stra_new_cap(" + std::to_string(e->items.size()) + "); ";
+        std::string s = "({ OvStringArray* " + arr + " = ov_stra_new_cap(" + std::to_string(e->items.size()) + "); ";
         for (size_t i = 0; i < e->items.size(); i++) {
           s += arr + "->data[" + std::to_string(i) + "] = " + ex(e->items[i]) + ".str; ";
         }
         s += arr + "->len = " + std::to_string(e->items.size()) + "; ";
-        s += "vy_stra_val(" + arr + "); })";
+        s += "ov_stra_val(" + arr + "); })";
         return s;
       }
-      // Fallback to generic VyList
+      // Fallback to generic OvList
       std::string l = fresh(), v = fresh();
-      std::string s = "({ VyList* " + l + " = vy_list_new(); VyValue " + v +
-                      " = vy_list(" + l + "); ";
+      std::string s = "({ OvList* " + l + " = ov_list_new(); OvValue " + v +
+                      " = ov_list(" + l + "); ";
       for (const Expr* it : e->items)
-        s += "vy_list_push(" + l + ", " + ex(it) + "); ";
+        s += "ov_list_push(" + l + ", " + ex(it) + "); ";
       return s + v + "; })";
     }
 
     case ExprKind::MapLit: {
       std::string m = fresh(), v = fresh();
-      std::string s = "({ VyMap* " + m + " = vy_map_new(); VyValue " + v +
-                      " = vy_map(" + m + "); ";
+      std::string s = "({ OvMap* " + m + " = ov_map_new(); OvValue " + v +
+                      " = ov_map(" + m + "); ";
       for (const auto& f : e->fields)
-        s += "vy_map_set(" + m + ", " + ex(f.first) + ", " + ex(f.second) + "); ";
+        s += "ov_map_set(" + m + ", " + ex(f.first) + ", " + ex(f.second) + "); ";
       return s + v + "; })";
     }
 
@@ -750,12 +750,12 @@ std::string Gen::ex(const Expr* e) {
     case ExprKind::Unary: {
       if (std::string cf; fold_const_unary(e, cf)) return cf;
       std::string a = fresh();
-      std::string s = "({ VyValue " + a + " = " + ex(e->a) + "; ";
+      std::string s = "({ OvValue " + a + " = " + ex(e->a) + "; ";
       switch (e->op) {
-        case Tok::KW_NOT: s += "vy_bool(!vy_truthy(" + a + "))"; break;
-        case Tok::MINUS:   s += "vy_neg(" + a + ")"; break;
+        case Tok::KW_NOT: s += "ov_bool(!ov_truthy(" + a + "))"; break;
+        case Tok::MINUS:   s += "ov_neg(" + a + ")"; break;
         case Tok::PLUS:    s += a; break;
-        case Tok::TILDE:   s += "vy_int(~((" + a + ").i))"; break;
+        case Tok::TILDE:   s += "ov_int(~((" + a + ").i))"; break;
         default:
           fail("unsupported unary operator");
           s += a;
@@ -767,76 +767,76 @@ std::string Gen::ex(const Expr* e) {
       if (std::string cf; fold_const_binop(e, cf)) return cf;
       if (e->op == Tok::KW_IN) {
         std::string n = fresh(), h = fresh();
-        return "({ VyValue " + n + " = " + ex(e->a) + "; VyValue " + h + " = " +
-               ex(e->b) + "; vy_bool(vy_in(" + n + ", " + h + ")); })";
+        return "({ OvValue " + n + " = " + ex(e->a) + "; OvValue " + h + " = " +
+               ex(e->b) + "; ov_bool(ov_in(" + n + ", " + h + ")); })";
       }
       // Proven-int fast path: both operands are statically Int.
-      // Emit raw int64_t arithmetic; no VyValue temporaries, no tag checks.
+      // Emit raw int64_t arithmetic; no OvValue temporaries, no tag checks.
       if (is_int_expr(e->a) && is_int_expr(e->b)) {
         std::string ai = ex_int(e->a);
         std::string bi = ex_int(e->b);
         switch (e->op) {
-          case Tok::PLUS:          return "vy_int((" + ai + ") + (" + bi + "))";
-          case Tok::MINUS:         return "vy_int((" + ai + ") - (" + bi + "))";
-          case Tok::STAR:          return "vy_int((" + ai + ") * (" + bi + "))";
-          case Tok::PERCENT:       return "vy_int((" + bi + ") ? (" + ai + ") % (" + bi + ") : (vy_zero_error(),0LL))";
-          case Tok::AMP:           return "vy_int((" + ai + ") & (" + bi + "))";
-          case Tok::PIPE:          return "vy_int((" + ai + ") | (" + bi + "))";
-          case Tok::CARET:         return "vy_int((" + ai + ") ^ (" + bi + "))";
-          case Tok::SHL:           return "vy_int((" + ai + ") << (" + bi + "))";
-          case Tok::SHR:           return "vy_int((" + ai + ") >> (" + bi + "))";
-          case Tok::EQUAL:         return "vy_bool((" + ai + ") == (" + bi + "))";
-          case Tok::BANG_EQUAL:    return "vy_bool((" + ai + ") != (" + bi + "))";
-          case Tok::LESS:          return "vy_bool((" + ai + ") < (" + bi + "))";
-          case Tok::GREATER:       return "vy_bool((" + ai + ") > (" + bi + "))";
-          case Tok::LESS_EQUAL:    return "vy_bool((" + ai + ") <= (" + bi + "))";
-          case Tok::GREATER_EQUAL: return "vy_bool((" + ai + ") >= (" + bi + "))";
-          // SLASH falls through to VyValue path (div-by-zero handled by vy_div)
+          case Tok::PLUS:          return "ov_int((" + ai + ") + (" + bi + "))";
+          case Tok::MINUS:         return "ov_int((" + ai + ") - (" + bi + "))";
+          case Tok::STAR:          return "ov_int((" + ai + ") * (" + bi + "))";
+          case Tok::PERCENT:       return "ov_int((" + bi + ") ? (" + ai + ") % (" + bi + ") : (ov_zero_error(),0LL))";
+          case Tok::AMP:           return "ov_int((" + ai + ") & (" + bi + "))";
+          case Tok::PIPE:          return "ov_int((" + ai + ") | (" + bi + "))";
+          case Tok::CARET:         return "ov_int((" + ai + ") ^ (" + bi + "))";
+          case Tok::SHL:           return "ov_int((" + ai + ") << (" + bi + "))";
+          case Tok::SHR:           return "ov_int((" + ai + ") >> (" + bi + "))";
+          case Tok::EQUAL:         return "ov_bool((" + ai + ") == (" + bi + "))";
+          case Tok::BANG_EQUAL:    return "ov_bool((" + ai + ") != (" + bi + "))";
+          case Tok::LESS:          return "ov_bool((" + ai + ") < (" + bi + "))";
+          case Tok::GREATER:       return "ov_bool((" + ai + ") > (" + bi + "))";
+          case Tok::LESS_EQUAL:    return "ov_bool((" + ai + ") <= (" + bi + "))";
+          case Tok::GREATER_EQUAL: return "ov_bool((" + ai + ") >= (" + bi + "))";
+          // SLASH falls through to OvValue path (div-by-zero handled by ov_div)
           default: break;
         }
       }
       // Proven-float fast path: both operands are statically Float/Int.
-      // Emit raw double arithmetic; no VyValue temporaries, no tag checks.
+      // Emit raw double arithmetic; no OvValue temporaries, no tag checks.
       if (is_float_expr(e->a) && is_float_expr(e->b)) {
         std::string af = ex_float(e->a);
         std::string bf = ex_float(e->b);
         switch (e->op) {
-          case Tok::PLUS:       return "vy_float((" + af + ") + (" + bf + "))";
-          case Tok::MINUS:      return "vy_float((" + af + ") - (" + bf + "))";
-          case Tok::STAR:       return "vy_float((" + af + ") * (" + bf + "))";
-          case Tok::SLASH:      return "vy_float((" + bf + ") ? (" + af + ") / (" + bf + ") : (vy_zero_error(),0.0))";
-          case Tok::EQUAL:      return "vy_bool((" + af + ") == (" + bf + "))";
-          case Tok::BANG_EQUAL: return "vy_bool((" + af + ") != (" + bf + "))";
-          case Tok::LESS:       return "vy_bool((" + af + ") < (" + bf + "))";
-          case Tok::GREATER:    return "vy_bool((" + af + ") > (" + bf + "))";
-          case Tok::LESS_EQUAL: return "vy_bool((" + af + ") <= (" + bf + "))";
-          case Tok::GREATER_EQUAL: return "vy_bool((" + af + ") >= (" + bf + "))";
+          case Tok::PLUS:       return "ov_float((" + af + ") + (" + bf + "))";
+          case Tok::MINUS:      return "ov_float((" + af + ") - (" + bf + "))";
+          case Tok::STAR:       return "ov_float((" + af + ") * (" + bf + "))";
+          case Tok::SLASH:      return "ov_float((" + bf + ") ? (" + af + ") / (" + bf + ") : (ov_zero_error(),0.0))";
+          case Tok::EQUAL:      return "ov_bool((" + af + ") == (" + bf + "))";
+          case Tok::BANG_EQUAL: return "ov_bool((" + af + ") != (" + bf + "))";
+          case Tok::LESS:       return "ov_bool((" + af + ") < (" + bf + "))";
+          case Tok::GREATER:    return "ov_bool((" + af + ") > (" + bf + "))";
+          case Tok::LESS_EQUAL: return "ov_bool((" + af + ") <= (" + bf + "))";
+          case Tok::GREATER_EQUAL: return "ov_bool((" + af + ") >= (" + bf + "))";
           default: break;
         }
       }
       std::string a = fresh(), b = fresh();
-      const std::string pre = "({ VyValue " + a + " = " + ex(e->a) + "; VyValue " +
+      const std::string pre = "({ OvValue " + a + " = " + ex(e->a) + "; OvValue " +
                               b + " = " + ex(e->b) + "; ";
       const std::string& A = a;
       const std::string& B = b;
       switch (e->op) {
-        case Tok::PLUS:          return pre + "vy_add(" + A + ", " + B + "); })";
-        case Tok::MINUS:         return pre + "vy_sub(" + A + ", " + B + "); })";
-        case Tok::STAR:          return pre + "vy_mul(" + A + ", " + B + "); })";
-        case Tok::SLASH:         return pre + "vy_div(" + A + ", " + B + "); })";
-        case Tok::PERCENT:       return pre + "vy_mod(" + A + ", " + B + "); })";
-        case Tok::DOUBLE_STAR:   return pre + "vy_pow(" + A + ", " + B + "); })";
-        case Tok::AMP:           return pre + "vy_bitand(" + A + ", " + B + "); })";
-        case Tok::PIPE:          return pre + "vy_bitor(" + A + ", " + B + "); })";
-        case Tok::CARET:         return pre + "vy_bitxor(" + A + ", " + B + "); })";
-        case Tok::SHL:           return pre + "vy_lshift(" + A + ", " + B + "); })";
-        case Tok::SHR:           return pre + "vy_rshift(" + A + ", " + B + "); })";
-        case Tok::EQUAL:         return pre + "vy_bool(vy_eq(" + A + ", " + B + ")); })";
-        case Tok::BANG_EQUAL:    return pre + "vy_bool(!vy_eq(" + A + ", " + B + ")); })";
-        case Tok::LESS:          return pre + "vy_bool(vy_cmp(" + A + ", " + B + ") < 0); })";
-        case Tok::GREATER:       return pre + "vy_bool(vy_cmp(" + A + ", " + B + ") > 0); })";
-        case Tok::LESS_EQUAL:    return pre + "vy_bool(vy_cmp(" + A + ", " + B + ") <= 0); })";
-        case Tok::GREATER_EQUAL: return pre + "vy_bool(vy_cmp(" + A + ", " + B + ") >= 0); })";
+        case Tok::PLUS:          return pre + "ov_add(" + A + ", " + B + "); })";
+        case Tok::MINUS:         return pre + "ov_sub(" + A + ", " + B + "); })";
+        case Tok::STAR:          return pre + "ov_mul(" + A + ", " + B + "); })";
+        case Tok::SLASH:         return pre + "ov_div(" + A + ", " + B + "); })";
+        case Tok::PERCENT:       return pre + "ov_mod(" + A + ", " + B + "); })";
+        case Tok::DOUBLE_STAR:   return pre + "ov_pow(" + A + ", " + B + "); })";
+        case Tok::AMP:           return pre + "ov_bitand(" + A + ", " + B + "); })";
+        case Tok::PIPE:          return pre + "ov_bitor(" + A + ", " + B + "); })";
+        case Tok::CARET:         return pre + "ov_bitxor(" + A + ", " + B + "); })";
+        case Tok::SHL:           return pre + "ov_lshift(" + A + ", " + B + "); })";
+        case Tok::SHR:           return pre + "ov_rshift(" + A + ", " + B + "); })";
+        case Tok::EQUAL:         return pre + "ov_bool(ov_eq(" + A + ", " + B + ")); })";
+        case Tok::BANG_EQUAL:    return pre + "ov_bool(!ov_eq(" + A + ", " + B + ")); })";
+        case Tok::LESS:          return pre + "ov_bool(ov_cmp(" + A + ", " + B + ") < 0); })";
+        case Tok::GREATER:       return pre + "ov_bool(ov_cmp(" + A + ", " + B + ") > 0); })";
+        case Tok::LESS_EQUAL:    return pre + "ov_bool(ov_cmp(" + A + ", " + B + ") <= 0); })";
+        case Tok::GREATER_EQUAL: return pre + "ov_bool(ov_cmp(" + A + ", " + B + ") >= 0); })";
         default:
           fail("unsupported binary operator");
           return pre + A + "; })";
@@ -847,15 +847,15 @@ std::string Gen::ex(const Expr* e) {
       std::string a = fresh();
       const std::string& A = a;
       if (e->op == Tok::KW_AND)
-        return "({ VyValue " + a + " = " + ex(e->a) + "; vy_bool(vy_truthy(" + A +
-               ") && vy_truthy(" + ex(e->b) + ")); })";
-      return "({ VyValue " + a + " = " + ex(e->a) + "; vy_bool(vy_truthy(" + A +
-             ") || vy_truthy(" + ex(e->b) + ")); })";
+        return "({ OvValue " + a + " = " + ex(e->a) + "; ov_bool(ov_truthy(" + A +
+               ") && ov_truthy(" + ex(e->b) + ")); })";
+      return "({ OvValue " + a + " = " + ex(e->a) + "; ov_bool(ov_truthy(" + A +
+             ") || ov_truthy(" + ex(e->b) + ")); })";
     }
 
     case ExprKind::Ternary: {
       std::string c = fresh();
-      return "({ VyValue " + c + " = " + ex(e->a) + "; vy_truthy(" + c + ") ? " +
+      return "({ OvValue " + c + " = " + ex(e->a) + "; ov_truthy(" + c + ") ? " +
              ex(e->b) + " : " + ex(e->c) + "; })";
     }
 
@@ -874,10 +874,10 @@ std::string Gen::ex(const Expr* e) {
           } else if (pi) {
             std::string tmp_v = fresh();
             // Note: we can't emit a line here, so we use a statement expression
-            rhs = "({ VyValue " + tmp_v + " = " + ex(e->b) + "; (" + tmp_v + ").i; })";
+            rhs = "({ OvValue " + tmp_v + " = " + ex(e->b) + "; (" + tmp_v + ").i; })";
           } else if (pf) {
             std::string tmp_v = fresh();
-            rhs = "({ VyValue " + tmp_v + " = " + ex(e->b) + "; (" + tmp_v + ").f; })";
+            rhs = "({ OvValue " + tmp_v + " = " + ex(e->b) + "; (" + tmp_v + ").f; })";
           } else {
             rhs = ex(e->b);
           }
@@ -892,7 +892,7 @@ std::string Gen::ex(const Expr* e) {
       }
       std::string v = fresh();
       if (e->op == Tok::ASSIGN) {
-        return "({ VyValue " + v + " = " + ex(e->b) + "; " +
+        return "({ OvValue " + v + " = " + ex(e->b) + "; " +
                emit_assign(e->a, v) + "; " + v + "; })";
       }
       // Compound: the interpreter evaluates the value, then the current
@@ -902,37 +902,37 @@ std::string Gen::ex(const Expr* e) {
       const std::string& V = v;
       const std::string& C = cur;
       switch (e->op) {
-        case Tok::PLUS_EQUAL:    rhs = "vy_add(" + C + ", " + V + ")"; break;
-        case Tok::MINUS_EQUAL:   rhs = "vy_sub(" + C + ", " + V + ")"; break;
-        case Tok::STAR_EQUAL:    rhs = "vy_mul(" + C + ", " + V + ")"; break;
-        case Tok::SLASH_EQUAL:   rhs = "vy_div(" + C + ", " + V + ")"; break;
-        case Tok::PERCENT_EQUAL: rhs = "vy_mod(" + C + ", " + V + ")"; break;
+        case Tok::PLUS_EQUAL:    rhs = "ov_add(" + C + ", " + V + ")"; break;
+        case Tok::MINUS_EQUAL:   rhs = "ov_sub(" + C + ", " + V + ")"; break;
+        case Tok::STAR_EQUAL:    rhs = "ov_mul(" + C + ", " + V + ")"; break;
+        case Tok::SLASH_EQUAL:   rhs = "ov_div(" + C + ", " + V + ")"; break;
+        case Tok::PERCENT_EQUAL: rhs = "ov_mod(" + C + ", " + V + ")"; break;
         default:
           fail("unsupported compound assignment");
           rhs = C;
       }
-      return "({ VyValue " + v + " = " + ex(e->b) + "; VyValue " + cur + " = " +
+      return "({ OvValue " + v + " = " + ex(e->b) + "; OvValue " + cur + " = " +
              ex(e->a) + "; " + emit_assign(e->a, rhs) + "; " + rhs + "; })";
     }
 
     case ExprKind::Index: {
       std::string b = fresh(), i = fresh(), o = fresh();
       // Pin base and index via mutation guard: intermediate objects on the C
-      // stack are not GC roots, so a collection triggered by vy_str_lit (or
+      // stack are not GC roots, so a collection triggered by ov_str_lit (or
       // any other allocation inside ex(e->b)) would free them. The mutation
       // counter is nestable so chained calls are safe.
-      return "({ vy_gc_begin_mutation(); VyValue " + b + " = " + ex(e->a) +
-             "; VyValue " + i + " = " + ex(e->b) + "; VyValue " + o +
-             "; if (vy_h_index(" + b + ", " + i + ", &" + o + ")) { vy_gc_end_mutation(); vy_throw_value(vy_h_err_value()); } " +
-             "vy_gc_end_mutation(); " + o + "; })";
+      return "({ ov_gc_begin_mutation(); OvValue " + b + " = " + ex(e->a) +
+             "; OvValue " + i + " = " + ex(e->b) + "; OvValue " + o +
+             "; if (ov_h_index(" + b + ", " + i + ", &" + o + ")) { ov_gc_end_mutation(); ov_throw_value(ov_h_err_value()); } " +
+             "ov_gc_end_mutation(); " + o + "; })";
     }
 
     case ExprKind::Member: {
       std::string b = fresh(), o = fresh();
-      return "({ vy_gc_begin_mutation(); VyValue " + b + " = " + ex(e->a) +
-             "; VyValue " + o + "; if (vy_h_member(" + b + ", " + quote_c(e->name) +
-             ", &" + o + ")) { vy_gc_end_mutation(); vy_throw_value(vy_h_err_value()); } " +
-             "vy_gc_end_mutation(); " + o + "; })";
+      return "({ ov_gc_begin_mutation(); OvValue " + b + " = " + ex(e->a) +
+             "; OvValue " + o + "; if (ov_h_member(" + b + ", " + quote_c(e->name) +
+             ", &" + o + ")) { ov_gc_end_mutation(); ov_throw_value(ov_h_err_value()); } " +
+             "ov_gc_end_mutation(); " + o + "; })";
     }
 
     case ExprKind::Slice:    return emit_slice(e);
@@ -946,43 +946,43 @@ std::string Gen::ex(const Expr* e) {
       std::string a = fresh();
       const std::string& A = a;
       if (n == "Int")
-        return "({ VyValue " + a + " = " + ex(e->a) + "; vy_int(vy_tagof(" + A +
-               ") == VY_FLOAT ? (int64_t)(" + A + ").f : " + A + ".i); })";
+        return "({ OvValue " + a + " = " + ex(e->a) + "; ov_int(ov_tagof(" + A +
+               ") == OV_FLOAT ? (int64_t)(" + A + ").f : " + A + ".i); })";
       if (n == "Float")
-        return "({ VyValue " + a + " = " + ex(e->a) + "; vy_float(vy_tagof(" + A +
-               ") == VY_INT ? (double)(" + A + ").i : " + A + ".f); })";
+        return "({ OvValue " + a + " = " + ex(e->a) + "; ov_float(ov_tagof(" + A +
+               ") == OV_INT ? (double)(" + A + ").i : " + A + ".f); })";
       if (n == "String" || n == "Str")
-        return "({ VyValue " + a + " = " + ex(e->a) + "; vy_str(vy_render(" + A + ")); })";
+        return "({ OvValue " + a + " = " + ex(e->a) + "; ov_str(ov_render(" + A + ")); })";
       return ex(e->a);
     }
 
     case ExprKind::Error:
     default:
       fail("cannot lower this expression");
-      return "vy_nil()";
+      return "ov_nil()";
   }
 }
 
 // ----------------------------------------------------------- interpolation
 std::string Gen::emit_interp(const Expr* e) {
   std::string acc = fresh();
-  std::string s = "({ VyStr* " + acc + " = vy_str_new(\"\", 0); ";
+  std::string s = "({ OvStr* " + acc + " = ov_str_new(\"\", 0); ";
   size_t n = e->items.size(), m = e->parts.size(), li = 0;
   for (size_t i = 0; i < m; i++) {
     if (li < n) {
       const std::string& t = e->items[li++]->sval;
-      s += acc + " = vy_str_concat(" + acc + ", vy_str_new(" + quote_c(t) + ", " +
+      s += acc + " = ov_str_concat(" + acc + ", ov_str_new(" + quote_c(t) + ", " +
            std::to_string(t.size()) + ")); ";
     }
-    s += acc + " = vy_str_concat(" + acc + ", vy_render(" + ex(e->parts[i]) +
+    s += acc + " = ov_str_concat(" + acc + ", ov_render(" + ex(e->parts[i]) +
          ")); ";
   }
   for (; li < n; li++) {
     const std::string& t = e->items[li]->sval;
-    s += acc + " = vy_str_concat(" + acc + ", vy_str_new(" + quote_c(t) + ", " +
+    s += acc + " = ov_str_concat(" + acc + ", ov_str_new(" + quote_c(t) + ", " +
          std::to_string(t.size()) + ")); ";
   }
-  return s + "vy_str(" + acc + "); })";
+  return s + "ov_str(" + acc + "); })";
 }
 
 // ------------------------------------------------------------------ slicing
@@ -990,24 +990,24 @@ std::string Gen::emit_slice(const Expr* e) {
   std::string b = fresh(), lo = fresh(), hi = fresh(), n = fresh();
   std::string out = fresh(), outl = fresh(), a = fresh(), z = fresh(), ai = fresh();
   const std::string B = b, N = n, A = a, Z = z, O = out;
-  std::string s = "({ VyValue " + b + " = " + ex(e->a) + "; ";
-  s += "int64_t " + n + " = (vy_tagof(" + B + ") == VY_STRING) ? " + B +
-       ".str->len : (vy_tagof(" + B + ") == VY_LIST) ? " + B + ".list->len : -1; ";
-  s += "if (" + N + " < 0) vy_throw_str(vy_str_new(\"cannot slice\", 12)); ";
-  s += "VyValue " + lo + " = " + (e->b ? ex(e->b) : std::string("vy_int(0)")) + "; ";
-  s += "VyValue " + hi + " = " + (e->c ? ex(e->c) : ("(" + N + ")")) + "; ";
+  std::string s = "({ OvValue " + b + " = " + ex(e->a) + "; ";
+  s += "int64_t " + n + " = (ov_tagof(" + B + ") == OV_STRING) ? " + B +
+       ".str->len : (ov_tagof(" + B + ") == OV_LIST) ? " + B + ".list->len : -1; ";
+  s += "if (" + N + " < 0) ov_throw_str(ov_str_new(\"cannot slice\", 12)); ";
+  s += "OvValue " + lo + " = " + (e->b ? ex(e->b) : std::string("ov_int(0)")) + "; ";
+  s += "OvValue " + hi + " = " + (e->c ? ex(e->c) : ("(" + N + ")")) + "; ";
   s += "int64_t " + a + " = " + lo + ".i, " + z + " = " + hi + ".i; ";
   s += "if (" + A + " < 0) " + A + " += " + N + "; ";
   s += "if (" + Z + " < 0) " + Z + " += " + N + "; ";
   s += "if (" + A + " < 0) " + A + " = 0; ";
   s += "if (" + Z + " > " + N + ") " + Z + " = " + N + "; ";
   s += "if (" + Z + " < " + A + ") " + Z + " = " + A + "; ";
-  s += "VyValue " + out + "; ";
-  s += "if (vy_tagof(" + B + ") == VY_STRING) { " + O + " = vy_str(vy_str_slice(" +
+  s += "OvValue " + out + "; ";
+  s += "if (ov_tagof(" + B + ") == OV_STRING) { " + O + " = ov_str(ov_str_slice(" +
        B + ".str, " + A + ", " + Z + ")); } ";
-  s += "else { VyList* " + outl + " = vy_list_new(); for (int64_t " + ai + " = " +
-       A + "; " + ai + " < " + Z + "; " + ai + "++) vy_list_push(" + outl +
-       ", vy_list_get(" + B + ".list, " + ai + ")); " + O + " = vy_list(" + outl +
+  s += "else { OvList* " + outl + " = ov_list_new(); for (int64_t " + ai + " = " +
+       A + "; " + ai + " < " + Z + "; " + ai + "++) ov_list_push(" + outl +
+       ", ov_list_get(" + B + ".list, " + ai + ")); " + O + " = ov_list(" + outl +
        "); } ";
   return s + O + "; })";
 }
@@ -1015,12 +1015,12 @@ std::string Gen::emit_slice(const Expr* e) {
 // ------------------------------------------------------------- comprehension
 std::string Gen::emit_listcomp(const Expr* e) {
   std::string out = fresh();
-  std::string s = "({ VyList* " + out + " = vy_list_new(); ";
+  std::string s = "({ OvList* " + out + " = ov_list_new(); ";
   std::vector<std::string> scoped;  // names to restore on the way out
 
   std::function<void(size_t)> emit_loops = [&](size_t gi) {
     if (gi == e->generators.size()) {
-      s += "vy_list_push(" + out + ", " + ex(e->items[0]) + "); ";
+      s += "ov_list_push(" + out + ", " + ex(e->items[0]) + "); ";
       return;
     }
     const Generator& g = e->generators[gi];
@@ -1035,38 +1035,38 @@ std::string Gen::emit_listcomp(const Expr* e) {
     if (g.cond) cond = ex(g.cond);  // sees this and outer loop variables
 
     const std::string I = it, J = i, V = var;
-    s += "{ VyValue " + it + " = " + iterable + "; ";
+    s += "{ OvValue " + it + " = " + iterable + "; ";
     // Handle all iterable types: string, list, int64array, float64array, stringarray
-    s += "VyList* " + it + "_l = NULL; ";
-    s += "VyInt64Array* " + it + "_i64a = NULL; ";
-    s += "VyFloat64Array* " + it + "_f64a = NULL; ";
-    s += "VyStringArray* " + it + "_stra = NULL; ";
-    s += "if (vy_tagof(" + I + ") == VY_STRING) { " + it + "_l = vy_str_chars(" + I + ".str).list; } "
-         "else if (vy_tagof(" + I + ") == VY_LIST) { " + it + "_l = " + I + ".list; } "
-         "else if (vy_tagof(" + I + ") == VY_I64A) { " + it + "_i64a = " + I + ".i64a; } "
-         "else if (vy_tagof(" + I + ") == VY_F64A) { " + it + "_f64a = " + I + ".f64a; } "
-         "else if (vy_tagof(" + I + ") == VY_STRA) { " + it + "_stra = " + I + ".stra; } ";
+    s += "OvList* " + it + "_l = NULL; ";
+    s += "OvInt64Array* " + it + "_i64a = NULL; ";
+    s += "OvFloat64Array* " + it + "_f64a = NULL; ";
+    s += "OvStringArray* " + it + "_stra = NULL; ";
+    s += "if (ov_tagof(" + I + ") == OV_STRING) { " + it + "_l = ov_str_chars(" + I + ".str).list; } "
+         "else if (ov_tagof(" + I + ") == OV_LIST) { " + it + "_l = " + I + ".list; } "
+         "else if (ov_tagof(" + I + ") == OV_I64A) { " + it + "_i64a = " + I + ".i64a; } "
+         "else if (ov_tagof(" + I + ") == OV_F64A) { " + it + "_f64a = " + I + ".f64a; } "
+         "else if (ov_tagof(" + I + ") == OV_STRA) { " + it + "_stra = " + I + ".stra; } ";
 
     // For each iterable type, emit a loop with optional condition
     auto emit_loop = [&](const std::string& suffix, const std::string& accessor) {
       s += "if (" + I + "_" + suffix + ") { for (uint32_t " + i + " = 0; " + i + " < " + I +
-           "_" + suffix + "->len; " + i + "++) { VyValue " + var + " = " + accessor + "; ";
-      if (!cond.empty()) s += "if (vy_truthy(" + cond + ")) { ";
+           "_" + suffix + "->len; " + i + "++) { OvValue " + var + " = " + accessor + "; ";
+      if (!cond.empty()) s += "if (ov_truthy(" + cond + ")) { ";
       emit_loops(gi + 1);
       if (!cond.empty()) s += " } ";
       s += "} } ";
     };
 
     emit_loop("l", I + "_l->items[" + J + "]");
-    emit_loop("i64a", "vy_int(" + I + "_i64a->data[" + J + "])");
-    emit_loop("f64a", "vy_float(" + I + "_f64a->data[" + J + "])");
-    emit_loop("stra", "vy_str(" + I + "_stra->data[" + J + "])");
+    emit_loop("i64a", "ov_int(" + I + "_i64a->data[" + J + "])");
+    emit_loop("f64a", "ov_float(" + I + "_f64a->data[" + J + "])");
+    emit_loop("stra", "ov_str(" + I + "_stra->data[" + J + "])");
 
     s += "} ";  // close scope
     pop_scope();
   };
   emit_loops(0);
-  return s + "vy_list(" + out + "); })";
+  return s + "ov_list(" + out + "); })";
 }
 
 // --------------------------------------------------------------- assignment
@@ -1074,28 +1074,28 @@ std::string Gen::emit_assign(const Expr* target, const std::string& val) {
   switch (target->kind) {
     case ExprKind::Identifier: {
       // A name shared with a closure through a box: store through the box so
-      // both sides observe the write. box_of_[name] is the box VyValue.
+      // both sides observe the write. box_of_[name] is the box OvValue.
       auto bit = box_of_.find(target->name);
       if (bit != box_of_.end() && box_writes_.count(target->name))
-        return "(vy_list_set((" + bit->second + ").list, 0, " + val + "), " + val + ")";
+        return "(ov_list_set((" + bit->second + ").list, 0, " + val + "), " + val + ")";
       return bind(target->name, val);
     }
     case ExprKind::Index: {
       std::string b = fresh(), i = fresh();
       const std::string B = b, I = i, V = val;
-      return "({ VyValue " + b + " = " + ex(target->a) + "; VyValue " + i +
-             " = " + ex(target->b) + "; if (vy_tagof(" + B + ") == VY_LIST) "
-             "vy_list_set(" + B + ".list, " + I + ".i, " + V + "); else "
-             "if (vy_tagof(" + B + ") == VY_MAP) vy_map_set(" + B + ".map, " + I +
-             ", " + V + "); else vy_throw_str(vy_str_new(\"cannot index-assign\", "
+      return "({ OvValue " + b + " = " + ex(target->a) + "; OvValue " + i +
+             " = " + ex(target->b) + "; if (ov_tagof(" + B + ") == OV_LIST) "
+             "ov_list_set(" + B + ".list, " + I + ".i, " + V + "); else "
+             "if (ov_tagof(" + B + ") == OV_MAP) ov_map_set(" + B + ".map, " + I +
+             ", " + V + "); else ov_throw_str(ov_str_new(\"cannot index-assign\", "
              "17)); })";
     }
     case ExprKind::Member: {
       std::string b = fresh();
       const std::string B = b, V = val;
-      return "({ VyValue " + b + " = " + ex(target->a) + "; if (vy_tagof(" + B +
-             ") != VY_MAP) vy_throw_str(vy_str_new(\"cannot set field\", 15)); "
-             "vy_map_set(" + B + ".map, vy_str(vy_str_new(" + quote_c(target->name) +
+      return "({ OvValue " + b + " = " + ex(target->a) + "; if (ov_tagof(" + B +
+             ") != OV_MAP) ov_throw_str(ov_str_new(\"cannot set field\", 15)); "
+             "ov_map_set(" + B + ".map, ov_str(ov_str_new(" + quote_c(target->name) +
              ", " + std::to_string(target->name.size()) + ")), " + V + "); })";
     }
     default:
@@ -1111,16 +1111,16 @@ std::string Gen::emit_assign(const Expr* target, const std::string& val) {
 // compiler emits: box = [outer_local]; every read/write of that name inside
 // the closure body goes through box[0]; every read/write of that name in the
 // enclosing scope AFTER the capture point also goes through box[0]. The box
-// travels in VyFunc.upvals (vy_h_make_closure), so the closure body reads
+// travels in OvFunc.upvals (ov_h_make_closure), so the closure body reads
 // `_fn->upvals[i]` and both sides observe each other's writes -- exactly
 // matching the interpreter, which shares the parent Env.
 //
 // Capture semantics (matches the interpreter):
 //   - shared, not snapshot: writes through the closure are visible outside
-//     and vice versa (verified by tests/interp/017_closures.vy).
+//     and vice versa (verified by tests/interp/017_closures.ov).
 //   - params and locals defined inside the body are NOT captures.
 //   - a closure with no free variables emits exactly the old shape
-//     (vy_h_make_func, no upvals) -- zero cost for non-capturing code.
+//     (ov_h_make_func, no upvals) -- zero cost for non-capturing code.
 //   - capture is per closure-creation: each evaluation of the closure
 //     expression boxes the CURRENT value, so loop-created closures each get
 //     their own box.
@@ -1194,7 +1194,16 @@ static void collect_free_vars_stmt(const Stmt* s,
     case StmtKind::VarDecl:
       for (size_t i = 0; i < s->values.size(); i++)
         collect_free_vars_expr(s->values[i], bound, free_vars);
-      for (const auto& n : s->names) bound.insert(n);
+      for (const auto& n : s->names) {
+        // A bare `name = value` has no declaration keyword, so a name that is
+        // not already bound locally may be a WRITE to a variable captured from
+        // an enclosing scope. The interpreter's VarDecl walks the parent chain
+        // (Env::find) and writes through, so such a name must be treated as a
+        // free variable here too -- otherwise a closure that only assigns to
+        // an outer local (a setter) would not capture it.
+        if (!bound.count(n)) free_vars.insert(n);
+        bound.insert(n);
+      }
       return;
     case StmtKind::FuncDecl:
       bound.insert(s->name);
@@ -1262,11 +1271,11 @@ std::string Gen::emit_closure(const Expr* e) {
     captures.push_back(n);
   }
 
-  std::string cname = "vy_anon_" + std::to_string(tmp_++);
-  // Match VyFnPtr exactly: (VyFunc* fn, VyValue* argv, int argc). Parameters are read
+  std::string cname = "ov_anon_" + std::to_string(tmp_++);
+  // Match OvFnPtr exactly: (OvFunc* fn, OvValue* argv, int argc). Parameters are read
   // positionally out of argv, so the emitted body is ABI-compatible with
-  // everything else that stores a VyFunc. Captures read from _fn->upvals.
-  std::string sig = "static VyValue " + cname + "(struct VyFunc* _fn, VyValue* _argv, int _argc)";
+  // everything else that stores a OvFunc. Captures read from _fn->upvals.
+  std::string sig = "static OvValue " + cname + "(struct OvFunc* _fn, OvValue* _argv, int _argc)";
 
   // Emit the body into a scratch buffer with its own scope chain, then append
   // it to the module's deferred-definition list.
@@ -1287,10 +1296,10 @@ std::string Gen::emit_closure(const Expr* e) {
   box_of_.clear();
   for (size_t i = 0; i < captures.size(); i++) {
     scopes_.back()[captures[i]] =
-        "vy_list_get(((VyValue*)_fn->upvals)[" + std::to_string(i) + "].list, 0)";
+        "ov_list_get(((OvValue*)_fn->upvals)[" + std::to_string(i) + "].list, 0)";
     box_writes_.insert(captures[i]);
-    // The box VyValue in this closure's body is the upvals slot.
-    box_of_[captures[i]] = "((VyValue*)_fn->upvals)[" + std::to_string(i) + "]";
+    // The box OvValue in this closure's body is the upvals slot.
+    box_of_[captures[i]] = "((OvValue*)_fn->upvals)[" + std::to_string(i) + "]";
   }
   for (size_t i = 0; i < e->params.size(); i++)
     scopes_.back()[e->params[i].name] = ident(e->params[i].name, i);
@@ -1307,11 +1316,11 @@ std::string Gen::emit_closure(const Expr* e) {
   fn_has_return_ = false;
   line("(void)_argv; (void)_argc;");
   for (size_t i = 0; i < e->params.size(); i++)
-    line("VyValue " + ident(e->params[i].name, i) + " = _argv[" +
+    line("OvValue " + ident(e->params[i].name, i) + " = _argv[" +
          std::to_string(i) + "];");
   block(e->body, false);
   if (fn_has_return_) line(ret_label_ + ": ;");
-  line("  vy_gc_roots_restore(_roots_mark);");
+  line("  ov_gc_roots_restore(_roots_mark);");
   line("  return _ret; }");
   body_buf.swap(out);
   indent_ = 0;
@@ -1319,8 +1328,8 @@ std::string Gen::emit_closure(const Expr* e) {
   nl();
   line(sig + " {");
   indent_++;
-  line("VyValue _ret = vy_nil();");
-  line("size_t _roots_mark = vy_gc_roots_mark();");
+  line("OvValue _ret = ov_nil();");
+  line("size_t _roots_mark = ov_gc_roots_mark();");
   emit_root_prologue();
   cur_roots_.swap(outer_roots);
   out += body_buf;
@@ -1337,14 +1346,14 @@ std::string Gen::emit_closure(const Expr* e) {
 
   // No captures: exactly the old shape -- zero cost for non-capturing code.
   if (captures.empty()) {
-    return "vy_func(vy_h_make_func(" + std::to_string(e->params.size()) + ", " + cname + "))";
+    return "ov_func(ov_h_make_func(" + std::to_string(e->params.size()) + ", " + cname + "))";
   }
 
   // Capturing: share each outer local through a 1-element box list.
   // For each captured variable, if it is not yet boxed in the enclosing scope,
   // allocate a GC-rooted local for the box, initialize it with the variable's
   // current value, and rebind the variable to read/write through the box.
-  // Then pass each capture's box VyValue into the upvals array.
+  // Then pass each capture's box OvValue into the upvals array.
   std::string ua = fresh();
   std::string s = "({ ";
   for (size_t i = 0; i < captures.size(); i++) {
@@ -1353,38 +1362,38 @@ std::string Gen::emit_closure(const Expr* e) {
       std::string bx = ident("box_" + n, tmp_++);
       cur_roots_.push_back(bx);
       std::string* c = lookup(n);
-      std::string init_val = c ? *c : "vy_nil()";
-      if (proven_ints_.count(init_val)) init_val = "vy_int(" + init_val + ")";
-      else if (proven_floats_.count(init_val)) init_val = "vy_float(" + init_val + ")";
-      s += bx + " = vy_list(vy_list_new()); ";
-      s += "vy_list_push(" + bx + ".list, " + init_val + "); ";
+      std::string init_val = c ? *c : "ov_nil()";
+      if (proven_ints_.count(init_val)) init_val = "ov_int(" + init_val + ")";
+      else if (proven_floats_.count(init_val)) init_val = "ov_float(" + init_val + ")";
+      s += bx + " = ov_list(ov_list_new()); ";
+      s += "ov_list_push(" + bx + ".list, " + init_val + "); ";
       box_of_[n] = bx;
       box_writes_.insert(n);
-      if (c) *c = "vy_list_get(" + bx + ".list, 0)";
+      if (c) *c = "ov_list_get(" + bx + ".list, 0)";
     }
   }
-  s += "VyValue* " + ua + " = (VyValue*)calloc(" +
-       std::to_string(captures.size()) + ", sizeof(VyValue)); ";
+  s += "OvValue* " + ua + " = (OvValue*)calloc(" +
+       std::to_string(captures.size()) + ", sizeof(OvValue)); ";
   for (size_t i = 0; i < captures.size(); i++) {
     s += ua + "[" + std::to_string(i) + "] = " + box_of_[captures[i]] + "; ";
   }
-  s += "vy_func(vy_h_make_closure(" + std::to_string(e->params.size()) + ", " +
+  s += "ov_func(ov_h_make_closure(" + std::to_string(e->params.size()) + ", " +
        cname + ", " + ua + ", " + std::to_string(captures.size()) + ")); })";
   return s;
 }
 
 
-// Emit `vy_sb_append_str(builder, <rhs>)` when `name` is the active string
+// Emit `ov_sb_append_str(builder, <rhs>)` when `name` is the active string
 // accumulator being appended to. Returns true when it handled the statement.
 bool Gen::try_sb_append(const std::string& name, const Expr* rhs, Tok op) {
   if (!sb_.active || name != sb_.var || !rhs) return false;
   if (op == Tok::PLUS_EQUAL) {
-    line("vy_sb_append_value(" + sb_.cvar + ", " + ex(rhs) + ");");
+    line("ov_sb_append_value(" + sb_.cvar + ", " + ex(rhs) + ");");
     return true;
   }
   if (op == Tok::ASSIGN && rhs->kind == ExprKind::Binary && rhs->op == Tok::PLUS &&
       rhs->a && rhs->a->kind == ExprKind::Identifier && rhs->a->name == sb_.var) {
-    line("vy_sb_append_value(" + sb_.cvar + ", " + ex(rhs->b) + ");");
+    line("ov_sb_append_value(" + sb_.cvar + ", " + ex(rhs->b) + ");");
     return true;
   }
   return false;
@@ -1397,8 +1406,8 @@ std::string Gen::call_value_method(const Expr* e, const std::string& base) {
   const Expr* m = e->a;                      // Member
   std::vector<std::string> args;
   for (const Expr* a : e->args) args.push_back(ex(a));
-  std::string a0 = args.size() > 0 ? args[0] : "vy_nil()";
-  std::string a1 = args.size() > 1 ? args[1] : "vy_nil()";
+  std::string a0 = args.size() > 0 ? args[0] : "ov_nil()";
+  std::string a1 = args.size() > 1 ? args[1] : "ov_nil()";
   std::string b = fresh(), o = fresh();
 
   // Hot-path for push/append on known specialized arrays
@@ -1410,20 +1419,20 @@ std::string Gen::call_value_method(const Expr* e, const std::string& base) {
       if (std::string* c = lookup(base_name)) {
         if (proven_ints_.count(*c)) {
           // Fast path for int64_t array push
-          return "({ VyInt64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
+          return "({ OvInt64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
         }
         if (proven_floats_.count(*c)) {
           // Fast path for double array push
-          return "({ VyFloat64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
+          return "({ OvFloat64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
         }
       }
     }
     // Fallback to list fast path
-    return "({ VyValue " + b + " = " + base + "; VyValue " + av + " = " + a0 +
-           "; VyValue " + o + "; if (vy_tagof(" + b + ") == VY_LIST) { vy_list_push(" +
-           b + ".list, " + av + "); " + o + " = " + b + "; } else if (vy_h_value_method(" +
-           b + ", " + quote_c(m->name) + ", " + av + ", vy_nil(), &" + o +
-           ")) vy_throw_value(vy_h_err_value()); " + o + "; })";
+    return "({ OvValue " + b + " = " + base + "; OvValue " + av + " = " + a0 +
+           "; OvValue " + o + "; if (ov_tagof(" + b + ") == OV_LIST) { ov_list_push(" +
+           b + ".list, " + av + "); " + o + " = " + b + "; } else if (ov_h_value_method(" +
+           b + ", " + quote_c(m->name) + ", " + av + ", ov_nil(), &" + o +
+           ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
   }
 
   // Hot-path for pop on known specialized arrays
@@ -1432,18 +1441,18 @@ std::string Gen::call_value_method(const Expr* e, const std::string& base) {
       const std::string& base_name = e->a->name;
       if (std::string* c = lookup(base_name)) {
         if (proven_ints_.count(*c)) {
-          return "vy_int(" + *c + "->data[--" + *c + "->len])";
+          return "ov_int(" + *c + "->data[--" + *c + "->len])";
         }
         if (proven_floats_.count(*c)) {
-          return "vy_float(" + *c + "->data[--" + *c + "->len])";
+          return "ov_float(" + *c + "->data[--" + *c + "->len])";
         }
       }
     }
   }
 
-  return "({ VyValue " + b + " = " + base + "; VyValue " + o + "; if (vy_h_value_method(" +
+  return "({ OvValue " + b + " = " + base + "; OvValue " + o + "; if (ov_h_value_method(" +
          b + ", " + quote_c(m->name) + ", " + a0 + ", " + a1 + ", &" + o +
-         ")) vy_throw_value(vy_h_err_value()); " + o + "; })";
+         ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
 }
 
 std::string Gen::call_namespace(const std::string& ns, const std::string& name,
@@ -1454,71 +1463,71 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
   auto named = [&](const char* k) -> std::string {
     for (const auto& na : e->named_args)
       if (na.name == k) return ex(na.value);
-    return "vy_nil()";
+    return "ov_nil()";
   };
 
   if (ns == "json") {
     if (name == "parse") {
       std::string o = fresh(), t = fresh();
-      return "({ VyValue " + o + " = " + (args.empty() ? "vy_nil()" : args[0]) +
-             "; int " + t + " = 0; VyValue _r = vy_h_json_parse(" + o + ", &" + t +
-             "); if (" + t + ") vy_throw_value(vy_h_err_value()); _r; })";
+      return "({ OvValue " + o + " = " + (args.empty() ? "ov_nil()" : args[0]) +
+             "; int " + t + " = 0; OvValue _r = ov_h_json_parse(" + o + ", &" + t +
+             "); if (" + t + ") ov_throw_value(ov_h_err_value()); _r; })";
     }
     if (name == "stringify") {
       std::string o = fresh();
-      return "({ VyValue " + o + " = " + (args.empty() ? "vy_nil()" : args[0]) +
-             "; vy_str(vy_json_stringify(" + o + ")); })";
+      return "({ OvValue " + o + " = " + (args.empty() ? "ov_nil()" : args[0]) +
+             "; ov_str(ov_json_stringify(" + o + ")); })";
     }
     if (name == "valid") {
       std::string o = fresh();
-      return "({ VyValue " + o + " = " + (args.empty() ? "vy_nil()" : args[0]) +
-             "; vy_bool(vy_tagof(" + o + ") == VY_STRING && vy_json_valid(" + o +
+      return "({ OvValue " + o + " = " + (args.empty() ? "ov_nil()" : args[0]) +
+             "; ov_bool(ov_tagof(" + o + ") == OV_STRING && ov_json_valid(" + o +
              ".str->bytes, " + o + ".str->len)); })";
     }
     if (name == "extract") {
       // Fast JSON field extraction without full AST build
-      std::string json_val = args.empty() ? "vy_nil()" : args[0];
-      std::string path_val = args.size() < 2 ? "vy_nil()" : args[1];
+      std::string json_val = args.empty() ? "ov_nil()" : args[0];
+      std::string path_val = args.size() < 2 ? "ov_nil()" : args[1];
       
       // Compile-time optimization: if path is a string literal, embed it directly
-      // This avoids creating a VyValue for the path at runtime
+      // This avoids creating a OvValue for the path at runtime
       if (args.size() >= 2 && e->args[1] && e->args[1]->kind == ExprKind::StringLit) {
         const std::string& path_str = e->args[1]->sval;
-        return "({ VyValue _v = " + json_val + "; "
-               "VyValue _r = vy_nil(); if (vy_tagof(_v) == VY_STRING) { "
-               "_r = vy_json_extract_field(_v.str->bytes, _v.str->len, \"" + 
+        return "({ OvValue _v = " + json_val + "; "
+               "OvValue _r = ov_nil(); if (ov_tagof(_v) == OV_STRING) { "
+               "_r = ov_json_extract_field(_v.str->bytes, _v.str->len, \"" + 
                path_str + "\"); } "
                "_r; })";
       }
       
-      return "({ VyValue _v = " + json_val + "; VyValue _p = " + path_val + "; "
-             "VyValue _r = vy_nil(); if (vy_tagof(_v) == VY_STRING && vy_tagof(_p) == VY_STRING) { "
-             "_r = vy_json_extract_field(_v.str->bytes, _v.str->len, _p.str->bytes); } "
+      return "({ OvValue _v = " + json_val + "; OvValue _p = " + path_val + "; "
+             "OvValue _r = ov_nil(); if (ov_tagof(_v) == OV_STRING && ov_tagof(_p) == OV_STRING) { "
+             "_r = ov_json_extract_field(_v.str->bytes, _v.str->len, _p.str->bytes); } "
              "_r; })";
     }
     if (name == "get_float") {
-      // Fast numeric field accessor - avoids building full VyValue
+      // Fast numeric field accessor - avoids building full OvValue
       if (args.size() >= 2 && e->args[1] && e->args[1]->kind == ExprKind::StringLit) {
         const std::string& key = e->args[1]->sval;
-        return "({ VyValue _v = " + args[0] + "; double _d = 0; "
-               "vy_json_get_float(_v, \"" + key + "\", &_d) ? vy_float(_d) : vy_nil(); })";
+        return "({ OvValue _v = " + args[0] + "; double _d = 0; "
+               "ov_json_get_float(_v, \"" + key + "\", &_d) ? ov_float(_d) : ov_nil(); })";
       }
-      return "({ VyValue _v = " + args[0] + "; VyValue _k = " + args[1] + "; "
-             "double _d = 0; vy_json_get_float(_v, _k.str->bytes, &_d) ? vy_float(_d) : vy_nil(); })";
+      return "({ OvValue _v = " + args[0] + "; OvValue _k = " + args[1] + "; "
+             "double _d = 0; ov_json_get_float(_v, _k.str->bytes, &_d) ? ov_float(_d) : ov_nil(); })";
     }
     if (name == "get_int") {
       // Fast integer field accessor
       if (args.size() >= 2 && e->args[1] && e->args[1]->kind == ExprKind::StringLit) {
         const std::string& key = e->args[1]->sval;
-        return "({ VyValue _v = " + args[0] + "; int64_t _i = 0; "
-               "vy_json_get_int(_v, \"" + key + "\", &_i) ? vy_int(_i) : vy_nil(); })";
+        return "({ OvValue _v = " + args[0] + "; int64_t _i = 0; "
+               "ov_json_get_int(_v, \"" + key + "\", &_i) ? ov_int(_i) : ov_nil(); })";
       }
-      return "({ VyValue _v = " + args[0] + "; VyValue _k = " + args[1] + "; "
-             "int64_t _i = 0; vy_json_get_int(_v, _k.str->bytes, &_i) ? vy_int(_i) : vy_nil(); })";
+      return "({ OvValue _v = " + args[0] + "; OvValue _k = " + args[1] + "; "
+             "int64_t _i = 0; ov_json_get_int(_v, _k.str->bytes, &_i) ? ov_int(_i) : ov_nil(); })";
     }
   }
   if (ns == "http") {
-    std::string url = args.empty() ? "vy_nil()" : args[0];
+    std::string url = args.empty() ? "ov_nil()" : args[0];
     std::string hdrs = named("headers");
     // http.post(url, body) / http.post(url, json = {...}): the second
     // positional argument is the body for requests that carry one, and the
@@ -1526,10 +1535,10 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
     bool getlike = (name == "get" || name == "delete" || name == "head" ||
                     name == "GET" || name == "DELETE" || name == "HEAD");
     std::string json = named("json");
-    std::string params = "vy_nil()";
+    std::string params = "ov_nil()";
     if (args.size() >= 2) {
       if (getlike) params = args[1];
-      else if (json == "vy_nil()") json = args[1];
+      else if (json == "ov_nil()") json = args[1];
     }
     std::string named_params = named("params");
     std::string body = named("body");
@@ -1538,27 +1547,27 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
     std::string o = fresh();
     std::string meth = name;
     for (auto& c : meth) c = (char)toupper((unsigned char)c);
-    return "({ VyValue " + o + "; if (vy_h_http(" + quote_c(meth) + ", " + url +
+    return "({ OvValue " + o + "; if (ov_h_http(" + quote_c(meth) + ", " + url +
            ", " + hdrs + ", " + json + ", " + params + ", " + named_params + ", " +
            body + ", " + ctype + ", " + timeout + ", &" + o +
-           ")) vy_throw_value(vy_h_err_value()); " + o + "; })";
+           ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
   }
   if (ns == "time") {
-    if (name == "clock") return "vy_float(vy_h_now())";
-    if (name == "now")   return "vy_int((int64_t)vy_h_now())";
+    if (name == "clock") return "ov_float(ov_h_now())";
+    if (name == "now")   return "ov_int((int64_t)ov_h_now())";
   }
   fail("unsupported namespace call '" + ns + "." + name + "'");
-  return "vy_nil()";
+  return "ov_nil()";
 }
 
 std::string Gen::call_global(const std::string& q, const Expr* e) {
   std::vector<std::string> args;
   for (const Expr* a : e->args) args.push_back(ex(a));
-  auto ARG = [&](size_t i) { return i < args.size() ? args[i] : "vy_nil()"; };
+  auto ARG = [&](size_t i) { return i < args.size() ? args[i] : "ov_nil()"; };
   auto NAMED = [&](const char* k) -> std::string {
     for (const auto& na : e->named_args)
       if (na.name == k) return ex(na.value);
-    return "vy_nil()";
+    return "ov_nil()";
   };
   std::string o = fresh(), t = fresh();
 
@@ -1566,9 +1575,9 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
     std::string s = "({ ";
     for (size_t i = 0; i < args.size(); i++) {
       if (i) s += "fputc(' ', stdout); ";
-      s += "{ VyStr* _r = vy_render(" + args[i] + "); fwrite(_r->bytes, 1, _r->len, stdout); } ";
+      s += "{ OvStr* _r = ov_render(" + args[i] + "); fwrite(_r->bytes, 1, _r->len, stdout); } ";
     }
-    return s + "fputc('\\n', stdout); vy_nil(); })";
+    return s + "fputc('\\n', stdout); ov_nil(); })";
   }
   if (q == "eprint") {
     // Same rendering as print, but on stderr, so a program's machine-readable
@@ -1576,33 +1585,33 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
     std::string s = "({ ";
     for (size_t i = 0; i < args.size(); i++) {
       if (i) s += "fputc(' ', stderr); ";
-      s += "{ VyStr* _r = vy_render(" + args[i] + "); fwrite(_r->bytes, 1, _r->len, stderr); } ";
+      s += "{ OvStr* _r = ov_render(" + args[i] + "); fwrite(_r->bytes, 1, _r->len, stderr); } ";
     }
-    return s + "fputc('\\n', stderr); vy_nil(); })";
+    return s + "fputc('\\n', stderr); ov_nil(); })";
   }
   if (q == "input") {
-    return "vy_h_input(" + ARG(0) + ")";
+    return "ov_h_input(" + ARG(0) + ")";
   }
   if (q == "env" || q == "getenv") {
-    return "({ int " + t + " = 0; VyValue _r = vy_h_env(" + ARG(0) + ", &" + t +
-           "); if (" + t + ") vy_throw_value(vy_h_err_value()); _r; })";
+    return "({ int " + t + " = 0; OvValue _r = ov_h_env(" + ARG(0) + ", &" + t +
+           "); if (" + t + ") ov_throw_value(ov_h_err_value()); _r; })";
   }
   if (q == "env_or" || q == "getenv_or") {
-    // vy_h_env sets `t` when the variable is missing (and stores the message in
+    // ov_h_env sets `t` when the variable is missing (and stores the message in
     // the error slot); `t` is truthy then, so the fallback wins. Evaluated
     // lazily -- the fallback expression may have side effects.
-    return "({ int " + t + " = 0; VyValue _r = vy_h_env(" + ARG(0) + ", &" + t +
+    return "({ int " + t + " = 0; OvValue _r = ov_h_env(" + ARG(0) + ", &" + t +
            "); " + t + " ? " + ARG(1) + " : _r; })";
   }
   if (q == "setenv") {
     // Both arguments render to strings, exactly like the interpreter's setenv.
-    return "({ VyStr* _n = vy_render(" + ARG(0) + "); VyStr* _v = vy_render(" +
-           ARG(1) + "); vy_env_set(vy_str_data(_n), _v); vy_nil(); })";
+    return "({ OvStr* _n = ov_render(" + ARG(0) + "); OvStr* _v = ov_render(" +
+           ARG(1) + "); ov_env_set(ov_str_data(_n), _v); ov_nil(); })";
   }
   if (q == "pad")
-    return "({ int " + t + " = 0; VyValue _r = vy_h_pad(" + ARG(0) + ", " + ARG(1) +
+    return "({ int " + t + " = 0; OvValue _r = ov_h_pad(" + ARG(0) + ", " + ARG(1) +
            ", " + ARG(2) + ", " + ARG(3) + ", &" + t + "); if (" + t +
-           ") vy_throw_value(vy_h_err_value()); _r; })";
+           ") ov_throw_value(ov_h_err_value()); _r; })";
   if (q == "len") {
     // Fast path: if arg is proven list/string, inline the length access
     if (args.size() == 1 && e->args[0] && e->args[0]->kind == ExprKind::Identifier) {
@@ -1610,34 +1619,34 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
       if (std::string* c = lookup(arg_name)) {
         // Check if it's a proven int/float array
         if (proven_ints_.count(*c) || proven_floats_.count(*c)) {
-          // It's a raw array, not a VyList
+          // It's a raw array, not a OvList
           return "(" + *c + "->len)";
         }
       }
     }
-    return "({ int " + t + " = 0; VyValue _r = vy_h_len(" + ARG(0) + ", &" + t +
-           "); if (" + t + ") vy_throw_value(vy_h_err_value()); _r; })";
+    return "({ int " + t + " = 0; OvValue _r = ov_h_len(" + ARG(0) + ", &" + t +
+           "); if (" + t + ") ov_throw_value(ov_h_err_value()); _r; })";
   }
-  if (q == "str") return "vy_str(vy_render(" + ARG(0) + "))";
-  if (q == "type") return "({ const char* _n = vy_type_name(" + ARG(0) + "); vy_str(vy_str_new(_n, strlen(_n))); })";
+  if (q == "str") return "ov_str(ov_render(" + ARG(0) + "))";
+  if (q == "type") return "({ const char* _n = ov_type_name(" + ARG(0) + "); ov_str(ov_str_new(_n, strlen(_n))); })";
   if (q == "int")
-    return "({ int " + t + " = 0; VyValue _r = vy_h_to_int(" + ARG(0) + ", &" + t +
-           "); if (" + t + ") vy_throw_value(vy_h_err_value()); _r; })";
+    return "({ int " + t + " = 0; OvValue _r = ov_h_to_int(" + ARG(0) + ", &" + t +
+           "); if (" + t + ") ov_throw_value(ov_h_err_value()); _r; })";
   if (q == "float")
-    return "({ int " + t + " = 0; VyValue _r = vy_h_to_float(" + ARG(0) + ", &" + t +
-           "); if (" + t + ") vy_throw_value(vy_h_err_value()); _r; })";
-  if (q == "bool") return "vy_bool(vy_truthy(" + ARG(0) + "))";
+    return "({ int " + t + " = 0; OvValue _r = ov_h_to_float(" + ARG(0) + ", &" + t +
+           "); if (" + t + ") ov_throw_value(ov_h_err_value()); _r; })";
+  if (q == "bool") return "ov_bool(ov_truthy(" + ARG(0) + "))";
   if (q == "exit")
-    return "({ vy_request_exit(vy_isnil(" + ARG(0) + ") ? 0 : (int)(" + ARG(0) +
-           ").i); vy_nil(); })";
+    return "({ ov_request_exit(ov_isnil(" + ARG(0) + ") ? 0 : (int)(" + ARG(0) +
+           ").i); ov_nil(); })";
   if (q == "throw")
-    return "({ vy_throw_value(" + (args.empty() ? std::string("vy_str(vy_str_new(\"thrown\", 6))") : args[0]) + "); vy_nil(); })";
+    return "({ ov_throw_value(" + (args.empty() ? std::string("ov_str(ov_str_new(\"thrown\", 6))") : args[0]) + "); ov_nil(); })";
   if (q == "assert") {
     // assert(cond) / assert(cond, "message")
     std::string msg = args.size() > 1 ? ex(e->args[1])
-                                      : std::string("vy_str(vy_str_new(\"assertion failed\", 16))");
-    return "({ if (!vy_truthy(" + ARG(0) + ")) vy_throw_value(vy_render(" + msg +
-           ")); vy_nil(); })";
+                                      : std::string("ov_str(ov_str_new(\"assertion failed\", 16))");
+    return "({ if (!ov_truthy(" + ARG(0) + ")) ov_throw_value(ov_render(" + msg +
+           ")); ov_nil(); })";
   }
   if (q == "range") {
     // Fast path: if all args are int literals or proven int, create a specialized int array
@@ -1661,70 +1670,70 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
         step = ex_int(e->args[2]);
       }
       std::string arr = fresh(), idx = fresh(), val = fresh();
-      return "({ VyInt64Array* " + arr + " = vy_i64a_new_cap((( " + hi + " - " + lo + " + " + step + " - 1 ) / " + step + ") + 1); "
+      return "({ OvInt64Array* " + arr + " = ov_i64a_new_cap((( " + hi + " - " + lo + " + " + step + " - 1 ) / " + step + ") + 1); "
            + "int64_t " + val + " = " + lo + "; "
            + "int64_t " + idx + " = 0; "
            + "for (; " + val + " < " + hi + "; " + val + " += " + step + ") { "
            + arr + "->data[" + idx + "++] = " + val + "; } "
-           + arr + "->len = " + idx + "; vy_i64a_val(" + arr + "); })";
+           + arr + "->len = " + idx + "; ov_i64a_val(" + arr + "); })";
     }
     // Original path
-    if (args.size() == 1) return "vy_range(0, (" + ex(e->args[0]) + ").i, 1)";
+    if (args.size() == 1) return "ov_range(0, (" + ex(e->args[0]) + ").i, 1)";
     if (args.size() == 2)
-      return "vy_range((" + ex(e->args[0]) + ").i, (" + ex(e->args[1]) + ").i, 1)";
-    return "vy_range((" + ex(e->args[0]) + ").i, (" + ex(e->args[1]) + ").i, (" +
+      return "ov_range((" + ex(e->args[0]) + ").i, (" + ex(e->args[1]) + ").i, 1)";
+    return "ov_range((" + ex(e->args[0]) + ").i, (" + ex(e->args[1]) + ").i, (" +
            ex(e->args[2]) + ").i)";
   }
   if (q == "abs") {
     if (args.size() == 1 && is_int_expr(e->args[0])) {
-      return "vy_int(" + ex_int(e->args[0]) + " < 0 ? -" + ex_int(e->args[0]) + " : " + ex_int(e->args[0]) + ")";
+      return "ov_int(" + ex_int(e->args[0]) + " < 0 ? -" + ex_int(e->args[0]) + " : " + ex_int(e->args[0]) + ")";
     }
     if (args.size() == 1 && is_float_expr(e->args[0])) {
-      return "vy_float(fabs(" + ex_float(e->args[0]) + "))";
+      return "ov_float(fabs(" + ex_float(e->args[0]) + "))";
     }
-    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'a'); })";
+    return "({ int _t = 0; ov_h_num1(" + ARG(0) + ", &_t, 'a'); })";
   }
   if (q == "sqrt") {
     if (args.size() == 1 && is_float_expr(e->args[0])) {
-      return "vy_float(sqrt(" + ex_float(e->args[0]) + "))";
+      return "ov_float(sqrt(" + ex_float(e->args[0]) + "))";
     }
-    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 's'); })";
+    return "({ int _t = 0; ov_h_num1(" + ARG(0) + ", &_t, 's'); })";
   }
   if (q == "floor") {
     if (args.size() == 1 && is_float_expr(e->args[0])) {
-      return "vy_int((int64_t)floor(" + ex_float(e->args[0]) + "))";
+      return "ov_int((int64_t)floor(" + ex_float(e->args[0]) + "))";
     }
-    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'f'); })";
+    return "({ int _t = 0; ov_h_num1(" + ARG(0) + ", &_t, 'f'); })";
   }
   if (q == "ceil") {
     if (args.size() == 1 && is_float_expr(e->args[0])) {
-      return "vy_int((int64_t)ceil(" + ex_float(e->args[0]) + "))";
+      return "ov_int((int64_t)ceil(" + ex_float(e->args[0]) + "))";
     }
-    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'c'); })";
+    return "({ int _t = 0; ov_h_num1(" + ARG(0) + ", &_t, 'c'); })";
   }
   if (q == "round") {
     if (args.size() == 1 && is_float_expr(e->args[0])) {
-      return "vy_int((int64_t)llround(" + ex_float(e->args[0]) + "))";
+      return "ov_int((int64_t)llround(" + ex_float(e->args[0]) + "))";
     }
-    return "({ int _t = 0; vy_h_num1(" + ARG(0) + ", &_t, 'r'); })";
+    return "({ int _t = 0; ov_h_num1(" + ARG(0) + ", &_t, 'r'); })";
   }
   if (q == "min") {
     if (args.size() == 2 && is_int_expr(e->args[0]) && is_int_expr(e->args[1])) {
-      return "vy_int((" + ex_int(e->args[0]) + " < " + ex_int(e->args[1]) + " ? " + ex_int(e->args[0]) + " : " + ex_int(e->args[1]) + "))";
+      return "ov_int((" + ex_int(e->args[0]) + " < " + ex_int(e->args[1]) + " ? " + ex_int(e->args[0]) + " : " + ex_int(e->args[1]) + "))";
     }
     if (args.size() == 2 && is_float_expr(e->args[0]) && is_float_expr(e->args[1])) {
-      return "vy_float(fmin(" + ex_float(e->args[0]) + ", " + ex_float(e->args[1]) + "))";
+      return "ov_float(fmin(" + ex_float(e->args[0]) + ", " + ex_float(e->args[1]) + "))";
     }
-    return "({ VyValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = vy_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 1 ? _a : _b); })";
+    return "({ OvValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = ov_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 1 ? _a : _b); })";
   }
   if (q == "max") {
     if (args.size() == 2 && is_int_expr(e->args[0]) && is_int_expr(e->args[1])) {
-      return "vy_int((" + ex_int(e->args[0]) + " > " + ex_int(e->args[1]) + " ? " + ex_int(e->args[0]) + " : " + ex_int(e->args[1]) + "))";
+      return "ov_int((" + ex_int(e->args[0]) + " > " + ex_int(e->args[1]) + " ? " + ex_int(e->args[0]) + " : " + ex_int(e->args[1]) + "))";
     }
     if (args.size() == 2 && is_float_expr(e->args[0]) && is_float_expr(e->args[1])) {
-      return "vy_float(fmax(" + ex_float(e->args[0]) + ", " + ex_float(e->args[1]) + "))";
+      return "ov_float(fmax(" + ex_float(e->args[0]) + ", " + ex_float(e->args[1]) + "))";
     }
-    return "({ VyValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = vy_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 0 ? _a : _b); })";
+    return "({ OvValue _a = " + ARG(0) + ", _b = " + ARG(1) + "; int _c = ov_cmp(_a,_b); _c == 0 ? _a : (((_c < 0)) == 0 ? _a : _b); })";
   }
   if (q == "sum") {
     // Fast path: if arg is proven int array, inline the sum
@@ -1734,35 +1743,35 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
         if (proven_ints_.count(*c)) {
           // Raw int64_t array - inline sum loop
           std::string idx = fresh();
-          return "({ int64_t " + idx + " = 0; int64_t " + *c + "_sum = 0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; vy_int(" + *c + "_sum); })";
+          return "({ int64_t " + idx + " = 0; int64_t " + *c + "_sum = 0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; ov_int(" + *c + "_sum); })";
         }
         if (proven_floats_.count(*c)) {
           // Raw double array - inline sum loop
           std::string idx = fresh();
-          return "({ int64_t " + idx + " = 0; double " + *c + "_sum = 0.0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; vy_float(" + *c + "_sum); })";
+          return "({ int64_t " + idx + " = 0; double " + *c + "_sum = 0.0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; ov_float(" + *c + "_sum); })";
         }
       }
     }
-    return "({ int _t = 0; vy_h_sum(" + ARG(0) + ", &_t); })";
+    return "({ int _t = 0; ov_h_sum(" + ARG(0) + ", &_t); })";
   }
-  if (q == "upper") return "vy_str(vy_str_upper(" + ARG(0) + ".str))";
-  if (q == "lower") return "vy_str(vy_str_lower(" + ARG(0) + ".str))";
-  if (q == "trim")  return "vy_str(vy_str_trim(" + ARG(0) + ".str))";
+  if (q == "upper") return "ov_str(ov_str_upper(" + ARG(0) + ".str))";
+  if (q == "lower") return "ov_str(ov_str_lower(" + ARG(0) + ".str))";
+  if (q == "trim")  return "ov_str(ov_str_trim(" + ARG(0) + ".str))";
   if (q == "contains")
-    return "({ VyValue _n = " + ARG(0) + ", _h = " + ARG(1) + "; vy_bool(vy_tagof(_h) == VY_STRING && vy_tagof(_n) == VY_STRING ? vy_str_contains(_h.str, _n.str) : vy_in(_n, _h)); })";
-  if (q == "join") return "vy_h_join(" + ARG(0) + ", " + ARG(1) + ")";
-  if (q == "clock" || q == "time.clock") return "vy_float(vy_h_now())";
-  if (q == "now" || q == "time.now") return "vy_int((int64_t)vy_h_now())";
-  if (q == "gc") return "vy_h_gc(" + ARG(0) + ")";
+    return "({ OvValue _n = " + ARG(0) + ", _h = " + ARG(1) + "; ov_bool(ov_tagof(_h) == OV_STRING && ov_tagof(_n) == OV_STRING ? ov_str_contains(_h.str, _n.str) : ov_in(_n, _h)); })";
+  if (q == "join") return "ov_h_join(" + ARG(0) + ", " + ARG(1) + ")";
+  if (q == "clock" || q == "time.clock") return "ov_float(ov_h_now())";
+  if (q == "now" || q == "time.now") return "ov_int((int64_t)ov_h_now())";
+  if (q == "gc") return "ov_h_gc(" + ARG(0) + ")";
 
   fail("unknown function '" + q + "'");
-  return "vy_nil()";
+  return "ov_nil()";
 }
 
 std::string Gen::emit_call(const Expr* e) {
   const Expr* callee = e->a;
 
-  if (!callee) { fail("malformed call"); return "vy_nil()"; }
+  if (!callee) { fail("malformed call"); return "ov_nil()"; }
 
   // ns.method(...)  e.g. http.post(...), json.parse(...)
   if (callee->kind == ExprKind::Member) {
@@ -1790,7 +1799,7 @@ std::string Gen::emit_call(const Expr* e) {
       std::vector<std::string> pos;
       for (const Expr* a : e->args) pos.push_back(ex(a));
       std::vector<std::string> byname(decl->params.size());
-      for (size_t i = 0; i < byname.size(); i++) byname[i] = "vy_nil()";
+      for (size_t i = 0; i < byname.size(); i++) byname[i] = "ov_nil()";
       for (size_t i = 0; i < pos.size() && i < byname.size(); i++) byname[i] = pos[i];
       for (const auto& na : e->named_args) {
         bool found = false;
@@ -1803,42 +1812,51 @@ std::string Gen::emit_call(const Expr* e) {
         if (k) call += ", ";
         call += byname[k];
       }
-      if (decl->params.empty()) call += "void";
+      // Empty parameter list at a CALL site is `()`, never `(void)` -- `void`
+      // is only legal in a declaration/definition. The function's own
+      // signature is emitted with `(void)` elsewhere.
       return call + ")";
     }
     return call_global(q, e);
   }
 
-  // Calling a value: a closure produced by a function expression.
+  // Calling a value: a closure produced by a function expression, or any
+  // computed callee (an indexed/mapped closure such as `pair[0](...)`).
   {
     std::vector<std::string> args;
     for (const Expr* a : e->args) args.push_back(ex(a));
-    std::string c = fresh(), r = fresh();
-    std::string call = "({ VyValue " + c + " = " + ex(callee) +
-                       "; VyValue* _a; int _n; VyValue " + r + " = vy_h_call(" + c + ", ";
-    call += "{ ";
-    for (size_t i = 0; i < args.size(); i++) { if (i) call += ", "; call += args[i]; }
-    call += "}, " + std::to_string(args.size()) + ", &_a, &_n); " + r + "; })";
-    return call;
+    std::string c = fresh(), r = fresh(), av = fresh();
+    // Materialise the argument vector into a named array first: a compound
+    // literal `{...}` cannot be passed directly as a function argument in C
+    // (it is only valid in an initialiser), so `ov_h_call(f, {a,b}, ...)`
+    // would not compile. A local `OvValue av[N] = {a,b};` is always valid,
+    // including the zero-argument case (`OvValue av[1] = {0};`).
+    std::string s = "({ OvValue " + c + " = " + ex(callee) + "; ";
+    s += "OvValue " + av + "[" + std::to_string(args.size() ? args.size() : 1) + "] = { ";
+    for (size_t i = 0; i < args.size(); i++) { if (i) s += ", "; s += args[i]; }
+    if (args.empty()) s += "0";
+    s += " }; OvValue* _a; int _n; OvValue " + r + " = ov_h_call(" + c + ", " + av +
+         ", " + std::to_string(args.size()) + ", &_a, &_n); " + r + "; })";
+    return s;
   }
 }
 
 
 std::string Gen::call_value_method_closure(const std::string& name, const Expr* e) {
   std::string* cv = lookup(name);
-  std::string callee = cv ? *cv : "vy_nil()";
+  std::string callee = cv ? *cv : "ov_nil()";
   std::vector<std::string> args;
   for (const Expr* a : e->args) args.push_back(ex(a));
   // Named arguments are not supported on a closure value; positional only.
   std::string c = fresh();
-  std::string s = "({ VyValue " + c + " = " + callee + "; ";
-  s += "VyValue _argv[";
+  std::string s = "({ OvValue " + c + " = " + callee + "; ";
+  s += "OvValue _argv[";
   s += std::to_string(args.size() ? args.size() : 1);
-  s += "]; VyValue* _slot = _argv; int _n = " + std::to_string(args.size()) + "; ";
+  s += "]; OvValue* _slot = _argv; int _n = " + std::to_string(args.size()) + "; ";
   for (size_t i = 0; i < args.size(); i++) {
     s += "_argv[" + std::to_string(i) + "] = " + args[i] + "; ";
   }
-  s += "vy_h_call(" + c + ", _argv, _n, &_slot, &_n); })";
+  s += "ov_h_call(" + c + ", _argv, _n, &_slot, &_n); })";
   return s;
 }
 
@@ -1879,17 +1897,17 @@ case StmtKind::VarDecl: {
             rhs = ex_float(s->values[i]);
           } else if (pi) {
             std::string tmp_v = fresh();
-            rhs = "({ VyValue " + tmp_v + " = " + ex(s->values[i]) + "; (" + tmp_v + ").i; })";
+            rhs = "({ OvValue " + tmp_v + " = " + ex(s->values[i]) + "; (" + tmp_v + ").i; })";
           } else if (pf) {
             std::string tmp_v = fresh();
-            rhs = "({ VyValue " + tmp_v + " = " + ex(s->values[i]) + "; (" + tmp_v + ").f; })";
+            rhs = "({ OvValue " + tmp_v + " = " + ex(s->values[i]) + "; (" + tmp_v + ").f; })";
           } else {
             rhs = ex(s->values[i]);
           }
         } else {
           if (pi) rhs = "0LL";
           else if (pf) rhs = "0.0";
-          else rhs = "vy_nil()";
+          else rhs = "ov_nil()";
         }
         // With an active string builder, `acc = ""` is just the builder's
         // initial (empty) state -- do not rebind the result variable.
@@ -1913,32 +1931,32 @@ case StmtKind::VarDecl: {
           bool pf = is_proven_float_any_scope(name);
           std::string elem_rhs;
           if (pi) {
-            elem_rhs = "((vy_tagof(" + list_expr + ") == VY_LIST && " + std::to_string(i) +
+            elem_rhs = "((ov_tagof(" + list_expr + ") == OV_LIST && " + std::to_string(i) +
                        " < " + list_expr + ".list->len) ? (" + list_expr + ".list->items[" +
                        std::to_string(i) + "]).i : "
-                       "(vy_tagof(" + list_expr + ") == VY_I64A && " + std::to_string(i) +
+                       "(ov_tagof(" + list_expr + ") == OV_I64A && " + std::to_string(i) +
                        " < " + list_expr + ".i64a->len) ? " + list_expr + ".i64a->data[" +
                        std::to_string(i) + "] : 0LL)";
           } else if (pf) {
-            elem_rhs = "((vy_tagof(" + list_expr + ") == VY_LIST && " + std::to_string(i) +
+            elem_rhs = "((ov_tagof(" + list_expr + ") == OV_LIST && " + std::to_string(i) +
                        " < " + list_expr + ".list->len) ? (" + list_expr + ".list->items[" +
                        std::to_string(i) + "]).f : "
-                       "(vy_tagof(" + list_expr + ") == VY_F64A && " + std::to_string(i) +
+                       "(ov_tagof(" + list_expr + ") == OV_F64A && " + std::to_string(i) +
                        " < " + list_expr + ".f64a->len) ? " + list_expr + ".f64a->data[" +
                        std::to_string(i) + "] : 0.0)";
           } else {
-            elem_rhs = "(vy_tagof(" + list_expr + ") == VY_LIST && " + std::to_string(i) +
-                       " < " + list_expr + ".list->len) ? vy_list_get(" + list_expr + ".list, " +
+            elem_rhs = "(ov_tagof(" + list_expr + ") == OV_LIST && " + std::to_string(i) +
+                       " < " + list_expr + ".list->len) ? ov_list_get(" + list_expr + ".list, " +
                        std::to_string(i) + ") : "
-                       "(vy_tagof(" + list_expr + ") == VY_I64A && " + std::to_string(i) +
-                       " < " + list_expr + ".i64a->len) ? vy_int(" + list_expr + ".i64a->data[" +
+                       "(ov_tagof(" + list_expr + ") == OV_I64A && " + std::to_string(i) +
+                       " < " + list_expr + ".i64a->len) ? ov_int(" + list_expr + ".i64a->data[" +
                        std::to_string(i) + "]) : "
-                       "(vy_tagof(" + list_expr + ") == VY_F64A && " + std::to_string(i) +
-                       " < " + list_expr + ".f64a->len) ? vy_float(" + list_expr + ".f64a->data[" +
+                       "(ov_tagof(" + list_expr + ") == OV_F64A && " + std::to_string(i) +
+                       " < " + list_expr + ".f64a->len) ? ov_float(" + list_expr + ".f64a->data[" +
                        std::to_string(i) + "]) : "
-                       "(vy_tagof(" + list_expr + ") == VY_STRA && " + std::to_string(i) +
-                       " < " + list_expr + ".stra->len) ? vy_str(" + list_expr + ".stra->data[" +
-                       std::to_string(i) + "]) : vy_nil()";
+                       "(ov_tagof(" + list_expr + ") == OV_STRA && " + std::to_string(i) +
+                       " < " + list_expr + ".stra->len) ? ov_str(" + list_expr + ".stra->data[" +
+                       std::to_string(i) + "]) : ov_nil()";
           }
           line(bind(name, elem_rhs, pi, pf) + ";");
         }
@@ -1964,13 +1982,13 @@ case StmtKind::VarDecl: {
             rhs = ex_float(s->expr2);
           } else if (pi) {
             // RHS is not a pure int expr, but target is proven int:
-            // evaluate RHS as VyValue into a temp, then extract .i
+            // evaluate RHS as OvValue into a temp, then extract .i
             std::string tmp_v = fresh();
-            line("VyValue " + tmp_v + " = " + ex(s->expr2) + ";");
+            line("OvValue " + tmp_v + " = " + ex(s->expr2) + ";");
             rhs = "((" + tmp_v + ").i)";
           } else if (pf) {
             std::string tmp_v = fresh();
-            line("VyValue " + tmp_v + " = " + ex(s->expr2) + ";");
+            line("OvValue " + tmp_v + " = " + ex(s->expr2) + ";");
             rhs = "((" + tmp_v + ").f)";
           } else {
             rhs = ex(s->expr2);
@@ -1989,7 +2007,7 @@ case StmtKind::VarDecl: {
       }
 
       if (s->op == Tok::ASSIGN) {
-        line("VyValue " + v + " = " + ex(s->expr2) + ";");
+        line("OvValue " + v + " = " + ex(s->expr2) + ";");
         line(emit_assign(s->expr, v) + ";");
         return;
       }
@@ -1997,15 +2015,15 @@ case StmtKind::VarDecl: {
       std::string op;
       const std::string V = v, C = cur;
       switch (s->op) {
-        case Tok::PLUS_EQUAL:    op = "vy_add(" + C + ", " + V + ")"; break;
-        case Tok::MINUS_EQUAL:   op = "vy_sub(" + C + ", " + V + ")"; break;
-        case Tok::STAR_EQUAL:    op = "vy_mul(" + C + ", " + V + ")"; break;
-        case Tok::SLASH_EQUAL:   op = "vy_div(" + C + ", " + V + ")"; break;
-        case Tok::PERCENT_EQUAL: op = "vy_mod(" + C + ", " + V + ")"; break;
+        case Tok::PLUS_EQUAL:    op = "ov_add(" + C + ", " + V + ")"; break;
+        case Tok::MINUS_EQUAL:   op = "ov_sub(" + C + ", " + V + ")"; break;
+        case Tok::STAR_EQUAL:    op = "ov_mul(" + C + ", " + V + ")"; break;
+        case Tok::SLASH_EQUAL:   op = "ov_div(" + C + ", " + V + ")"; break;
+        case Tok::PERCENT_EQUAL: op = "ov_mod(" + C + ", " + V + ")"; break;
         default: op = C; fail("unsupported compound assignment");
       }
-      line("VyValue " + v + " = " + ex(s->expr2) + ";");
-      line("VyValue " + cur + " = " + ex(s->expr) + ";");
+      line("OvValue " + v + " = " + ex(s->expr2) + ";");
+      line("OvValue " + cur + " = " + ex(s->expr) + ";");
       line(emit_assign(s->expr, op) + ";");
       return;
     }
@@ -2016,21 +2034,21 @@ case StmtKind::VarDecl: {
 
     case StmtKind::Return:
       fn_has_return_ = true;
-      line("_ret = " + (s->expr ? ex(s->expr) : "vy_nil()") + "; goto " + ret_label_ + ";");
+      line("_ret = " + (s->expr ? ex(s->expr) : "ov_nil()") + "; goto " + ret_label_ + ";");
       return;
 
     case StmtKind::If: {
       std::string c = fresh();
-      line("{ VyValue " + c + " = " + ex(s->expr) + ";");
+      line("{ OvValue " + c + " = " + ex(s->expr) + ";");
       indent_++;
       if (s->else_body.empty()) {
-        line("if (vy_truthy(" + c + ")) {");
+        line("if (ov_truthy(" + c + ")) {");
         indent_++;
         block(s->body, true);
         indent_--;
         line("}");
       } else {
-        line("if (vy_truthy(" + c + ")) {");
+        line("if (ov_truthy(" + c + ")) {");
         indent_++;
         block(s->body, true);
         indent_--;
@@ -2064,23 +2082,23 @@ case StmtKind::VarDecl: {
         sb_.active = true;
         sb_.var = acc;
         sb_.cvar = fresh();
-        // Bind the Vayu name to the *finished* string, materialised after the
+        // Bind the Ovyth name to the *finished* string, materialised after the
         // loop; inside, appends go to the builder.
-        std::string res = "__vy_sb_result_" + sb_.cvar;
+        std::string res = "__ov_sb_result_" + sb_.cvar;
         scopes_.back()[acc] = res;
         cur_roots_.push_back(res);
         inline_roots_.insert(res);
-        line("VyValue " + res + " = vy_nil();");
-        line("vy_gc_register_root(&" + res + ");");
-        line("VyStrBuilder* " + sb_.cvar + " = vy_sb_new();");
+        line("OvValue " + res + " = ov_nil();");
+        line("ov_gc_register_root(&" + res + ");");
+        line("OvStrBuilder* " + sb_.cvar + " = ov_sb_new();");
       }
 
       bool uses_continue = body_uses_continue(s->body);
       line(top + ": ;");
       std::string c = fresh();
-      line("{ VyValue " + c + " = " + ex(s->expr) + ";");
+      line("{ OvValue " + c + " = " + ex(s->expr) + ";");
       indent_++;
-      line("if (!vy_truthy(" + c + ")) goto " + L.brk + "; }");
+      line("if (!ov_truthy(" + c + ")) goto " + L.brk + "; }");
       loop_depth_++;
       std::string saved_seed = last_empty_str_;
       last_empty_str_.clear();   // only the declaring loop may own the builder
@@ -2097,7 +2115,7 @@ case StmtKind::VarDecl: {
       last_empty_str_.clear();
       if (sb) {
         std::string res = scopes_.back()[acc];
-        line(res + " = vy_str(vy_sb_finish(" + sb_.cvar + "));");
+        line(res + " = ov_str(ov_sb_finish(" + sb_.cvar + "));");
         sb_ = saved_sb;
       }
       loops_.pop_back();
@@ -2123,23 +2141,23 @@ case StmtKind::VarDecl: {
       return;
 
     case StmtKind::Throw:
-      line("vy_throw_value(" + (s->expr ? ex(s->expr) : std::string("vy_str(vy_str_new(\"thrown\", 6))")) + ");");
+      line("ov_throw_value(" + (s->expr ? ex(s->expr) : std::string("ov_str(ov_str_new(\"thrown\", 6))")) + ");");
       return;
 
     case StmtKind::Try: {
-      // The exact panic idiom documented in vyrt.h.
+      // The exact panic idiom documented in ovrt.h.
       std::string tb = lbl("Ltry");
       try_depth_++;
-      line("{ jmp_buf* _jb = vy_try_push();");
+      line("{ jmp_buf* _jb = ov_try_push();");
       indent_++;
       line("if (setjmp(*_jb) == 0) {");
       indent_++;
       block(s->body, true);
       indent_--;
-      line("  vy_try_pop(); goto " + tb + "; }");
-      line("  vy_try_pop();");
-      if (!s->catch_var.empty()) line("  " + bind(s->catch_var, "vy_caught") + ";");
-      else line("  (void)vy_caught;");
+      line("  ov_try_pop(); goto " + tb + "; }");
+      line("  ov_try_pop();");
+      if (!s->catch_var.empty()) line("  " + bind(s->catch_var, "ov_caught") + ";");
+      else line("  (void)ov_caught;");
       block(s->else_body, true);
       line(tb + ": ;");
       indent_--;
@@ -2149,7 +2167,7 @@ case StmtKind::VarDecl: {
     }
 
     case StmtKind::Debug:
-      line("fprintf(stderr, \"[vayu] %d\\n\", " + std::to_string(s->pos.line) + ");");
+      line("fprintf(stderr, \"[ovyth] %d\\n\", " + std::to_string(s->pos.line) + ");");
       return;
 
     case StmtKind::For:
@@ -2161,24 +2179,24 @@ case StmtKind::VarDecl: {
 void Gen::emit_for(const Stmt* s) {
   // `for v in xs` over a list, a string's characters, a map's keys, or specialized arrays.
   std::string it = fresh(), idx = fresh(), seq = fresh(), n = fresh();
-  std::string var = s->iter_vars.empty() ? std::string("vy_unused") : ident(s->iter_vars[0], tmp_++);
+  std::string var = s->iter_vars.empty() ? std::string("ov_unused") : ident(s->iter_vars[0], tmp_++);
   LoopLabels L{lbl("Lbrk"), lbl("Lcont")};
   std::string top = lbl("Ltop");
 
   const std::string I = it, S = seq, N = n, X = idx;
-  line("{ VyValue " + it + " = " + ex(s->expr) + ";");
+  line("{ OvValue " + it + " = " + ex(s->expr) + ";");
   indent_++;
   // Handle all iterable types: string, list, map, int64array, float64array, stringarray
-  line("VyList* " + seq + " = NULL;");
-  line("VyInt64Array* " + seq + "_i64a = NULL;");
-  line("VyFloat64Array* " + seq + "_f64a = NULL;");
-  line("VyStringArray* " + seq + "_stra = NULL;");
-  line("if (vy_tagof(" + I + ") == VY_STRING) { " + seq + " = vy_str_chars(" + I + ".str).list; } "
-       "else if (vy_tagof(" + I + ") == VY_MAP) { " + seq + " = vy_map_keys(" + I + ".map).list; } "
-       "else if (vy_tagof(" + I + ") == VY_LIST) { " + seq + " = " + I + ".list; } "
-       "else if (vy_tagof(" + I + ") == VY_I64A) { " + seq + "_i64a = " + I + ".i64a; } "
-       "else if (vy_tagof(" + I + ") == VY_F64A) { " + seq + "_f64a = " + I + ".f64a; } "
-       "else if (vy_tagof(" + I + ") == VY_STRA) { " + seq + "_stra = " + I + ".stra; } ");
+  line("OvList* " + seq + " = NULL;");
+  line("OvInt64Array* " + seq + "_i64a = NULL;");
+  line("OvFloat64Array* " + seq + "_f64a = NULL;");
+  line("OvStringArray* " + seq + "_stra = NULL;");
+  line("if (ov_tagof(" + I + ") == OV_STRING) { " + seq + " = ov_str_chars(" + I + ".str).list; } "
+       "else if (ov_tagof(" + I + ") == OV_MAP) { " + seq + " = ov_map_keys(" + I + ".map).list; } "
+       "else if (ov_tagof(" + I + ") == OV_LIST) { " + seq + " = " + I + ".list; } "
+       "else if (ov_tagof(" + I + ") == OV_I64A) { " + seq + "_i64a = " + I + ".i64a; } "
+       "else if (ov_tagof(" + I + ") == OV_F64A) { " + seq + "_f64a = " + I + ".f64a; } "
+       "else if (ov_tagof(" + I + ") == OV_STRA) { " + seq + "_stra = " + I + ".stra; } ");
   line("int64_t " + n + " = 0;");
   line("if (" + seq + ") " + n + " = " + seq + "->len;");
   line("else if (" + seq + "_i64a) " + n + " = " + seq + "_i64a->len;");
@@ -2190,11 +2208,11 @@ void Gen::emit_for(const Stmt* s) {
   scopes_.back()[s->iter_vars.empty() ? std::string("__unused") : s->iter_vars[0]] = var;
   cur_roots_.push_back(var);
   // Extract element based on iterable type
-  line("VyValue " + var + ";");
+  line("OvValue " + var + ";");
   line("if (" + seq + ") " + var + " = " + seq + "->items[" + X + "];");
-  line("else if (" + seq + "_i64a) " + var + " = vy_int(" + seq + "_i64a->data[" + X + "]);");
-  line("else if (" + seq + "_f64a) " + var + " = vy_float(" + seq + "_f64a->data[" + X + "]);");
-  line("else if (" + seq + "_stra) " + var + " = vy_str(" + seq + "_stra->data[" + X + "]);");
+  line("else if (" + seq + "_i64a) " + var + " = ov_int(" + seq + "_i64a->data[" + X + "]);");
+  line("else if (" + seq + "_f64a) " + var + " = ov_float(" + seq + "_f64a->data[" + X + "]);");
+  line("else if (" + seq + "_stra) " + var + " = ov_str(" + seq + "_stra->data[" + X + "]);");
   bool uses_continue = body_uses_continue(s->body);
   bool uses_break = body_uses_break(s->body);
   loops_.push_back(L);
@@ -2221,13 +2239,13 @@ void Gen::collect_functions(const StmtList& body) {
 
 void Gen::emit_function(const Stmt* s) {
   std::ostringstream sig;
-  sig << "static VyValue " << funcname(s->name) << "(";
+  sig << "static OvValue " << funcname(s->name) << "(";
   if (s->params.empty()) {
     sig << "void";
   } else {
     for (size_t i = 0; i < s->params.size(); i++) {
       if (i) sig << ", ";
-      sig << "VyValue " << ident(s->params[i].name, 0);
+      sig << "OvValue " << ident(s->params[i].name, 0);
     }
   }
   sig << ")";
@@ -2264,7 +2282,7 @@ void Gen::emit_function(const Stmt* s) {
   fn_has_return_ = false;
   block(s->body, false);
   if (fn_has_return_) line(ret_label_ + ": ;");
-  line("  vy_gc_roots_restore(_roots_mark);");
+  line("  ov_gc_roots_restore(_roots_mark);");
   line("  return _ret; }");
   body_buf.swap(out);
   indent_ = 0;
@@ -2272,8 +2290,8 @@ void Gen::emit_function(const Stmt* s) {
   nl();
   line(sig.str() + " {");
   indent_++;
-  line("VyValue _ret = vy_nil();");
-  line("size_t _roots_mark = vy_gc_roots_mark();");
+  line("OvValue _ret = ov_nil();");
+  line("size_t _roots_mark = ov_gc_roots_mark();");
   emit_root_prologue();
   cur_roots_.swap(outer_roots);   // done: locals are rooted by the prologue
   out += body_buf;
@@ -2297,9 +2315,9 @@ std::string Gen::run() {
 
   // ---- header ----
   out +=
-      "/* Generated by vyc. Do not edit. */\n"
-      "#include \"vyrt.h\"\n"
-      "#include \"vyrt_helpers.h\"\n"
+      "/* Generated by ovc. Do not edit. */\n"
+      "#include \"ovrt.h\"\n"
+      "#include \"ovrt_helpers.h\"\n"
       "#include <setjmp.h>\n"
       "#include <math.h>\n"
       "#include <stdio.h>\n"
@@ -2313,13 +2331,13 @@ std::string Gen::run() {
     for (const Stmt* s : prog_.statements) {
       if (!s || s->kind != StmtKind::FuncDecl) continue;
       std::ostringstream sig;
-      sig << "static VyValue " << funcname(s->name) << "(";
+      sig << "static OvValue " << funcname(s->name) << "(";
       if (s->params.empty()) {
         sig << "void";
       } else {
         for (size_t i = 0; i < s->params.size(); i++) {
           if (i) sig << ", ";
-          sig << "VyValue " << ident(s->params[i].name, 0);
+          sig << "OvValue " << ident(s->params[i].name, 0);
         }
       }
       sig << ");";
@@ -2327,26 +2345,32 @@ std::string Gen::run() {
     }
     nl();
 
-    // Emit each body into a scratch buffer, then append it to the module.
+    // Lower each user-function body into a scratch buffer. This DISCOVERS the
+    // anonymous closure functions they create -- their C names land in
+    // anon_names_, their bodies in anon_defs_ -- but writes nothing to `out`
+    // yet, so the forward declarations below can precede every reference.
     for (const Stmt* s : prog_.statements)
       if (s && s->kind == StmtKind::FuncDecl) emit_function(s);
-    for (const auto& f : pending_fns_) out += f;
-    pending_fns_.clear();
 
-    // Closure bodies discovered while lowering anything above.
-    // Forward-declare every anon function first: a nested closure's creation
-    // site lives INSIDE its enclosing closure's body, which is emitted before
-    // the inner body -- without a declaration that is a C compile error
-    // (`use of undeclared identifier 'vy_anon_N'`). Signatures are
-    // ABI-uniform, so one declaration shape covers all anon functions.
+    // Forward-declare every anon function BEFORE any body that references it.
+    // A closure created inside a function body references its ov_anon_N symbol
+    // from within that body, so the declaration must come first -- otherwise
+    // clang rejects the generated C with `use of undeclared identifier
+    // 'ov_anon_N'`. A nested closure's creation site lives inside its enclosing
+    // closure's body, so one declaration shape covers all of them. Signatures
+    // are ABI-uniform.
     {
       std::set<std::string> seen;
       for (const auto& nm : anon_names_) {
         if (seen.insert(nm).second)
-          line("static VyValue " + nm +
-               "(struct VyFunc* _fn, VyValue* _argv, int _argc);");
+          line("static OvValue " + nm +
+               "(struct OvFunc* _fn, OvValue* _argv, int _argc);");
       }
     }
+
+    // Now emit the user-function bodies, then the closure bodies they created.
+    for (const auto& f : pending_fns_) out += f;
+    pending_fns_.clear();
     while (!anon_defs_.empty()) {
       out += anon_defs_.back();
       anon_defs_.pop_back();
@@ -2367,7 +2391,7 @@ std::string Gen::run() {
     fn_has_return_ = false;
     block(prog_.statements, false);
     if (fn_has_return_) line(ret_label_ + ": ;");
-    line("  vy_gc_roots_restore(_roots_mark);");
+    line("  ov_gc_roots_restore(_roots_mark);");
     line("  return _ret; }");
     std::string body = out;
     out.swap(saved);
@@ -2378,17 +2402,17 @@ std::string Gen::run() {
       std::set<std::string> seen;
       for (const auto& nm : anon_names_) {
         if (seen.insert(nm).second)
-          line("static VyValue " + nm +
-               "(struct VyFunc* _fn, VyValue* _argv, int _argc);");
+          line("static OvValue " + nm +
+               "(struct OvFunc* _fn, OvValue* _argv, int _argc);");
       }
     }
     while (!anon_defs_.empty()) { out += anon_defs_.back(); anon_defs_.pop_back(); }
     anon_names_.clear();
 
-    line("static VyValue vy_main(void) {");
+    line("static OvValue ov_main(void) {");
     indent_++;
-    line("VyValue _ret = vy_nil();");
-    line("size_t _roots_mark = vy_gc_roots_mark();");
+    line("OvValue _ret = ov_nil();");
+    line("size_t _roots_mark = ov_gc_roots_mark();");
     emit_root_prologue();
     cur_roots_.swap(outer_roots);
     out += body;
@@ -2398,18 +2422,18 @@ std::string Gen::run() {
   // ---- entry point ----
   line("");
   line("int main(int argc, char** argv) {");
-  line("  vy_runtime_init(argc, argv);");
+  line("  ov_runtime_init(argc, argv);");
   line("  int _code = 0;");
-  line("  jmp_buf* _jb = vy_try_push();");
+  line("  jmp_buf* _jb = ov_try_push();");
   line("  if (setjmp(*_jb) == 0) {");
-  line("    vy_main();");
+  line("    ov_main();");
   line("    _code = 0;");
   line("  } else {");
   // An uncaught panic, or `exit(code)`, arrives here via longjmp.
-  line("    _code = vy_exit_code();");
+  line("    _code = ov_exit_code();");
   line("  }");
-  line("  vy_try_pop();");
-  line("  vy_runtime_shutdown();");
+  line("  ov_try_pop();");
+  line("  ov_runtime_shutdown();");
   line("  return _code;");
   line("}");
 
@@ -2428,4 +2452,4 @@ std::string emit_c_source(const ast::Program& program, Sema& sema,
   return out;
 }
 
-}  // namespace vy
+}  // namespace ov

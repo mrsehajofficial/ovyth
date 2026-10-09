@@ -1,2 +1,0 @@
-doc = json.parse("{\"name\":\"vayu\",\"tags\":[\"a\",\"b\",\"c\"],\"n\":42,\"ok\":true,\"nested\":{\"x\":1,\"y\":[1,2,3]}}")
-print(doc["name"], doc["n"], doc["ok"])

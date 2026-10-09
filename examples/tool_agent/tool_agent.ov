@@ -1,4 +1,4 @@
-// Vayu :: examples/tool_agent/tool_agent.vy
+// Ovyth :: examples/tool_agent/tool_agent.ov
 //
 // A minimal AI agent with tool calling.
 //
@@ -20,7 +20,7 @@
 //
 // Run against mock server:
 //   AI_API_KEY=test AI_API_URL=http://127.0.0.1:8642/v1/chat AI_MODEL=mock-model \
-//     vyc run examples/tool_agent/tool_agent.vy
+//     ovc run examples/tool_agent/tool_agent.ov
 
 api_key = env_or("AI_API_KEY", "")
 api_url = env_or("AI_API_URL", "https://api.example.com/v1/chat")
@@ -64,8 +64,8 @@ if api_key == "" {
     print("AI_API_KEY not set. Running demo without LLM...")
     print("")
     print("Demo: simulating tool dispatch")
-    print("  Tool: search({query: Vayu arena allocator})")
-    result = tool_search({"query": "Vayu arena allocator"})
+    print("  Tool: search({query: Ovyth arena allocator})")
+    result = tool_search({"query": "Ovyth arena allocator"})
     print("  Result: " + result)
     print("")
     print("Demo: weather check")
@@ -82,7 +82,7 @@ tools = [
     {"type": "function", "function": {"name": "weather", "description": "Get weather for a city", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
 ]
 
-print("=== Vayu Tool Agent ===")
+print("=== Ovyth Tool Agent ===")
 print("Type 'exit' to quit\n")
 
 while true {

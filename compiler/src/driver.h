@@ -1,4 +1,4 @@
-// Vayu :: compiler/src/driver.h
+// Ovyth :: compiler/src/driver.h
 //
 // Native compilation driver: LLVM IR -> object -> executable.
 //
@@ -7,7 +7,7 @@
 //                     └─(clang driver)──> .o for the runtime, then link
 //
 // The linker step goes through the system clang driver so the produced
-// executable picks up libcurl/OpenSSL/zlib and the C++ runtime without vyc
+// executable picks up libcurl/OpenSSL/zlib and the C++ runtime without ovc
 // having to know the platform's library search paths.
 #pragma once
 
@@ -17,7 +17,7 @@
 #include "ast/ast.h"
 #include "sema/sema.h"
 
-namespace vy {
+namespace ov {
 
 struct Options {
   std::string output;          // -o
@@ -51,12 +51,12 @@ class Driver {
   std::vector<std::string> temps_;
 };
 
-// Resolve the installed Vayu runtime (libvyrt.a) relative to the vyc binary,
+// Resolve the installed Ovyth runtime (libovrt.a) relative to the ovc binary,
 // so a compiled program never needs an interpreter -- only the runtime, which
 // is linked into the executable itself.
 std::string runtime_archive_path();
 
-// Directory holding vyrt.h, resolved the same way as the archive.
+// Directory holding ovrt.h, resolved the same way as the archive.
 std::string runtime_include_dir();
 
-}  // namespace vy
+}  // namespace ov

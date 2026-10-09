@@ -1,4 +1,4 @@
-sample = "{\"a\":{\"b\":\"hello_vayu_gc_test\"}}"
+sample = "{\"a\":{\"b\":\"hello_ovyth_gc_test\"}}"
 N = 300
 i = 0
 last = ""

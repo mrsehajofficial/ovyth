@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <unordered_map>
 
-namespace vy {
+namespace ov {
 namespace {
 
 bool is_ident_start(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
@@ -366,4 +366,4 @@ std::vector<Token> Lexer::scan() {
   return std::move(out_);
 }
 
-}  // namespace vy
+}  // namespace ov

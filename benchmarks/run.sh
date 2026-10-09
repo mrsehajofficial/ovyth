@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Vayu :: benchmarks/run.sh
+# Ovyth :: benchmarks/run.sh
 #
 # The benchmark driver (spec sections 34-37). It compiles each case natively,
 # times the whole process with the shell's own clock, and reports wall-clock
@@ -11,7 +11,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-VYC="${VYC:-build/vyc}"
+OVC="${OVC:-build/ovc}"
 REPS="${REPS:-5}"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
@@ -32,7 +32,7 @@ EXTRA=""
 time_case() {
   local name="$1" file="$2"
   local exe="$OUT/$name"
-  if ! "$VYC" "$file" $EXTRA -o "$exe" >/dev/null 2>&1; then
+  if ! "$OVC" "$file" $EXTRA -o "$exe" >/dev/null 2>&1; then
     printf '%-14s BUILD FAILED\n' "$name"
     return
   fi
@@ -52,19 +52,19 @@ time_case() {
   printf '%-14s best=%5sms avg=%5sms  binary=%8s bytes\n' "$name" "$best" "$avg" "$bytes"
 }
 
-echo "=== Vayu benchmark suite (native, ${REPS} reps, best-of) ==="
+echo "=== Ovyth benchmark suite (native, ${REPS} reps, best-of) ==="
 echo
 printf '%-14s %s\n' "case" "result"
 printf '%s\n' "---------------------------------------------"
 
-time_case startup   benchmarks/cases/startup.vy
-time_case intloop   benchmarks/cases/intloop.vy
-time_case fib       benchmarks/cases/fib.vy
-time_case strconcat benchmarks/cases/strconcat.vy
-time_case listappend benchmarks/cases/listappend.vy
-time_case mapops    benchmarks/cases/mapops.vy
-time_case json      benchmarks/cases/json.vy
-time_case chatbot   benchmarks/cases/chatbot_stub.vy
+time_case startup   benchmarks/cases/startup.ov
+time_case intloop   benchmarks/cases/intloop.ov
+time_case fib       benchmarks/cases/fib.ov
+time_case strconcat benchmarks/cases/strconcat.ov
+time_case listappend benchmarks/cases/listappend.ov
+time_case mapops    benchmarks/cases/mapops.ov
+time_case json      benchmarks/cases/json.ov
+time_case chatbot   benchmarks/cases/chatbot_stub.ov
 
 echo
 echo "(ms = wall clock for the whole process, including startup)"

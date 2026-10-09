@@ -1,4 +1,4 @@
-/* Vayu runtime :: src/http.c
+/* Ovyth runtime :: src/http.c
  *
  * HTTP client built on libcurl.
  *
@@ -12,9 +12,9 @@
  * The header takes JSON objects so the compiler stays trivial: the native map
  * the user wrote becomes a JSON string the runtime flattens. Errors that the
  * *transport* produced (DNS, TLS, timeout) come back as response.error rather
- * than a panic, so a Vayu program can `try` them like any other value.
+ * than a panic, so a Ovyth program can `try` them like any other value.
  */
-#include "vyrt.h"
+#include "ovrt.h"
 
 #include <curl/curl.h>
 #include <ctype.h>
@@ -44,7 +44,7 @@ static size_t sink_write(char* p, size_t sz, size_t nm, void* ud) {
 }
 
 typedef struct {
-  VyHttpResponse* resp;
+  OvHttpResponse* resp;
 } HeaderSink;
 
 static size_t header_cb(char* data, size_t sz, size_t nm, void* ud) {
@@ -66,37 +66,37 @@ static size_t header_cb(char* data, size_t sz, size_t nm, void* ud) {
       name[nlen] = '\0';
       memcpy(value, data + vstart, vlen);
       value[vlen] = '\0';
-      VyValue key = vy_str_val(name);
-      VyMap* m = h->resp->headers.map;
-      if (vy_map_has(m, key)) {
+      OvValue key = ov_str_val(name);
+      OvMap* m = h->resp->headers.map;
+      if (ov_map_has(m, key)) {
         /* repeated header (Set-Cookie): make it a list */
-        VyValue prev = vy_map_get(m, key);
-        if (vy_tagof(prev) == VY_LIST) vy_list_push(prev.list, vy_str_val(value));
+        OvValue prev = ov_map_get(m, key);
+        if (ov_tagof(prev) == OV_LIST) ov_list_push(prev.list, ov_str_val(value));
         else {
-          VyList* l = vy_list_new();
-          vy_list_push(l, prev);
-          vy_list_push(l, vy_str_val(value));
-          vy_map_set(m, key, vy_list(l));
+          OvList* l = ov_list_new();
+          ov_list_push(l, prev);
+          ov_list_push(l, ov_str_val(value));
+          ov_map_set(m, key, ov_list(l));
         }
       } else {
-        vy_map_set(m, key, vy_str_val(value));
+        ov_map_set(m, key, ov_str_val(value));
       }
     }
   }
   return n;
 }
 
-const char* vy_http_libcurl_version(void) { return curl_version(); }
+const char* ov_http_libcurl_version(void) { return curl_version(); }
 
 /* URL-encode one component of a query string. */
-static VyStr* url_encode(VyStr* s) {
+static OvStr* url_encode(OvStr* s) {
   size_t extra = 0;
   for (uint32_t i = 0; i < s->len; i++) {
     unsigned char c = (unsigned char)s->bytes[i];
     if (!isalnum(c) && c != '-' && c != '_' && c != '.' && c != '~') extra++;
   }
-  if (!extra) return vy_str_new(s->bytes, s->len);
-  VyStr* r = vy_str_new(s->bytes, (size_t)s->len + extra * 2);
+  if (!extra) return ov_str_new(s->bytes, s->len);
+  OvStr* r = ov_str_new(s->bytes, (size_t)s->len + extra * 2);
   size_t o = 0;
   static const char* hex = "0123456789ABCDEF";
   for (uint32_t i = 0; i < s->len; i++) {
@@ -118,77 +118,77 @@ static VyStr* url_encode(VyStr* s) {
  * rendered form, which is what a header value is in practice. */
 static struct curl_slist* build_headers(const char* headers_json) {
   if (!headers_json) return NULL;
-  VyValue v = vy_json_parse(headers_json, strlen(headers_json));
-  if (vy_tagof(v) != VY_MAP) return NULL;
-  VyList* pairs = vy_map_pairs(v.map);
+  OvValue v = ov_json_parse(headers_json, strlen(headers_json));
+  if (ov_tagof(v) != OV_MAP) return NULL;
+  OvList* pairs = ov_map_pairs(v.map);
   struct curl_slist* list = NULL;
   for (uint32_t i = 0; i + 1 < pairs->len; i += 2) {
-    VyValue k = pairs->items[i];
-    VyValue val = pairs->items[i + 1];
-    if (vy_tagof(k) != VY_STRING) continue;
-    VyStr* vs = vy_render(val);
-    VyStr* line = vy_str_concat(k.str, vy_str_new(": ", 2));
-    line = vy_str_concat(line, vs);
-    list = curl_slist_append(list, vy_str_data(line));
+    OvValue k = pairs->items[i];
+    OvValue val = pairs->items[i + 1];
+    if (ov_tagof(k) != OV_STRING) continue;
+    OvStr* vs = ov_render(val);
+    OvStr* line = ov_str_concat(k.str, ov_str_new(": ", 2));
+    line = ov_str_concat(line, vs);
+    list = curl_slist_append(list, ov_str_data(line));
   }
   return list;
 }
 
-static VyStr* build_url(const char* url, const char* params_json) {
-  if (!params_json) return vy_str_cstr(url);
-  VyValue v = vy_json_parse(params_json, strlen(params_json));
-  if (vy_tagof(v) != VY_MAP || v.map->len == 0) return vy_str_cstr(url);
-  VyStr* out = vy_str_cstr(url);
-  int first = strchr(vy_str_data(out), '?') == NULL;
-  VyList* pairs = vy_map_pairs(v.map);
+static OvStr* build_url(const char* url, const char* params_json) {
+  if (!params_json) return ov_str_cstr(url);
+  OvValue v = ov_json_parse(params_json, strlen(params_json));
+  if (ov_tagof(v) != OV_MAP || v.map->len == 0) return ov_str_cstr(url);
+  OvStr* out = ov_str_cstr(url);
+  int first = strchr(ov_str_data(out), '?') == NULL;
+  OvList* pairs = ov_map_pairs(v.map);
   for (uint32_t i = 0; i + 1 < pairs->len; i += 2) {
-    VyValue k = pairs->items[i];
-    VyValue val = pairs->items[i + 1];
-    VyStr* ks = (vy_tagof(k) == VY_STRING) ? k.str : vy_render(k);
-    VyStr* vs = vy_render(val);
-    VyStr* ek = url_encode(ks);
-    VyStr* ev = url_encode(vs);
-    VyStr* sep = vy_str_new(first ? "?" : "&", 1);
-    VyStr* chunk = vy_str_concat(sep, ek);
-    chunk = vy_str_concat(chunk, vy_str_new("=", 1));
-    chunk = vy_str_concat(chunk, ev);
-    out = vy_str_concat(out, chunk);
+    OvValue k = pairs->items[i];
+    OvValue val = pairs->items[i + 1];
+    OvStr* ks = (ov_tagof(k) == OV_STRING) ? k.str : ov_render(k);
+    OvStr* vs = ov_render(val);
+    OvStr* ek = url_encode(ks);
+    OvStr* ev = url_encode(vs);
+    OvStr* sep = ov_str_new(first ? "?" : "&", 1);
+    OvStr* chunk = ov_str_concat(sep, ek);
+    chunk = ov_str_concat(chunk, ov_str_new("=", 1));
+    chunk = ov_str_concat(chunk, ev);
+    out = ov_str_concat(out, chunk);
     first = 0;
   }
   return out;
 }
 
-VyHttpResponse* vy_http_request(const char* method, const char* url,
+OvHttpResponse* ov_http_request(const char* method, const char* url,
                                 const char* body, const char* content_type,
                                 const char* headers_json, const char* params_json,
                                 double timeout_s) {
-  VyHttpResponse* r = (VyHttpResponse*)calloc(1, sizeof(VyHttpResponse));
+  OvHttpResponse* r = (OvHttpResponse*)calloc(1, sizeof(OvHttpResponse));
   if (!r) return NULL;
   r->status = 0;
-  r->body = vy_str_new("", 0);
-  r->headers = vy_map(vy_map_new());
+  r->body = ov_str_new("", 0);
+  r->headers = ov_map(ov_map_new());
   r->error = NULL;
   char errbuf[CURL_ERROR_SIZE];
   errbuf[0] = '\0';
 
   CURL* h = curl_easy_init();
   if (!h) {
-    r->error = vy_str_cstr("failed to initialise the HTTP client");
+    r->error = ov_str_cstr("failed to initialise the HTTP client");
     return r;
   }
 
-  VyStr* full_url = build_url(url, params_json);
+  OvStr* full_url = build_url(url, params_json);
 
   Sink sink = {NULL, 0, 0};
   HeaderSink hsink = {r};
   struct curl_slist* hdrs = build_headers(headers_json);
   /* libcurl carries the content type as a header, not a separate option */
   if (content_type && *content_type) {
-    VyStr* line = vy_str_concat(vy_str_new("Content-Type: ", 14), vy_str_cstr(content_type));
-    hdrs = curl_slist_append(hdrs, vy_str_data(line));
+    OvStr* line = ov_str_concat(ov_str_new("Content-Type: ", 14), ov_str_cstr(content_type));
+    hdrs = curl_slist_append(hdrs, ov_str_data(line));
   }
 
-  curl_easy_setopt(h, CURLOPT_URL, vy_str_data(full_url));
+  curl_easy_setopt(h, CURLOPT_URL, ov_str_data(full_url));
   curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, sink_write);
   curl_easy_setopt(h, CURLOPT_WRITEDATA, &sink);
   curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, header_cb);
@@ -218,7 +218,7 @@ VyHttpResponse* vy_http_request(const char* method, const char* url,
 
   CURLcode rc = curl_easy_perform(h);
   if (rc != CURLE_OK) {
-    r->error = vy_str_cstr(errbuf[0] ? errbuf : curl_easy_strerror(rc));
+    r->error = ov_str_cstr(errbuf[0] ? errbuf : curl_easy_strerror(rc));
     r->status = 0;
   } else {
     long code = 0;
@@ -230,7 +230,7 @@ VyHttpResponse* vy_http_request(const char* method, const char* url,
   }
 
   if (sink.buf) {
-    r->body = vy_str_new(sink.buf, sink.len);
+    r->body = ov_str_new(sink.buf, sink.len);
     free(sink.buf);
   }
   if (hdrs) curl_slist_free_all(hdrs);

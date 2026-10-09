@@ -1,25 +1,25 @@
-# Vayu usage guide
+# Ovyth usage guide
 
-Everything you need to install, write, and run Vayu programs. Read it
+Everything you need to install, write, and run Ovyth programs. Read it
 front-to-back the first time; after that it works as a reference.
 
 ---
 
-## 1. What is Vayu?
+## 1. What is Ovyth?
 
 A small compiled language for automation and AI tooling.
 
-```vy
-name = "Vayu"
+```ov
+name = "Ovyth"
 print("hello from", name)
 ```
 
-You write `.vy` files. The compiler, `vyc`, turns them into **native
+You write `.ov` files. The compiler, `ovc`, turns them into **native
 machine code** — an ordinary ELF executable. Nothing interprets your program
 at the other end: no Python, no Node, no VM. Copy the binary to another
 machine with the same libc and it runs.
 
-There is also an interpreter (`vyc run`) for development — it starts
+There is also an interpreter (`ovc run`) for development — it starts
 instantly and prints errors more readably. What you deploy is the compiled
 binary.
 
@@ -27,7 +27,7 @@ binary.
 
 ## 2. Install and build
 
-Vayu builds from source with Clang and a C++17 compiler. On Debian/Ubuntu:
+Ovyth builds from source with Clang and a C++17 compiler. On Debian/Ubuntu:
 
 ```bash
 sudo apt install build-essential clang libcurl4-openssl-dev libssl-dev zlib1g-dev llvm-dev
@@ -36,8 +36,8 @@ sudo apt install build-essential clang libcurl4-openssl-dev libssl-dev zlib1g-de
 Then:
 
 ```bash
-cd /path/to/vayu
-make            # builds build/vyc and build/libvyrt.a
+cd /path/to/ovyth
+make            # builds build/ovc and build/libovrt.a
 make test       # runs the full test suite
 ```
 
@@ -46,37 +46,37 @@ make test       # runs the full test suite
 Check it works:
 
 ```bash
-./build/vyc version
-# vyc 0.1.3 (Vayu)
+./build/ovc version
+# ovc 0.1.3 (Ovyth)
 ```
 
-### Putting `vyc` on your PATH
+### Putting `ovc` on your PATH
 
-Rather than typing `./build/vyc` everywhere, install it into a prefix:
+Rather than typing `./build/ovc` everywhere, install it into a prefix:
 
 ```bash
-./install.sh                       # -> ~/.local/bin/vyc   (no sudo)
-./install.sh /usr/local            # -> /usr/local/bin/vyc (needs sudo)
+./install.sh                       # -> ~/.local/bin/ovc   (no sudo)
+./install.sh /usr/local            # -> /usr/local/bin/ovc (needs sudo)
 make install PREFIX=$HOME/.local   # the same thing via make
 ```
 
 The installer copies three things:
 
 ```
-<prefix>/bin/vyc            the compiler
-<prefix>/lib/libvyrt.a      the runtime compiled programs link against
-<prefix>/include/vyrt.h     the runtime headers vyc passes to clang
+<prefix>/bin/ovc            the compiler
+<prefix>/lib/libovrt.a      the runtime compiled programs link against
+<prefix>/include/ovrt.h     the runtime headers ovc passes to clang
 ```
 
-`vyc` locates the last two relative to its own path, so there is nothing
+`ovc` locates the last two relative to its own path, so there is nothing
 to configure and you can move the prefix afterwards.
 
 ### Starting a project
 
-`vyc init` creates a project that builds and is ready to commit:
+`ovc init` creates a project that builds and is ready to commit:
 
 ```bash
-vyc init myapp
+ovc init myapp
 cd myapp
 make run          # interpreter, instant
 make build        # native executable at build/app
@@ -86,7 +86,7 @@ make release      # -O3, LTO, stripped
 It writes four files:
 
 ```
-main.vy      the program
+main.ov      the program
 Makefile     run / build / release / clean
 README.md    a note on how to build it
 .gitignore   build output
@@ -95,30 +95,30 @@ README.md    a note on how to build it
 Three templates are available, chosen with `--template` (or `-t`):
 
 ```bash
-vyc init myapp                    # hello  -- print a greeting (default)
-vyc init scraper -t http          # http   -- call an API, parse the JSON
-vyc init chat --template=cli      # cli    -- an interactive input() loop
+ovc init myapp                    # hello  -- print a greeting (default)
+ovc init scraper -t http          # http   -- call an API, parse the JSON
+ovc init chat --template=cli      # cli    -- an interactive input() loop
 ```
 
-`vyc init` won't write into a directory that already has files; it reports
+`ovc init` won't write into a directory that already has files; it reports
 the conflict instead of overwriting.
 
 ---
 
 ## 3. Your first program
 
-Create `hello.vy`:
+Create `hello.ov`:
 
-```vy
-name = "Vayu"
+```ov
+name = "Ovyth"
 print(name)
 ```
 
 Run it:
 
 ```bash
-./build/vyc run hello.vy      # interpreter, instant
-./build/vyc hello.vy          # compiled to ./hello
+./build/ovc run hello.ov      # interpreter, instant
+./build/ovc hello.ov          # compiled to ./hello
 ./hello                       # run the native binary
 ```
 
@@ -131,12 +131,12 @@ with the same libc and it still runs — nothing else is needed.
 
 ### Values
 
-```vy
+```ov
 count   = 42          # Int
 ratio   = 0.75        # Float
 enabled = true        # Bool
 missing = null        # nil
-name    = "Vayu"      # String
+name    = "Ovyth"      # String
 items   = [1, 2, 3]   # List
 config  = {"port": 8080, "host": "localhost"}   # Map
 ```
@@ -144,13 +144,13 @@ config  = {"port": 8080, "host": "localhost"}   # Map
 Variables need no type annotation — the compiler infers it. You can
 annotate when you want to:
 
-```vy
+```ov
 count: Int = 42
 ```
 
 ### Printing
 
-```vy
+```ov
 print("a", 1, true)     # a 1 true     (space separated, newline at end)
 print(42)               # 42
 print([1, 2, 3])        # [1, 2, 3]
@@ -160,9 +160,9 @@ eprint("to stderr", 42) # same rendering, on stderr — stdout stays clean
 
 ### Strings
 
-```vy
+```ov
 greeting = "hello " + "world"
-upper    = "vayu".upper()
+upper    = "ovyth".upper()
 shout    = "abc".repeat(3)        # abcabcabc
 parts    = "a,b,c".split(",")     # ["a", "b", "c"]
 joined   = join("-", ["a", "b"])  # a-b
@@ -172,10 +172,10 @@ dotted   = "ab".pad(5, 46)        # "...ab"  (46 is the fill code point)
 
 ### Interpolation
 
-```vy
-name = "Vayu"
+```ov
+name = "Ovyth"
 n = 42
-print("hi {name}, n={n}, math={1 + 2 * 3}")   # hi Vayu, n=42, math=7
+print("hi {name}, n={n}, math={1 + 2 * 3}")   # hi Ovyth, n=42, math=7
 ```
 
 Braces that don't contain a valid expression stay literal, so JSON is safe
@@ -183,7 +183,7 @@ inline: `print("{\"a\":1}")` prints `{"a":1}`.
 
 ### Control flow
 
-```vy
+```ov
 if n > 100 {
     print("big")
 } else if n > 10 {
@@ -214,7 +214,7 @@ for key in some_map {        # maps iterate by key
 
 ### Functions
 
-```vy
+```ov
 function add(a, b) {
     return a + b
 }
@@ -236,7 +236,7 @@ print(double(21))           # 42
 
 ### Lists and maps
 
-```vy
+```ov
 xs = [1, 2, 3]
 xs.push(4)                  # [1, 2, 3, 4]
 print(xs[0], xs.length())   # 1 4
@@ -259,7 +259,7 @@ type from the inferred element type.
 
 ### Multiple assignment
 
-```vy
+```ov
 a, b = 1, 2
 x, y, z = [10, 20, 30]      # unpacks a list
 print(a + b, x + y + z)     # 3 60
@@ -269,7 +269,7 @@ Works with specialized arrays too.
 
 ### Errors
 
-```vy
+```ov
 try {
     print(1 / 0)
 } catch e {
@@ -289,7 +289,7 @@ assert(1 < 2, "must be ordered")
 
 ## 5. Real example: the chatbot
 
-`examples/chatbot/chatbot.vy` is a complete program — it reads a line,
+`examples/chatbot/chatbot.ov` is a complete program — it reads a line,
 POSTs it to an LLM chat endpoint, prints the reply, and loops until you
 type `exit`.
 
@@ -301,12 +301,12 @@ python3 examples/chatbot/mock_server.py 8642
 export AI_API_KEY=whatever
 export AI_API_URL=http://127.0.0.1:8642/v1/chat
 export AI_MODEL=my-model
-./build/vyc examples/chatbot/chatbot.vy -o chatbot
+./build/ovc examples/chatbot/chatbot.ov -o chatbot
 ./chatbot
 ```
 
 ```
-Vayu chatbot -- type 'exit' to quit
+Ovyth chatbot -- type 'exit' to quit
 > you said: 'hello'
 ```
 
@@ -315,23 +315,23 @@ unchanged.
 
 ---
 
-## 6. The `vyc` command
+## 6. The `ovc` command
 
 | command | what it does |
 |---|---|
-| `vyc init <dir>` | create a new project from a template |
-| `vyc run prog.vy` | run with the interpreter (instant, good while coding) |
-| `vyc prog.vy` | compile to `./prog`, a native executable |
-| `vyc prog.vy -o path` | choose the output path |
-| `vyc prog.vy --release` | optimized: `-O3`, LTO, symbols stripped |
-| `vyc prog.vy --release --target=native` | also tune for this CPU |
-| `vyc prog.vy -O0` … `-O3` | optimization level (default 2) |
-| `vyc prog.vy --keep-ir` | keep the generated C for inspection |
-| `vyc check prog.vy` | parse and type-check, produce no binary |
-| `vyc fmt prog.vy` | print canonically formatted source |
-| `vyc ast prog.vy` | dump the syntax tree |
-| `vyc tokens prog.vy` | dump the token stream |
-| `vyc version` | print the version |
+| `ovc init <dir>` | create a new project from a template |
+| `ovc run prog.ov` | run with the interpreter (instant, good while coding) |
+| `ovc prog.ov` | compile to `./prog`, a native executable |
+| `ovc prog.ov -o path` | choose the output path |
+| `ovc prog.ov --release` | optimized: `-O3`, LTO, symbols stripped |
+| `ovc prog.ov --release --target=native` | also tune for this CPU |
+| `ovc prog.ov -O0` … `-O3` | optimization level (default 2) |
+| `ovc prog.ov --keep-ir` | keep the generated C for inspection |
+| `ovc check prog.ov` | parse and type-check, produce no binary |
+| `ovc fmt prog.ov` | print canonically formatted source |
+| `ovc ast prog.ov` | dump the syntax tree |
+| `ovc tokens prog.ov` | dump the token stream |
+| `ovc version` | print the version |
 
 Use `--release` for anything you ship. For iterating, plain `-O2` compiles
 faster and keeps symbols for a debugger.
@@ -341,9 +341,9 @@ faster and keeps symbols for a debugger.
 ## 7. Typical workflow
 
 ```bash
-vyc check prog.vy     # syntax/type check, instant
-vyc run prog.vy       # try it
-vyc prog.vy --release -o prog    # build for real use
+ovc check prog.ov     # syntax/type check, instant
+ovc run prog.ov       # try it
+ovc prog.ov --release -o prog    # build for real use
 ./prog
 ```
 
@@ -354,10 +354,10 @@ vyc prog.vy --release -o prog    # build for real use
 Errors name the file, line, and column:
 
 ```
-prog.vy:4:9: error: unknown name 'nmae'
+prog.ov:4:9: error: unknown name 'nmae'
 ```
 
-When a parse surprises you, `vyc ast` and `vyc tokens` answer the question
+When a parse surprises you, `ovc ast` and `ovc tokens` answer the question
 "why did it see that?".
 
 ---
@@ -392,7 +392,7 @@ When a parse surprises you, `vyc ast` and `vyc tokens` answer the question
 
 A few semantics worth knowing:
 
-```vy
+```ov
 api_key = env_or("AI_API_KEY", "")   # fallback when unset; env(name) throws instead
 model   = env_or("AI_MODEL", "my-model")
 setenv("LOG_LEVEL", "debug")         # nil
@@ -407,7 +407,7 @@ and a fourth of `"right"` pads on the right instead.
 
 ### HTTP response shape
 
-```vy
+```ov
 response = http.post(
     "https://example.com/api",
     headers = {"Authorization": "Bearer " + api_key},
@@ -431,9 +431,6 @@ Transport failures (DNS, TLS, timeout) are raised as catchable errors, so
 
 Worth knowing before you rely on something:
 
-- **Closures don't capture their enclosing scope.** A closure that reads a
-  variable from the function around it is rejected with an error rather
-  than silently doing the wrong thing.
 - **No files, modules, or imports yet.** Everything is in one file per
   program.
 - **No async or concurrency.**
@@ -444,20 +441,28 @@ Worth knowing before you rely on something:
   what will close the gap: [PERFORMANCE.md](PERFORMANCE.md). Raw output:
   `benchmarks/RESULTS.md`.
 
+Closures are **not** a limitation: they capture their enclosing scope by
+reference and work on both backends. A closure may read or write an outer
+local, several closures may share one captured variable, and a closure can be
+returned from a function or stored in a list and called later
+(`pair[0](...)`). The regression test `tests/interp/017_closures.ov` pins the
+semantics down.
+
+
 ---
 
 ## 11. Project layout
 
 ```
-compiler/          the vyc compiler (C++17)
+compiler/          the ovc compiler (C++17)
 runtime/           the C runtime that compiled programs link against
-  include/vyrt.h     the C API: values, strings, lists, maps, GC
+  include/ovrt.h     the C API: values, strings, lists, maps, GC
   src/*.c            GC, strings, containers, JSON, HTTP, console
 tests/interp/      language tests, run through BOTH backends
 benchmarks/        benchmark suite and comparison driver
 examples/          runnable examples, including chatbot/
 docs/USAGE.md           this guide
-docs/PERFORMANCE.md     how fast Vayu is, with measured numbers
+docs/PERFORMANCE.md     how fast Ovyth is, with measured numbers
 docs/PERFORMANCE-SPEC.md  the performance engineering specification
 benchmarks/RESULTS.md    measured performance
 ```
@@ -470,6 +475,6 @@ bash tests/interp.sh                   # language tests only
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 bash benchmarks/run.sh                 # benchmark suite
-bash benchmarks/compare.sh             # Vayu vs C vs Python
+bash benchmarks/compare.sh             # Ovyth vs C vs Python
 bash benchmarks/compare_ai.sh --release # AI pipeline vs C vs Python
 ```

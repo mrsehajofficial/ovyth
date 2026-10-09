@@ -12,10 +12,10 @@
 #include "backend/codegen_c.h"
 
 extern "C" {
-#include "vyrt.h"
+#include "ovrt.h"
 }
 
-namespace vy {
+namespace ov {
 
 Driver::~Driver() {
   if (!opt_.keep_ir) {
@@ -24,7 +24,7 @@ Driver::~Driver() {
 }
 
 std::string runtime_archive_path() {
-  // The runtime archive ships next to the vyc binary so a compiled program is
+  // The runtime archive ships next to the ovc binary so a compiled program is
   // self-contained: no interpreter, no runtime install, no rpath.
   char buf[4096];
   ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -38,8 +38,8 @@ std::string runtime_archive_path() {
       // Ordered by preference: a co-located archive (a build tree), then the
       // conventional <prefix>/lib of an installed tree, then two layouts that
       // older checkouts used.
-      for (const char* rel : {"/libvyrt.a", "/../lib/libvyrt.a", "/../libvyrt.a",
-                              "/../build/libvyrt.a"}) {
+      for (const char* rel : {"/libovrt.a", "/../lib/libovrt.a", "/../libovrt.a",
+                              "/../build/libovrt.a"}) {
         std::string candidate = dir + rel;
         if (::stat(candidate.c_str(), &st) == 0) {
           // normalise /./ and /../ so the shell command quotes cleanly
@@ -63,12 +63,12 @@ std::string runtime_archive_path() {
       }
     }
   }
-  return "libvyrt.a";
+  return "libovrt.a";
 }
 
 
 // The runtime headers live in <root>/runtime/include. Resolve them relative to
-// the vyc binary the same way the archive is resolved, so a build tree and an
+// the ovc binary the same way the archive is resolved, so a build tree and an
 // installed tree both work without configuration.
 std::string runtime_include_dir() {
   char buf[4096];
@@ -83,7 +83,7 @@ std::string runtime_include_dir() {
       for (const char* rel : {"/../runtime/include", "/../../runtime/include",
                               "/../include"}) {
         std::string c = dir + rel;
-        if (::stat((c + "/vyrt.h").c_str(), &st) == 0) return c;
+        if (::stat((c + "/ovrt.h").c_str(), &st) == 0) return c;
       }
     }
   }
@@ -144,7 +144,7 @@ static std::string temp_path(const std::string& input, const char* suffix) {
   if (dot != std::string::npos) base = base.substr(0, dot);
   const char* tmp = ::getenv("TMPDIR");
   std::string dir = (tmp && *tmp) ? tmp : "/tmp";
-  return dir + "/vy_" + base + "_" + std::to_string(::getpid()) + suffix;
+  return dir + "/ov_" + base + "_" + std::to_string(::getpid()) + suffix;
 }
 
 int Driver::compile(const ast::Program& program, Sema& sema, const std::string& source) {
@@ -157,7 +157,7 @@ int Driver::compile(const ast::Program& program, Sema& sema, const std::string& 
   std::string err;
   std::string ir = emit_c_source(program, sema, source, err);
   if (!err.empty()) {
-    std::fprintf(stderr, "vyc: %s\n", err.c_str());
+    std::fprintf(stderr, "ovc: %s\n", err.c_str());
     return 1;
   }
 
@@ -179,7 +179,7 @@ int Driver::compile(const ast::Program& program, Sema& sema, const std::string& 
   //
   // A release build layers: -O3, per-function sections so the linker's
   // --gc-sections can drop what the program never calls, LTO so the optimiser
-  // sees across the generated code and libvyrt together, and --target=native
+  // sees across the generated code and libovrt together, and --target=native
   // to use this machine's ISA. A plain build stays -O2 without LTO so
   // iteration is fast and the binary stays debuggable.
   std::string rt = runtime_archive_path();
@@ -227,7 +227,7 @@ int Driver::compile(const ast::Program& program, Sema& sema, const std::string& 
   {
     std::ofstream f(ir_path);
     if (!f) {
-      std::fprintf(stderr, "vyc: cannot write %s\n", ir_path.c_str());
+      std::fprintf(stderr, "ovc: cannot write %s\n", ir_path.c_str());
       return 1;
     }
     f << ir;
@@ -261,4 +261,4 @@ int Driver::compile(const ast::Program& program, Sema& sema, const std::string& 
   return 0;
 }
 
-}  // namespace vy
+}  // namespace ov

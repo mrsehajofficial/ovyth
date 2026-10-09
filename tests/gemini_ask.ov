@@ -1,10 +1,10 @@
 // Test program: ask one question, send it to a local OpenAI-compatible
 // provider (gemini-web2api), extract the answer from the JSON, print it.
 //
-// Run it with:   build/vyc run tests/gemini_ask.vy
+// Run it with:   build/ovc run tests/gemini_ask.ov
 // Point it elsewhere with env vars, e.g.:
 //   AI_API_URL=http://localhost:8081/v1/chat/completions AI_MODEL=gemini-auto \
-//       build/vyc run tests/gemini_ask.vy
+//       build/ovc run tests/gemini_ask.ov
 // Your provider needs no key; if yours does, set AI_API_KEY.
 
 api_url = env_or("AI_API_URL", "http://localhost:8081/v1/chat/completions")

@@ -1,15 +1,15 @@
-// Vayu :: compiler/tools/scaffold.h
+// Ovyth :: compiler/tools/scaffold.h
 //
-// `vyc init` -- create a new Vayu project from a built-in template.
+// `ovc init` -- create a new Ovyth project from a built-in template.
 #pragma once
 
 #include <string>
 
-namespace vy {
+namespace ov {
 
 // Create `dir` and fill it with a starter project. `dir` is created when it
 // does not exist; an existing directory is reused only while it is empty, so
-// `vyc init` can never clobber someone's files.
+// `ovc init` can never clobber someone's files.
 //
 // `tmpl` picks the starter -- see scaffold_templates() for the names.
 //
@@ -21,4 +21,4 @@ bool scaffold_project(const std::string& dir, const std::string& tmpl, std::stri
 // The available template names, comma-separated, for --help and error text.
 std::string scaffold_templates();  // "hello, http, cli"
 
-}  // namespace vy
+}  // namespace ov

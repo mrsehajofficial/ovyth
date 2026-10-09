@@ -1,16 +1,16 @@
-/* Vayu runtime :: src/gc.c
+/* Ovyth runtime :: src/gc.c
  *
  * Precise, non-moving, mark-sweep collector.
  *
  * Roots
- *   - slots registered with vy_gc_register_root() (backend shadow stacks)
- *   - extra slots passed to vy_gc_collect_ex() (used when a backend collects
+ *   - slots registered with ov_gc_register_root() (backend shadow stacks)
+ *   - extra slots passed to ov_gc_collect_ex() (used when a backend collects
  *     while a partial result is only reachable from C locals)
  *
- * The mark phase is iterative: a Vayu program can build a list nested as
+ * The mark phase is iterative: a Ovyth program can build a list nested as
  * deeply as it likes, and a recursive collector would blow the C stack.
  */
-#include "vyrt.h"
+#include "ovrt.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,17 +19,17 @@
 enum { H_STRING = 0, H_LIST = 1, H_MAP = 2 };
 
 typedef struct {
-  VyHeader* heap;
+  OvHeader* heap;
   size_t    heap_bytes;
   size_t    live_bytes;
   size_t    alloc_count;
   double    next_gc;
   int       disabled;
 
-  VyValue** roots;
+  OvValue** roots;
   size_t    roots_len, roots_cap;
 
-  VyValue*  mark;
+  OvValue*  mark;
   size_t    mark_len, mark_cap;
 } GC;
 
@@ -39,29 +39,29 @@ static GC g;
  * tracked total without a collection running under a half-updated object */
 static __thread int    t_in_gc = 0;
 
-size_t vy_gc_heap_bytes(void)    { return g.heap_bytes; }
-size_t vy_gc_live_bytes(void)    { return g.live_bytes; }
-size_t vy_heap_alloc_count(void) { return g.alloc_count; }
+size_t ov_gc_heap_bytes(void)    { return g.heap_bytes; }
+size_t ov_gc_live_bytes(void)    { return g.live_bytes; }
+size_t ov_heap_alloc_count(void) { return g.alloc_count; }
 
-void vy_heap_reset_stats(void) {
+void ov_heap_reset_stats(void) {
   g.alloc_count = 0;
   g.heap_bytes = 0;
   g.live_bytes = 0;
   g.next_gc = 8 * 1024 * 1024;
 }
 
-void vy_gc_disable(int on) { g.disabled = on; }
-int  vy_gc_enabled(void)   { return !g.disabled; }
+void ov_gc_disable(int on) { g.disabled = on; }
+int  ov_gc_enabled(void)   { return !g.disabled; }
 
-void vy_gc_register_root(VyValue* slot) {
+void ov_gc_register_root(OvValue* slot) {
   if (g.roots_len == g.roots_cap) {
     g.roots_cap = g.roots_cap ? g.roots_cap * 2 : 1024;
-    g.roots = (VyValue**)realloc(g.roots, g.roots_cap * sizeof(VyValue*));
+    g.roots = (OvValue**)realloc(g.roots, g.roots_cap * sizeof(OvValue*));
   }
   g.roots[g.roots_len++] = slot;
 }
 
-void vy_gc_unregister_root(VyValue* slot) {
+void ov_gc_unregister_root(OvValue* slot) {
   for (size_t i = g.roots_len; i-- > 0;) {
     if (g.roots[i] == slot) {
       g.roots[i] = g.roots[--g.roots_len];
@@ -70,13 +70,13 @@ void vy_gc_unregister_root(VyValue* slot) {
   }
 }
 
-size_t vy_gc_roots_mark(void) { return g.roots_len; }
-void   vy_gc_roots_restore(size_t mark) {
+size_t ov_gc_roots_mark(void) { return g.roots_len; }
+void   ov_gc_roots_restore(size_t mark) {
   if (mark <= g.roots_len) g.roots_len = mark;
 }
 
-static VyGcScanner g_scanner = NULL;
-void vy_gc_set_scanner(VyGcScanner s) { g_scanner = s; }
+static OvGcScanner g_scanner = NULL;
+void ov_gc_set_scanner(OvGcScanner s) { g_scanner = s; }
 
 /* Collect only when it is safe to do so.
  *
@@ -89,12 +89,12 @@ void vy_gc_set_scanner(VyGcScanner s) { g_scanner = s; }
  * returns picks the collection up. */
 static __thread int t_mutating = 0;
 
-void vy_gc_begin_mutation(void) { t_mutating++; }
-void vy_gc_end_mutation(void)   { if (t_mutating) t_mutating--; }
+void ov_gc_begin_mutation(void) { t_mutating++; }
+void ov_gc_end_mutation(void)   { if (t_mutating) t_mutating--; }
 
 static void maybe_collect(void) {
   if (g.disabled || t_in_gc || t_mutating) return;
-  if (g.heap_bytes >= g.next_gc) vy_gc_collect();
+  if (g.heap_bytes >= g.next_gc) ov_gc_collect();
 }
 
 /* Allocate-black: the object being constructed is marked *before* any
@@ -102,7 +102,7 @@ static void maybe_collect(void) {
  * would otherwise find the half-built object unreachable and free it out from
  * under the constructor. sweep() clears the mark on survivors, so the bit is
  * reusable. */
-static void track(VyHeader* h, size_t bytes) {
+static void track(OvHeader* h, size_t bytes) {
   h->marked = 1;
   h->next = g.heap;
   g.heap = h;
@@ -125,55 +125,55 @@ static void track(VyHeader* h, size_t bytes) {
  * This also must not trigger a collection: the container is mid-update and the
  * collector would size the heap from a table that is not yet consistent.
  * The threshold is only recorded here; the next real allocation picks it up. */
-void vy_heap_note_realloc(size_t old_bytes, size_t new_bytes) {
+void ov_heap_note_realloc(size_t old_bytes, size_t new_bytes) {
   size_t delta = new_bytes - old_bytes;
   g.heap_bytes += delta;
   g.live_bytes += delta;
   /* Deliberately no collect() trigger here -- see note above. */
 }
 
-/* The header sits immediately *before* the VyStr inside one allocation:
+/* The header sits immediately *before* the OvStr inside one allocation:
  *
  *     +----------------+------------------+-----------+---------+
- *     | VyHeader (24B) | VyStr (len, hash) | bytes ... |  NUL    |
+ *     | OvHeader (24B) | OvStr (len, hash) | bytes ... |  NUL    |
  *     +----------------+------------------+-----------+---------+
  *                       ^ s
  *
- * sizeof(VyStr) is len-independent (flexible tail), so the real block is
- * sizeof(VyHeader) + sizeof(VyStr) + len. Both the accounting here and the
+ * sizeof(OvStr) is len-independent (flexible tail), so the real block is
+ * sizeof(OvHeader) + sizeof(OvStr) + len. Both the accounting here and the
  * allocation in string.c must use that same expression -- an off-by-header
  * size here makes free() abort.
  */
-void vy_heap_track_str(VyStr* s, size_t len) {
-  VyHeader* h = &((VyHeader*)s)[-1];
+void ov_heap_track_str(OvStr* s, size_t len) {
+  OvHeader* h = &((OvHeader*)s)[-1];
   h->kind = H_STRING;
   h->len = (uint32_t)len;
-  track(h, sizeof(VyHeader) + sizeof(VyStr) + len);
+  track(h, sizeof(OvHeader) + sizeof(OvStr) + len);
 }
 
-void vy_heap_track_list(VyList* l, size_t bytes) {
+void ov_heap_track_list(OvList* l, size_t bytes) {
   l->hdr.kind = H_LIST;
   track(&l->hdr, bytes);
 }
 
-void vy_heap_track_map(VyMap* m, size_t bytes) {
+void ov_heap_track_map(OvMap* m, size_t bytes) {
   m->hdr.kind = H_MAP;
   track(&m->hdr, bytes);
 }
 
-static VyHeader* header_of(VyValue v) {
-  switch (vy_tagof(v)) {
-    case VY_STRING: return &((VyHeader*)v.str)[-1];
-    case VY_LIST:   return &v.list->hdr;
-    case VY_MAP:    return &v.map->hdr;
+static OvHeader* header_of(OvValue v) {
+  switch (ov_tagof(v)) {
+    case OV_STRING: return &((OvHeader*)v.str)[-1];
+    case OV_LIST:   return &v.list->hdr;
+    case OV_MAP:    return &v.map->hdr;
     default:        return NULL;
   }
 }
 
-static void mark_push(VyValue v) {
+static void mark_push(OvValue v) {
   if (g.mark_len == g.mark_cap) {
     g.mark_cap = g.mark_cap ? g.mark_cap * 2 : 1024;
-    g.mark = (VyValue*)realloc(g.mark, g.mark_cap * sizeof(VyValue));
+    g.mark = (OvValue*)realloc(g.mark, g.mark_cap * sizeof(OvValue));
   }
   g.mark[g.mark_len++] = v;
 }
@@ -181,17 +181,17 @@ static void mark_push(VyValue v) {
 /* The accounted size of a heap object, derived from its header exactly as
  * sweep() derives it. Marking must use the same arithmetic as sweeping, or the
  * live total and the freed total drift apart. */
-static size_t object_bytes(VyHeader* h) {
+static size_t object_bytes(OvHeader* h) {
   switch (h->kind) {
-    case H_STRING: return sizeof(VyHeader) + sizeof(VyStr) + h->len;
-    case H_LIST:   return sizeof(VyList) + (size_t)((VyList*)h)->cap * sizeof(VyValue);
-    case H_MAP:    return sizeof(VyMap) + (size_t)((VyMap*)h)->cap * sizeof(VyPair);
+    case H_STRING: return sizeof(OvHeader) + sizeof(OvStr) + h->len;
+    case H_LIST:   return sizeof(OvList) + (size_t)((OvList*)h)->cap * sizeof(OvValue);
+    case H_MAP:    return sizeof(OvMap) + (size_t)((OvMap*)h)->cap * sizeof(OvPair);
     default:       return 0;
   }
 }
 
-static void mark_value(VyValue v) {
-  VyHeader* h = header_of(v);
+static void mark_value(OvValue v) {
+  OvHeader* h = header_of(v);
   if (!h || h->marked) return;
   h->marked = 1;
   /* Accumulate here, not in mark_loop: this is the only place that sees each
@@ -204,29 +204,29 @@ static void mark_value(VyValue v) {
 
 static void mark_loop(void) {
   while (g.mark_len) {
-    VyValue v = g.mark[--g.mark_len];
-    if (vy_tagof(v) == VY_LIST) {
-      VyList* l = v.list;
+    OvValue v = g.mark[--g.mark_len];
+    if (ov_tagof(v) == OV_LIST) {
+      OvList* l = v.list;
       for (uint32_t i = 0; i < l->len; i++) {
         /* Nil/bool/int/float carry no heap object (the tag enum orders the
-         * three container kinds at VY_STRING and above), so the tag test
+         * three container kinds at OV_STRING and above), so the tag test
          * replaces a call that would have returned immediately. Marking a
          * 100k-entry map of ints used to cost 200k calls per collection; now
          * it costs 200k tag compares and no calls at all. */
-        if ((uint32_t)vy_tagof(l->items[i]) >= (uint32_t)VY_STRING)
+        if ((uint32_t)ov_tagof(l->items[i]) >= (uint32_t)OV_STRING)
           mark_value(l->items[i]);
       }
-    } else if (vy_tagof(v) == VY_MAP) {
-      VyMap* m = v.map;
+    } else if (ov_tagof(v) == OV_MAP) {
+      OvMap* m = v.map;
       for (uint32_t i = 0; i < m->cap; i++) {
         /* empty slots are the all-zero pair; skip them cheaply. A nil key
          * stored in slot 0 is a real entry and is traced like any other. */
         if (m->entries[i].key.tag == 0 && m->entries[i].val.tag == 0 &&
             m->entries[i].key.i == 0 && m->entries[i].val.i == 0)
           continue;
-        if ((uint32_t)vy_tagof(m->entries[i].key) >= (uint32_t)VY_STRING)
+        if ((uint32_t)ov_tagof(m->entries[i].key) >= (uint32_t)OV_STRING)
           mark_value(m->entries[i].key);
-        if ((uint32_t)vy_tagof(m->entries[i].val) >= (uint32_t)VY_STRING)
+        if ((uint32_t)ov_tagof(m->entries[i].val) >= (uint32_t)OV_STRING)
           mark_value(m->entries[i].val);
       }
     }
@@ -234,18 +234,18 @@ static void mark_loop(void) {
 }
 
 static void sweep(void) {
-  VyHeader** link = &g.heap;
+  OvHeader** link = &g.heap;
   while (*link) {
-    VyHeader* h = *link;
+    OvHeader* h = *link;
     if (h->marked) {
       h->marked = 0;
       link = &h->next;
       continue;
     }
-    /* Immortal string literals (vy_str_lit): their only root is a C static
+    /* Immortal string literals (ov_str_lit): their only root is a C static
      * in the generated code, which this collector cannot see. Keep them on
      * the heap list instead of freeing. */
-    if (h->kind == H_STRING && (h->pad & VY_HDR_PIN)) {
+    if (h->kind == H_STRING && (h->pad & OV_HDR_PIN)) {
       link = &h->next;
       continue;
     }
@@ -253,20 +253,20 @@ static void sweep(void) {
     size_t bytes = 0;
     switch (h->kind) {
       case H_STRING: {
-        bytes = sizeof(VyHeader) + sizeof(VyStr) + h->len;
+        bytes = sizeof(OvHeader) + sizeof(OvStr) + h->len;
         free(h);
         break;
       }
       case H_LIST: {
-        VyList* l = (VyList*)h;
-        bytes = sizeof(VyList) + (size_t)l->cap * sizeof(VyValue);
+        OvList* l = (OvList*)h;
+        bytes = sizeof(OvList) + (size_t)l->cap * sizeof(OvValue);
         free(l->items);
         free(l);
         break;
       }
       case H_MAP: {
-        VyMap* m = (VyMap*)h;
-        bytes = sizeof(VyMap) + (size_t)m->cap * sizeof(VyPair);
+        OvMap* m = (OvMap*)h;
+        bytes = sizeof(OvMap) + (size_t)m->cap * sizeof(OvPair);
         free(m->entries);
         free(m);
         break;
@@ -276,7 +276,7 @@ static void sweep(void) {
         break;
     }
     g.heap_bytes -= bytes;
-    /* live_bytes is NOT adjusted here. vy_gc_collect_ex zeroes it and then
+    /* live_bytes is NOT adjusted here. ov_gc_collect_ex zeroes it and then
      * rebuilds it from the marked survivors (mark_value -> object_bytes), so
      * the objects being freed here were never part of the new total. Subtracting
      * them double-counted the garbage: live_bytes came out too low, which
@@ -286,11 +286,11 @@ static void sweep(void) {
   }
 }
 
-void vy_gc_mark_value(VyValue v) {
+void ov_gc_mark_value(OvValue v) {
   mark_value(v);
 }
 
-void vy_gc_collect_ex(VyValue* extra, int n) {
+void ov_gc_collect_ex(OvValue* extra, int n) {
   if (t_in_gc) return;
   t_in_gc = 1;
   g.mark_len = 0;
@@ -308,4 +308,4 @@ void vy_gc_collect_ex(VyValue* extra, int n) {
   t_in_gc = 0;
 }
 
-void vy_gc_collect(void) { vy_gc_collect_ex(NULL, 0); }
+void ov_gc_collect(void) { ov_gc_collect_ex(NULL, 0); }

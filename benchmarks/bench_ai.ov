@@ -1,4 +1,4 @@
-// Vayu :: benchmarks/bench_ai.vy
+// Ovyth :: benchmarks/bench_ai.ov
 //
 // AI pipeline benchmark suite.
 //
@@ -17,11 +17,11 @@
 //   multi_parse    - parse 1000 small JSON objects (tool results)
 //
 // Run natively:
-//   vyc benchmarks/bench_ai.vy --release -o /tmp/bench_ai && /tmp/bench_ai
+//   ovc benchmarks/bench_ai.ov --release -o /tmp/bench_ai && /tmp/bench_ai
 //
 // Each case prints: name<TAB>ms<TAB>ops (for the compare script)
 
-print("=== Vayu AI pipeline benchmarks ===")
+print("=== Ovyth AI pipeline benchmarks ===")
 print("")
 
 // ----------------------------------------------------------------- 1. JSON parse
