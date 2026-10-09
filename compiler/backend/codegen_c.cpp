@@ -727,21 +727,30 @@ std::string Gen::ex(const Expr* e) {
         s += "ov_stra_val(" + arr + "); })";
         return s;
       }
-      // Fallback to generic OvList
-      std::string l = fresh(), v = fresh();
-      std::string s = "({ OvList* " + l + " = ov_list_new(); OvValue " + v +
-                      " = ov_list(" + l + "); ";
+      // Fallback to generic OvList. The list is registered as a
+      // root while it is being filled: an element expression may
+      // allocate (and so trigger a collection), and an unrooted
+      // half-built list would be swept out from under the push.
+      std::string l = fresh(), v = fresh(), rm = fresh();
+      std::string s = "({ size_t " + rm + " = ov_gc_roots_mark(); OvList* " + l +
+                      " = ov_list_new(); OvValue " + v + " = ov_list(" + l + "); " +
+                      "ov_gc_register_root(&" + v + "); ";
       for (const Expr* it : e->items)
         s += "ov_list_push(" + l + ", " + ex(it) + "); ";
+      s += "ov_gc_roots_restore(" + rm + "); ";
       return s + v + "; })";
     }
 
     case ExprKind::MapLit: {
-      std::string m = fresh(), v = fresh();
-      std::string s = "({ OvMap* " + m + " = ov_map_new(); OvValue " + v +
-                      " = ov_map(" + m + "); ";
+      // Same rooting as the list literal: values may allocate
+      // while the map is being filled.
+      std::string m = fresh(), v = fresh(), rm = fresh();
+      std::string s = "({ size_t " + rm + " = ov_gc_roots_mark(); OvMap* " + m +
+                      " = ov_map_new(); OvValue " + v + " = ov_map(" + m + "); " +
+                      "ov_gc_register_root(&" + v + "); ";
       for (const auto& f : e->fields)
         s += "ov_map_set(" + m + ", " + ex(f.first) + ", " + ex(f.second) + "); ";
+      s += "ov_gc_roots_restore(" + rm + "); ";
       return s + v + "; })";
     }
 
@@ -1014,8 +1023,14 @@ std::string Gen::emit_slice(const Expr* e) {
 
 // ------------------------------------------------------------- comprehension
 std::string Gen::emit_listcomp(const Expr* e) {
-  std::string out = fresh();
-  std::string s = "({ OvList* " + out + " = ov_list_new(); ";
+  // The accumulator is registered as a root for the whole
+  // comprehension: element expressions may allocate (and so
+  // trigger a collection), and an unrooted half-built list
+  // would be swept out from under the push.
+  std::string out = fresh(), outv = fresh(), orm = fresh();
+  std::string s = "({ size_t " + orm + " = ov_gc_roots_mark(); OvList* " + out +
+                  " = ov_list_new(); OvValue " + outv + " = ov_list(" + out + "); " +
+                  "ov_gc_register_root(&" + outv + "); ";
   std::vector<std::string> scoped;  // names to restore on the way out
 
   std::function<void(size_t)> emit_loops = [&](size_t gi) {
@@ -1024,7 +1039,7 @@ std::string Gen::emit_listcomp(const Expr* e) {
       return;
     }
     const Generator& g = e->generators[gi];
-    std::string it = fresh(), i = fresh();
+    std::string it = fresh(), i = fresh(), held = fresh(), irm = fresh();
     std::string var = ident(g.var, tmp_++);
     push_scope();
     scoped.push_back(g.var);
@@ -1034,14 +1049,21 @@ std::string Gen::emit_listcomp(const Expr* e) {
     std::string cond;
     if (g.cond) cond = ex(g.cond);  // sees this and outer loop variables
 
-    const std::string I = it, J = i, V = var;
+    const std::string I = it, J = i, V = var, HELD = held, IRM = irm;
+    // The iterable and the list derived from it (a string's
+    // characters) are rooted for the duration of this
+    // generator's loops: element expressions inside may
+    // allocate, and both are OvLists the collector can sweep.
     s += "{ OvValue " + it + " = " + iterable + "; ";
+    s += "size_t " + irm + " = ov_gc_roots_mark(); ";
+    s += "ov_gc_register_root(&" + it + "); ";
+    s += "OvValue " + held + " = ov_nil(); ov_gc_register_root(&" + held + "); ";
     // Handle all iterable types: string, list, int64array, float64array, stringarray
     s += "OvList* " + it + "_l = NULL; ";
     s += "OvInt64Array* " + it + "_i64a = NULL; ";
     s += "OvFloat64Array* " + it + "_f64a = NULL; ";
     s += "OvStringArray* " + it + "_stra = NULL; ";
-    s += "if (ov_tagof(" + I + ") == OV_STRING) { " + it + "_l = ov_str_chars(" + I + ".str).list; } "
+    s += "if (ov_tagof(" + I + ") == OV_STRING) { " + HELD + " = ov_str_chars(" + I + ".str); " + it + "_l = " + HELD + ".list; } "
          "else if (ov_tagof(" + I + ") == OV_LIST) { " + it + "_l = " + I + ".list; } "
          "else if (ov_tagof(" + I + ") == OV_I64A) { " + it + "_i64a = " + I + ".i64a; } "
          "else if (ov_tagof(" + I + ") == OV_F64A) { " + it + "_f64a = " + I + ".f64a; } "
@@ -1062,11 +1084,11 @@ std::string Gen::emit_listcomp(const Expr* e) {
     emit_loop("f64a", "ov_float(" + I + "_f64a->data[" + J + "])");
     emit_loop("stra", "ov_str(" + I + "_stra->data[" + J + "])");
 
-    s += "} ";  // close scope
+    s += "ov_gc_roots_restore(" + irm + "); } ";  // close scope
     pop_scope();
   };
   emit_loops(0);
-  return s + "ov_list(" + out + "); })";
+  return s + "ov_gc_roots_restore(" + orm + "); " + outv + "; })";
 }
 
 // --------------------------------------------------------------- assignment
@@ -1250,6 +1272,139 @@ static void collect_free_vars_block(const StmtList& body,
                                     std::set<std::string>& bound,
                                     std::set<std::string>& free_vars) {
   for (const Stmt* s : body) collect_free_vars_stmt(s, bound, free_vars);
+}
+
+// --- raw loop-variable pre-scan ----------------------------------------
+// A `for v in xs` over a specialized array (OvInt64Array /
+// OvFloat64Array) can keep `v` in a raw C numeric local -- no
+// per-iteration boxing -- when the body never writes `v`, never
+// shadows it, and never captures it in a closure. Reads are fine:
+// `ex()` boxes a proven raw local at every OvValue use site, and the
+// int/float fast paths (is_int_expr / is_float_expr) keep arithmetic
+// in C registers.
+static bool expr_keeps_loop_var_raw(const Expr* e, const std::string& name);
+static bool stmt_keeps_loop_var_raw(const Stmt* s, const std::string& name);
+static bool block_keeps_loop_var_raw(const StmtList& body,
+                                     const std::string& name);
+
+static bool expr_keeps_loop_var_raw(const Expr* e, const std::string& name) {
+  if (!e) return true;
+  switch (e->kind) {
+    case ExprKind::Assign:
+      if (e->a && e->a->kind == ExprKind::Identifier && e->a->name == name)
+        return false;  // v = ... / v += ... writes the loop variable
+      break;
+    case ExprKind::Closure: {
+      // A closure that reads `name` captures it -- a raw C local
+      // cannot travel through OvFunc.upvals.
+      std::set<std::string> bound;
+      for (const auto& p : e->params) bound.insert(p.name);
+      std::set<std::string> free_vars;
+      collect_free_vars_block(e->body, bound, free_vars);
+      if (free_vars.count(name)) return false;
+      for (const auto& p : e->params)
+        if (!expr_keeps_loop_var_raw(p.default_value, name)) return false;
+      return true;
+    }
+    case ExprKind::ListComp: {
+      // Generators bind left to right: one bound to `name` shadows
+      // the loop variable from that point on. Earlier iterables and
+      // filters still see the loop variable (reads only).
+      bool shadowed = false;
+      for (const auto& g : e->generators) {
+        if (!shadowed) {
+          if (!expr_keeps_loop_var_raw(g.iterable, name)) return false;
+          if (!expr_keeps_loop_var_raw(g.cond, name)) return false;
+          if (g.var == name) shadowed = true;
+        }
+      }
+      if (shadowed) return true;
+      return expr_keeps_loop_var_raw(
+          e->items.empty() ? nullptr : e->items[0], name);
+    }
+    case ExprKind::ListLit:
+      for (const Expr* it : e->items)
+        if (!expr_keeps_loop_var_raw(it, name)) return false;
+      return true;
+    case ExprKind::MapLit:
+      for (const auto& f : e->fields) {
+        if (!expr_keeps_loop_var_raw(f.first, name)) return false;
+        if (!expr_keeps_loop_var_raw(f.second, name)) return false;
+      }
+      return true;
+    case ExprKind::Interp:
+      for (const Expr* p : e->parts)
+        if (!expr_keeps_loop_var_raw(p, name)) return false;
+      return true;
+    case ExprKind::Call:
+      if (!expr_keeps_loop_var_raw(e->a, name)) return false;
+      for (const Expr* a : e->args)
+        if (!expr_keeps_loop_var_raw(a, name)) return false;
+      for (const auto& na : e->named_args)
+        if (!expr_keeps_loop_var_raw(na.value, name)) return false;
+      return true;
+    default:
+      break;
+  }
+  return expr_keeps_loop_var_raw(e->a, name) &&
+         expr_keeps_loop_var_raw(e->b, name) &&
+         expr_keeps_loop_var_raw(e->c, name);
+}
+
+static bool block_keeps_loop_var_raw(const StmtList& body,
+                                     const std::string& name) {
+  for (const Stmt* s : body)
+    if (!stmt_keeps_loop_var_raw(s, name)) return false;
+  return true;
+}
+
+static bool stmt_keeps_loop_var_raw(const Stmt* s, const std::string& name) {
+  if (!s) return true;
+  switch (s->kind) {
+    case StmtKind::Assign:
+      if (s->expr && s->expr->kind == ExprKind::Identifier &&
+          s->expr->name == name)
+        return false;  // v = ... / v += ... writes the loop variable
+      return expr_keeps_loop_var_raw(s->expr, name) &&
+             expr_keeps_loop_var_raw(s->expr2, name) &&
+             expr_keeps_loop_var_raw(s->expr3, name);
+    case StmtKind::VarDecl:
+      for (const auto& n : s->names)
+        if (n == name) return false;  // shadows the loop variable
+      for (const Expr* v : s->values)
+        if (!expr_keeps_loop_var_raw(v, name)) return false;
+      return true;
+    case StmtKind::For:
+      if (!expr_keeps_loop_var_raw(s->expr, name)) return false;
+      for (const auto& v : s->iter_vars)
+        if (v == name) return true;  // inner loop shadows: its own variable
+      return block_keeps_loop_var_raw(s->body, name);
+    case StmtKind::FuncDecl: {
+      for (const auto& p : s->params)
+        if (p.name == name) return true;  // parameter shadows
+      std::set<std::string> bound;
+      for (const auto& p : s->params) bound.insert(p.name);
+      std::set<std::string> free_vars;
+      collect_free_vars_block(s->body, bound, free_vars);
+      if (free_vars.count(name)) return false;  // would capture the raw local
+      for (const auto& p : s->params)
+        if (!expr_keeps_loop_var_raw(p.default_value, name)) return false;
+      return true;
+    }
+    case StmtKind::Try:
+      if (!block_keeps_loop_var_raw(s->body, name)) return false;
+      if (!s->catch_var.empty() && s->catch_var == name)
+        return true;  // catch variable shadows in the handler
+      return block_keeps_loop_var_raw(s->else_body, name);
+    default:
+      // If / While / Block / Return / Throw / ExprStmt / Debug: walk
+      // every expression slot and sub-block.
+      return expr_keeps_loop_var_raw(s->expr, name) &&
+             expr_keeps_loop_var_raw(s->expr2, name) &&
+             expr_keeps_loop_var_raw(s->expr3, name) &&
+             block_keeps_loop_var_raw(s->body, name) &&
+             block_keeps_loop_var_raw(s->else_body, name);
+  }
 }
 
 std::string Gen::emit_closure(const Expr* e) {
@@ -2149,6 +2304,13 @@ case StmtKind::VarDecl: {
       std::string tb = lbl("Ltry");
       try_depth_++;
       line("{ jmp_buf* _jb = ov_try_push();");
+      // A panic unwinds past every root registered since
+      // this point -- the longjmp bypasses their restores
+      // -- so drop them on the catch path: the slots point
+      // into dead frames and the next collection would
+      // scan them as roots.
+      std::string trm = fresh();
+      line("size_t " + trm + " = ov_gc_roots_mark();");
       indent_++;
       line("if (setjmp(*_jb) == 0) {");
       indent_++;
@@ -2156,6 +2318,7 @@ case StmtKind::VarDecl: {
       indent_--;
       line("  ov_try_pop(); goto " + tb + "; }");
       line("  ov_try_pop();");
+      line("  ov_gc_roots_restore(" + trm + ");");
       if (!s->catch_var.empty()) line("  " + bind(s->catch_var, "ov_caught") + ";");
       else line("  (void)ov_caught;");
       block(s->else_body, true);
@@ -2167,17 +2330,25 @@ case StmtKind::VarDecl: {
     }
 
     case StmtKind::Debug:
-      line("fprintf(stderr, \"[ovyth] %d\\n\", " + std::to_string(s->pos.line) + ");");
+      line("ov_debug_note(" + quote_c(s->pos.file) + ", " +
+           std::to_string(s->pos.line) + ");");
       return;
 
     case StmtKind::For:
       emit_for(s);
       return;
+
+    case StmtKind::Import:
+      return;  // consumed by the loader before codegen
   }
 }
 
 void Gen::emit_for(const Stmt* s) {
-  // `for v in xs` over a list, a string's characters, a map's keys, or specialized arrays.
+  // `for v in xs` over a list, a string's characters, a map's keys, or
+  // specialized arrays. Over OvInt64Array / OvFloat64Array the loop
+  // variable can live in a raw C numeric local -- no per-iteration
+  // boxing -- when the body keeps it raw (pre-scan above): reads box
+  // on demand through ex(), arithmetic stays in C registers.
   std::string it = fresh(), idx = fresh(), seq = fresh(), n = fresh();
   std::string var = s->iter_vars.empty() ? std::string("ov_unused") : ident(s->iter_vars[0], tmp_++);
   LoopLabels L{lbl("Lbrk"), lbl("Lcont")};
@@ -2186,13 +2357,24 @@ void Gen::emit_for(const Stmt* s) {
   const std::string I = it, S = seq, N = n, X = idx;
   line("{ OvValue " + it + " = " + ex(s->expr) + ";");
   indent_++;
+  // The iterable, and the list derived from it (a string's
+  // characters, a map's keys), are rooted for the whole loop:
+  // the body may allocate, and both are OvLists the collector
+  // can sweep. (Specialized arrays are not GC-managed, so an
+  // i64a/f64a/stra iterable is safe without this.)
+  std::string held = fresh(), rm = fresh();
+  const std::string HELD = held, RM = rm;
+  line("size_t " + rm + " = ov_gc_roots_mark();");
+  line("ov_gc_register_root(&" + it + ");");
+  line("OvValue " + held + " = ov_nil();");
+  line("ov_gc_register_root(&" + held + ");");
   // Handle all iterable types: string, list, map, int64array, float64array, stringarray
   line("OvList* " + seq + " = NULL;");
   line("OvInt64Array* " + seq + "_i64a = NULL;");
   line("OvFloat64Array* " + seq + "_f64a = NULL;");
   line("OvStringArray* " + seq + "_stra = NULL;");
-  line("if (ov_tagof(" + I + ") == OV_STRING) { " + seq + " = ov_str_chars(" + I + ".str).list; } "
-       "else if (ov_tagof(" + I + ") == OV_MAP) { " + seq + " = ov_map_keys(" + I + ".map).list; } "
+  line("if (ov_tagof(" + I + ") == OV_STRING) { " + HELD + " = ov_str_chars(" + I + ".str); " + seq + " = " + HELD + ".list; } "
+       "else if (ov_tagof(" + I + ") == OV_MAP) { " + HELD + " = ov_map_keys(" + I + ".map); " + seq + " = " + HELD + ".list; } "
        "else if (ov_tagof(" + I + ") == OV_LIST) { " + seq + " = " + I + ".list; } "
        "else if (ov_tagof(" + I + ") == OV_I64A) { " + seq + "_i64a = " + I + ".i64a; } "
        "else if (ov_tagof(" + I + ") == OV_F64A) { " + seq + "_f64a = " + I + ".f64a; } "
@@ -2202,30 +2384,85 @@ void Gen::emit_for(const Stmt* s) {
   line("else if (" + seq + "_i64a) " + n + " = " + seq + "_i64a->len;");
   line("else if (" + seq + "_f64a) " + n + " = " + seq + "_f64a->len;");
   line("else if (" + seq + "_stra) " + n + " = " + seq + "_stra->len;");
-  line("for (int64_t " + X + " = 0; " + X + " < " + N + "; " + X + "++) {");
-  indent_++;
-  push_scope();
-  scopes_.back()[s->iter_vars.empty() ? std::string("__unused") : s->iter_vars[0]] = var;
-  cur_roots_.push_back(var);
-  // Extract element based on iterable type
-  line("OvValue " + var + ";");
-  line("if (" + seq + ") " + var + " = " + seq + "->items[" + X + "];");
-  line("else if (" + seq + "_i64a) " + var + " = ov_int(" + seq + "_i64a->data[" + X + "]);");
-  line("else if (" + seq + "_f64a) " + var + " = ov_float(" + seq + "_f64a->data[" + X + "]);");
-  line("else if (" + seq + "_stra) " + var + " = ov_str(" + seq + "_stra->data[" + X + "]);");
   bool uses_continue = body_uses_continue(s->body);
   bool uses_break = body_uses_break(s->body);
-  loops_.push_back(L);
-  block(s->body, false);
-  loops_.pop_back();
-  if (uses_continue) line(L.cont + ": ;");
-  pop_scope();
-  indent_--;
-  line("}");
-  // Only emitted when the body actually jumps to it -- see the note on the
-  // continue label in the While case.
-  if (uses_break) line(L.brk + ": ;");
-  indent_--;
+
+  // The boxed loop shape: one OvValue slot, the element extracted per
+  // iterable type. Used by the generic path and by the fallback branch
+  // of the raw path (list / string / map / string array).
+  auto emit_boxed_loop = [&]() {
+    line("for (int64_t " + X + " = 0; " + X + " < " + N + "; " + X + "++) {");
+    indent_++;
+    push_scope();
+    scopes_.back()[s->iter_vars.empty() ? std::string("__unused") : s->iter_vars[0]] = var;
+    cur_roots_.push_back(var);
+    // Extract element based on iterable type
+    line("OvValue " + var + ";");
+    line("if (" + seq + ") " + var + " = " + seq + "->items[" + X + "];");
+    line("else if (" + seq + "_i64a) " + var + " = ov_int(" + seq + "_i64a->data[" + X + "]);");
+    line("else if (" + seq + "_f64a) " + var + " = ov_float(" + seq + "_f64a->data[" + X + "]);");
+    line("else if (" + seq + "_stra) " + var + " = ov_str(" + seq + "_stra->data[" + X + "]);");
+    loops_.push_back(L);
+    block(s->body, false);
+    loops_.pop_back();
+    if (uses_continue) line(L.cont + ": ;");
+    pop_scope();
+    indent_--;
+    line("}");
+    // Only emitted when the body actually jumps to it -- see the note on
+    // the continue label in the While case.
+    if (uses_break) line(L.brk + ": ;");
+  };
+
+  // Raw path: specialized arrays, a single loop variable, a body that
+  // keeps it raw (no writes, no shadowing, no closure capture), and a
+  // name that is not already a closure-shared box (bind() would store
+  // through the box instead of declaring the local).
+  if (s->iter_vars.size() == 1 && !box_writes_.count(s->iter_vars[0]) &&
+      block_keeps_loop_var_raw(s->body, s->iter_vars[0])) {
+    line("if (" + seq + "_i64a) {");
+    indent_++;
+    LoopLabels BL{lbl("Lbrk"), lbl("Lcont")};
+    line("for (int64_t " + X + " = 0; " + X + " < " + seq + "_i64a->len; " + X + "++) {");
+    indent_++;
+    push_scope();
+    line(bind(s->iter_vars[0], seq + "_i64a->data[" + X + "]", true, false) + ";");
+    loops_.push_back(BL);
+    block(s->body, false);
+    loops_.pop_back();
+    if (uses_continue) line(BL.cont + ": ;");
+    pop_scope();
+    indent_--;
+    line("}");
+    if (uses_break) line(BL.brk + ": ;");
+    indent_--;
+    line("} else if (" + seq + "_f64a) {");
+    indent_++;
+    LoopLabels FL{lbl("Lbrk"), lbl("Lcont")};
+    line("for (int64_t " + X + " = 0; " + X + " < " + seq + "_f64a->len; " + X + "++) {");
+    indent_++;
+    push_scope();
+    line(bind(s->iter_vars[0], seq + "_f64a->data[" + X + "]", false, true) + ";");
+    loops_.push_back(FL);
+    block(s->body, false);
+    loops_.pop_back();
+    if (uses_continue) line(FL.cont + ": ;");
+    pop_scope();
+    indent_--;
+    line("}");
+    if (uses_break) line(FL.brk + ": ;");
+    indent_--;
+    line("} else {");
+    indent_++;
+    emit_boxed_loop();
+    indent_--;
+    line("}");
+    indent_--;
+  } else {
+    emit_boxed_loop();
+    indent_--;
+  }
+  line("ov_gc_roots_restore(" + RM + ");");
   line("}");
   (void)top;
 }
@@ -2430,7 +2667,7 @@ std::string Gen::run() {
   line("    _code = 0;");
   line("  } else {");
   // An uncaught panic, or `exit(code)`, arrives here via longjmp.
-  line("    _code = ov_exit_code();");
+  line("    _code = ov_uncaught_code();");
   line("  }");
   line("  ov_try_pop();");
   line("  ov_runtime_shutdown();");

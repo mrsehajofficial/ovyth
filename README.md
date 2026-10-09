@@ -179,11 +179,20 @@ make install PREFIX=$HOME/.local       # put ovc on your PATH
 
 ## Known limitations
 
-- **Partial unboxing**: proven `int`/`float` locals emit as raw `int64_t`/
-  `double`, but values flowing through lists, maps and function parameters
-  remain boxed. Tight numeric loops over locals are fast; collection
-  iteration still pays the boxing cost.
-- **No files, modules, or imports yet**. One file per program.
+- **Partial unboxing**: proven `int`/`float` locals emit as raw
+  `int64_t`/`double`, and so does the loop variable of a `for`
+  over a specialized array (`range(...)`, all-int or all-float
+  list literals) when the body keeps it raw — no writes, no
+  shadowing, no closure capture. Arithmetic in such loops stays
+  in C registers; reads box on demand at `OvValue` use sites.
+  Values flowing through lists, maps and function parameters
+  remain boxed, and loop variables that are written, shadowed or
+  captured fall back to the boxed loop.
+- **Top-level globals are not visible to functions on the native
+  backend** (pre-existing, and now more visible with modules): a
+  top-level `let` is an `ov_main` local, so a function that reads
+  it compiles on the interpreter but fails to compile natively with
+  `unknown name`. Pass such values as arguments until this is fixed.
 - **No async or concurrency**.
 
 Closures *do* capture their enclosing scope — by reference, shared between the

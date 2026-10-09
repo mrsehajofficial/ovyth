@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 
 #include "backend/codegen_c.h"
+#include "lexer/diagnostic.h"
 
 extern "C" {
 #include "ovrt.h"
@@ -150,14 +151,14 @@ static std::string temp_path(const std::string& input, const char* suffix) {
 int Driver::compile(const ast::Program& program, Sema& sema, const std::string& source) {
   (void)source;
   if (opt_.check_only) {
-    std::printf("%s: ok (no codegen)\n", input_.c_str());
+    ov::cli_ok(input_ + ": ok (no codegen)");
     return 0;
   }
 
   std::string err;
   std::string ir = emit_c_source(program, sema, source, err);
   if (!err.empty()) {
-    std::fprintf(stderr, "ovc: %s\n", err.c_str());
+    ov::cli_error(err);
     return 1;
   }
 
@@ -227,7 +228,7 @@ int Driver::compile(const ast::Program& program, Sema& sema, const std::string& 
   {
     std::ofstream f(ir_path);
     if (!f) {
-      std::fprintf(stderr, "ovc: cannot write %s\n", ir_path.c_str());
+      ov::cli_error("cannot write " + ir_path);
       return 1;
     }
     f << ir;
@@ -255,9 +256,9 @@ int Driver::compile(const ast::Program& program, Sema& sema, const std::string& 
 
   ::chmod(out.c_str(), 0755);
   if (opt_.keep_ir)
-    std::printf("kept IR: %s\n", ir_path.c_str());
+    ov::cli_info("kept IR: " + ir_path);
   else
-    std::printf("compiled %s -> %s\n", input_.c_str(), out.c_str());
+    ov::cli_ok("compiled " + input_ + " -> " + out);
   return 0;
 }
 

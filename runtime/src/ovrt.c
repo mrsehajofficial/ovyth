@@ -15,9 +15,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+static int ov_stderr_is_tty(void) { return isatty(fileno(stderr)) != 0; }
 
 static void* oom(size_t n) {
-  fprintf(stderr, "ovyth: out of memory (%zu bytes)\n", n);
+  if (ov_stderr_is_tty())
+    fprintf(stderr, "\033[31m✖\033[0m ovyth: out of memory (%zu bytes)\n", n);
+  else
+    fprintf(stderr, "✖ ovyth: out of memory (%zu bytes)\n", n);
   exit(70);
   return NULL;
 }
@@ -478,11 +484,27 @@ OvValue ov_caught;
 static jmp_buf g_jmp;
 static int     g_jmp_active = 0;
 static int     g_exit_code = 0;
+static int     g_panic_exit = 0;   /* panic came from exit(), not a throw */
 
 jmp_buf* ov_try_push(void)    { g_jmp_active = 1; return &g_jmp; }
 void     ov_try_pop(void)     { g_jmp_active = 0; }
 int      ov_try_active(void)  { return g_jmp_active; }
 int      ov_exit_code(void)   { return g_exit_code; }
+
+/* One calm report for a panic that escaped every try, shared by
+ * standalone binaries and compiled programs' top-level frame. */
+static void report_uncaught(void) {
+  OvStr* s = ov_repr(ov_caught);
+  if (ov_stderr_is_tty()) {
+    fprintf(stderr, "\n\033[31m✖\033[0m ovyth: %s\n", ov_str_data(s));
+    fprintf(stderr, "\033[90m   tip: wrap it in try { ... } catch e { ... } "
+                    "so the program keeps going\033[0m\n");
+  } else {
+    fprintf(stderr, "\n✖ ovyth: %s\n", ov_str_data(s));
+    fprintf(stderr, "   tip: wrap it in try { ... } catch e { ... } "
+                    "so the program keeps going\n");
+  }
+}
 
 static void raise(OvValue v) {
   ov_caught = v;
@@ -490,23 +512,40 @@ static void raise(OvValue v) {
     g_jmp_active = 0;
     longjmp(g_jmp, 1);
   }
-  OvStr* s = ov_json_stringify(v);
-  fprintf(stderr, "\novyth: uncaught error: %s\n", ov_str_data(s));
+  report_uncaught();
   ov_runtime_shutdown();
   exit(70);
 }
 
-void ov_throw_value(OvValue v) { raise(v); }
-void ov_throw_str(OvStr* s)    { raise(ov_str(s)); }
+/* Result for a panic that reached the top-level frame: the exit()
+ * code when the program asked to stop, otherwise a report plus 70. */
+int ov_uncaught_code(void) {
+  if (g_panic_exit) return g_exit_code;
+  report_uncaught();
+  return 70;
+}
+
+void ov_debug_note(const char* file, int line) {
+  if (ov_stderr_is_tty())
+    fprintf(stderr, "\033[36mℹ\033[0m ovyth: %s:%d\n",
+            file ? file : "?", line);
+  else
+    fprintf(stderr, "ℹ ovyth: %s:%d\n", file ? file : "?", line);
+}
+
+void ov_throw_value(OvValue v) { g_panic_exit = 0; raise(v); }
+void ov_throw_str(OvStr* s)    { g_panic_exit = 0; raise(ov_str(s)); }
 
 void ov_request_exit(int code) {
   g_exit_code = code;
+  g_panic_exit = 1;
   raise(ov_nil());
 }
 
 void ov_error(const char* fmt, ...) {
   char buf[1024];
   va_list ap;
+  g_panic_exit = 0;
   va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);

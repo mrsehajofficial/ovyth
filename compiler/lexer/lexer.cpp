@@ -22,7 +22,7 @@ const std::unordered_map<std::string_view, Tok>& keywords() {
       {"throw", Tok::KW_THROW},     {"and", Tok::KW_AND},
       {"or", Tok::KW_OR},           {"not", Tok::KW_NOT},
       {"as", Tok::KW_AS},           {"enum", Tok::KW_ENUM},
-      {"debug", Tok::KW_BREAKPOINT},
+      {"debug", Tok::KW_BREAKPOINT}, {"import", Tok::KW_IMPORT},
   };
   return k;
 }
@@ -61,7 +61,7 @@ void Lexer::error(const std::string& msg, size_t at) {
   int l = line_, c = col_;
   // recompute line/col if the error is slightly ahead
   (void)at;
-  diags_.push_back(Diagnostic{file_, l, c, msg, true});
+  diags_.push_back(Diagnostic{file_, l, c, msg, DiagKind::Error});
 }
 
 // Whitespace, line comments (// ... ), block comments (/* ... */, nestable)
@@ -85,7 +85,8 @@ void Lexer::skip_trivia() {
         else advance();
       }
       if (depth > 0) diags_.push_back(
-          Diagnostic{file_, open_line, 1, "unterminated block comment", true});
+          Diagnostic{file_, open_line, 1, "unterminated block comment",
+                     DiagKind::Error});
       continue;
     }
     return;

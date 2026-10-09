@@ -1,0 +1,14 @@
+// Modules: `import "path"` flattens a module's top-level
+// definitions into the program. Functions cross the boundary, and
+// module globals are readable from the importer's top-level code.
+// Both backends must agree (see tests/interp.sh).
+import "mods/mathx.ov"
+import "mods/text.ov"
+
+print(scale(4, SCALE))
+print(SCALE)
+print(wrap("hi"))
+
+// a top-level binding that reads an imported global
+base = SCALE * 10
+print(base)

@@ -276,6 +276,8 @@ struct Fmt {
       }
       case StmtKind::Throw: return pad + "throw" + (s->expr ? " " + expr(s->expr) : "") + "\n";
       case StmtKind::Debug: return pad + "debug\n";
+      case StmtKind::Import:
+        return pad + "import \"" + s->import_path + "\"\n";
     }
     return "";
   }

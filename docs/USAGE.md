@@ -285,6 +285,19 @@ try {
 assert(1 < 2, "must be ordered")
 ```
 
+An error that no `try` catches stops the program and prints a calm
+report — the value that was thrown, plus a tip — and exits with code
+70. `exit(n)` stays silent and exits with `n`.
+
+### Debugging
+
+```ov
+debug   # prints "ℹ ovyth: prog.ov:3" — where you are, nothing more
+```
+
+`debug` is a breadcrumb: drop it in to see a file and line as the
+program passes it, on either backend.
+
 ---
 
 ## 5. Real example: the chatbot
@@ -351,14 +364,22 @@ ovc prog.ov --release -o prog    # build for real use
 
 ## 8. Reading errors
 
-Errors name the file, line, and column:
+Errors name the file, line, and column, and carry a calm icon that
+matches their severity — `✖` error (red), `▲` warning (yellow),
+`ℹ` info (cyan), `•` note (dim). Colors appear on a terminal; pipes
+and logs keep the icons but no escape codes:
 
 ```
-prog.ov:4:9: error: unknown name 'nmae'
+prog.ov:4:9: ✖ error: unknown name 'nmae'
+✖ 1 error
+tip: fix the issues above, then run ovc again
 ```
 
-When a parse surprises you, `ovc ast` and `ovc tokens` answer the question
-"why did it see that?".
+A count summary and, for errors, a single tip line follow the
+diagnostics themselves.
+
+When a parse surprises you, `ovc ast` and `ovc tokens` answer the
+question "why did it see that?".
 
 ---
 
@@ -427,13 +448,48 @@ Transport failures (DNS, TLS, timeout) are raised as catchable errors, so
 
 ---
 
+## 9. Modules
+
+`import "path"` pulls another `.ov` file's top-level definitions into
+your program. Paths are resolved relative to the importing file; if the
+path has no `.ov` extension it is appended and retried, so both
+`import "util.ov"` and `import "util"` work.
+
+```ov
+import "mods/mathx.ov"
+
+print(scale(4))
+```
+
+Imports are flattened at load time: the imported file is parsed before
+the importer's own statements, so its functions and globals are in
+scope wherever the import appears. The rules:
+
+- **Definitions only.** An imported file contributes its top-level
+  `function` and `let` declarations; it is not executed as a separate
+  program and runs no top-level side effects of its own beyond those
+  initializations.
+- **Unique names.** Top-level names must be unique across every module
+  and the entry file. A duplicate is an error that names both files.
+- **No cycles.** `import` cycles are an error.
+- **Deduplicated.** A file imported more than once — directly or through
+  a diamond — is merged once.
+
+A module function that reads a top-level global currently fails to
+compile on the native backend (see Known limitations); pass such values
+as arguments until top-level globals become visible to functions there.
+
+---
+
 ## 10. Known limitations
 
 Worth knowing before you rely on something:
 
-- **No files, modules, or imports yet.** Everything is in one file per
-  program.
 - **No async or concurrency.**
+- **Top-level globals are not visible to functions on the native
+  backend.** A top-level `let` is an `ov_main` local, so a function
+  reading it compiles on the interpreter but fails natively with
+  `unknown name`. Pass such values as arguments.
 - **Partial unboxing.** Variables proven as int/float emit as raw
   `int64_t`/`double` — but values flowing through lists, maps and function
   parameters remain boxed. Tight numeric loops over locals are fast; loops

@@ -132,6 +132,7 @@ enum class StmtKind {
   Try,
   Throw,
   Debug,
+  Import,
 };
 
 struct Stmt {
@@ -161,6 +162,9 @@ struct Stmt {
 
   // Try
   std::string catch_var;
+
+  // Import
+  std::string import_path;  // `import "util.ov"`
 
   // compound assign op
   Tok op = Tok::ASSIGN;

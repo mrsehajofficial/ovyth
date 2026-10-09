@@ -5,6 +5,79 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### Modules and imports — 9 Oct 2026
+
+`import "path"` loads another `.ov` file and flattens its top-level
+definitions into the program. Imports are resolved at load time,
+relative to the importing file (with a `.ov`-suffix fallback when
+the path has no extension), and parsed before the importer's own
+statements, so a module's definitions and globals are in scope
+wherever the import appears. Top-level names — functions and
+globals — must be unique across every module and the entry file;
+duplicates are an error naming both files. Import cycles are an
+error, and a file imported more than once (directly or through a
+diamond) is merged once. Both backends agree;
+`tests/interp/020_modules.ov` covers the covered path.
+
+Note: a module function that reads a top-level global still hits
+the pre-existing native-backend limitation (top-level `let` is an
+`ov_main` local, invisible to functions); pass such values as
+arguments for now.
+
+### Unboxed loop variables — 9 Oct 2026
+
+A `for` loop over a specialized array (`range(...)` with int-literal
+arguments, all-int or all-float list literals) now keeps its loop
+variable in a raw C `int64_t`/`double` when the body keeps it raw —
+no writes, no shadowing, no closure capture (a pre-scan decides per
+loop; anything else falls back to the boxed loop). The body is lowered
+once per element type: the `OvInt64Array` and `OvFloat64Array`
+branches bind the variable unboxed, while lists, strings, maps and
+string arrays keep the boxed loop. Reads box on demand at `OvValue`
+use sites, so `print(i)` still works, while arithmetic stays in C
+registers. A 20M-iteration `for i in range(0, 20000000)`
+accumulation runs roughly 30% faster.
+`tests/interp/018_unboxed_loops.ov` covers both backends.
+
+### GC rooting for containers under construction — 9 Oct 2026
+
+The native backend could corrupt the heap when a container was built
+while an element expression allocated: `OvList`/`OvMap` are
+GC-tracked, but the half-built container was not rooted, so a
+collection triggered by an element (`[str(i)]`,
+`[str(x) for x in range(...)]`, `[str(i), "b", "c"]` inside a loop)
+could sweep it mid-build — `malloc(): unaligned tcache chunk` or a
+segfault, with the interpreter unaffected. Containers are now
+registered as roots while being filled, `for`-loop iterables (and
+the character list a string iterates over) are rooted for the loop,
+and a `try` block drops the roots its body registered when a panic
+unwinds past them (the `longjmp` bypasses their restores).
+`tests/interp/019_gc_roots.ov` covers both backends.
+
+### Comprehension pre-scan stops at the matching bracket — 9 Oct 2026
+
+`is_list_comprehension` scanned past the closing `]` of a list
+literal into the rest of the file, so a `for` nested inside later
+braces (any `{ }` at depth 1) made a plain list literal parse as a
+comprehension: `for x in [10, 20, 30] { ... }` followed anywhere by
+a nested loop failed with `expected ']' but found ','`. The scan now
+stops at the bracket it started from.
+
+### Calmer diagnostics — 9 Oct 2026
+
+Errors, warnings, info and notes now render with a calm icon and
+color on a terminal (`✖` red, `▲` yellow, `ℹ` cyan, `•` dim) and
+keep the icons — minus escape codes — when piped, so scripts and CI
+logs stay stable. A count summary and a single tip line follow the
+diagnostics. The `debug` statement reports `ℹ ovyth: file:line` on
+both backends.
+
+Compiled programs also report a `throw` that escapes every `try`
+(previously it exited silently with code 0 — the interpreter always
+reported it, so this was a silent backend divergence). Both backends
+now print the thrown value plus a `try`/`catch` tip and exit 70;
+`exit(n)` remains silent with code `n`.
+
 ### Closures now capture — 9 Oct 2026
 
 Closures were documented as unable to capture their enclosing scope, but the

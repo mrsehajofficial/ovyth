@@ -66,7 +66,7 @@ void Parser::error(const Token& t, const std::string& msg) {
     full += " (got '" + std::string(t.text) + "')";
   }
   if (t.kind == Tok::EOF_) full += " (end of file)";
-  program_.diags.push_back(Diagnostic{file_, t.line, t.col, full, true});
+  program_.diags.push_back(Diagnostic{file_, t.line, t.col, full, DiagKind::Error});
   /* Unwind out of the recursive-descent parser.
    *
    * Recovering in place is not safe here: the caller has usually just failed
@@ -139,6 +139,7 @@ Stmt* Parser::statement() {
     case Tok::KW_WHILE: return while_stmt();
     case Tok::KW_FOR: return for_stmt();
     case Tok::KW_TRY: return try_stmt();
+    case Tok::KW_IMPORT: return import_stmt();
     case Tok::LBRACE: return block();
     case Tok::KW_BREAKPOINT: {
       const Token& t = advance();
@@ -406,6 +407,20 @@ Stmt* Parser::try_stmt() {
   } else {
     error(previous(), "'try' without 'catch' is not supported in v0.1");
   }
+  return s;
+}
+
+Stmt* Parser::import_stmt() {
+  const Token& t = advance();  // 'import'
+  Stmt* s = new Stmt();
+  s->kind = StmtKind::Import;
+  s->pos = Pos{t.line, t.col, file_};
+  if (check(Tok::STRING)) {
+    s->import_path = std::string(advance().str);
+  } else {
+    error_at_current("expected a string path after 'import'");
+  }
+  match(Tok::SEMICOLON);
   return s;
 }
 
@@ -695,6 +710,7 @@ bool Parser::is_list_comprehension() const {
     else if (k == Tok::RBRACKET || k == Tok::RBRACE || k == Tok::RPAREN) {
       if (depth == 0) return false;
       depth--;
+      if (depth == 0) return false;  // reached the matching ']': stop
     } else if (k == Tok::KW_FOR && depth == 1) {
       return true;
     }

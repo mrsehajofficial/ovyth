@@ -25,12 +25,12 @@ const char* ty_name(Ty t) {
 }
 
 void Sema::error(const Pos& pos, const std::string& msg) {
-  diags_.push_back(Diagnostic{pos.file, pos.line, pos.col, msg, true});
+  diags_.push_back(Diagnostic{pos.file, pos.line, pos.col, msg, DiagKind::Error});
   errors_++;
 }
 
 void Sema::note(const Pos& pos, const std::string& msg) {
-  diags_.push_back(Diagnostic{pos.file, pos.line, pos.col, msg, false});
+  diags_.push_back(Diagnostic{pos.file, pos.line, pos.col, msg, DiagKind::Note});
 }
 
 void Sema::push_scope(bool is_function) {
@@ -307,6 +307,8 @@ Ty Sema::check_stmt(Stmt* s) {
 
     case StmtKind::Debug:
       return Ty::Nil;
+    case StmtKind::Import:
+      return Ty::Nil;  // consumed by the loader before sema
   }
   return Ty::Unknown;
 }

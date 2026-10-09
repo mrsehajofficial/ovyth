@@ -1,0 +1,12 @@
+// For-loop over a specialized array: range() with int-literal
+// arguments lowers to OvInt64Array, and the loop variable stays
+// in a raw C numeric local -- no per-iteration boxing, no
+// runtime arithmetic calls. Same closed-form-free arithmetic as
+// intloop.ov (xor/shift defeats the affine-recurrence
+// optimiser), so every implementation actually runs the loop.
+// Result check: 202067735460992.
+total = 0
+for i in range(0, 20000000) {
+    total = total + (i ^ (i >> 3)) - 1
+}
+print(total)

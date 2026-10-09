@@ -69,6 +69,7 @@ std::string Stmt::str() const {
     case StmtKind::Try: return "Try";
     case StmtKind::Throw: return "Throw";
     case StmtKind::Debug: return "Debug";
+    case StmtKind::Import: return "Import";
   }
   return "?";
 }

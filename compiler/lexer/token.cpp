@@ -29,6 +29,7 @@ const char* tok_name(Tok t) {
     case Tok::KW_AS: return "as";
     case Tok::KW_ENUM: return "enum";
     case Tok::KW_BREAKPOINT: return "debug";
+    case Tok::KW_IMPORT: return "import";
     case Tok::LPAREN: return "(";
     case Tok::RPAREN: return ")";
     case Tok::LBRACE: return "{";

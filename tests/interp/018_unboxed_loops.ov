@@ -1,0 +1,63 @@
+// Unboxed loop variables: over OvInt64Array / OvFloat64Array the
+// loop variable lives in a raw C numeric local when the body keeps
+// it raw (no writes, no shadowing, no closure capture). Both
+// backends must agree (see tests/interp.sh).
+
+// range() with int-literal args lowers to OvInt64Array
+total = 0
+for i in range(1, 6) {
+    total = total + i
+}
+print(total)
+
+// all-int list literal lowers to OvInt64Array
+s = 0
+for x in [10, 20, 30] {
+    s = s + x
+}
+print(s)
+
+// break / continue keep their labels in every branch
+c = 0
+for j in range(0, 10) {
+    if j == 3 { continue }
+    if j == 7 { break }
+    c = c + 1
+}
+print(c)
+
+// all-float list literal lowers to OvFloat64Array
+fs = 0.0
+for f in [1.5, 2.5] {
+    fs = fs + f
+}
+print(fs)
+
+// reading the loop variable boxes on demand
+for k in range(1, 4) {
+    print(k)
+}
+
+// nested loops over specialized arrays
+grid = 0
+for a in range(0, 3) {
+    for b in range(0, 3) {
+        grid = grid + a * b
+    }
+}
+print(grid)
+
+// strings keep the boxed path
+n = 0
+for ch in "hi" {
+    n = n + 1
+}
+print(n)
+
+// a body that writes the loop variable falls back to the boxed loop
+r = 0
+for q in range(0, 3) {
+    q = q + 10
+    r = r + q
+}
+print(r)

@@ -25,6 +25,7 @@ enum class Tok : uint8_t {
   KW_AS,                                                 // as   (error as e)
   KW_ENUM,                                                // enum
   KW_BREAKPOINT,                                         // debug
+  KW_IMPORT,                                             // import "module.ov"
 
   // ---- punctuation / operators -----------------------------------------
   LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,

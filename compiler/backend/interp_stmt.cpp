@@ -1,4 +1,5 @@
 #include "interp.h"
+#include "../lexer/diagnostic.h"
 
 #include <cmath>
 #include <cstdio>
@@ -102,7 +103,13 @@ int Interp::run() {
     exec_block(prog_.statements, globals_);
   } catch (Throw& t) {
     OvStr* s = ov_repr(t.value);
-    fprintf(stderr, "\novyth: uncaught error: %s\n", ov_str_data(s));
+    fprintf(stderr, "\n%sovyth: %s\n",
+            ov::diag_paint(ov::kColorRed, "✖ ").c_str(),
+            ov_str_data(s));
+    fprintf(stderr, "%s\n",
+            ov::diag_paint(ov::kColorDim,
+                "tip: wrap it in try { ... } catch e { ... } "
+                "so the program keeps going").c_str());
     ov_runtime_shutdown();
     return 70;
   }
@@ -307,8 +314,12 @@ void Interp::exec_stmt(const Stmt* s, std::shared_ptr<Env> env) {
     }
 
     case StmtKind::Debug:
-      fprintf(stderr, "[ovyth] %s:%d\n", file_.c_str(), s->pos.line);
+      fprintf(stderr, "%sovyth: %s:%d\n",
+              ov::diag_paint(ov::kColorCyan, "ℹ ").c_str(),
+              file_.c_str(), s->pos.line);
       return;
+    case StmtKind::Import:
+      return;  // consumed by the loader before the interpreter runs
   }
 }
 

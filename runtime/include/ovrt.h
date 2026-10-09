@@ -646,6 +646,13 @@ void ov_type_error(const char* want, OvValue got) __attribute__((noreturn));
 void ov_index_error(const char* what, int64_t idx, int64_t len) __attribute__((noreturn));
 void ov_zero_error(void) __attribute__((noreturn));
 
+/* pretty diagnostics: emitted by compiled code for `breakpoint` */
+void ov_debug_note(const char* file, int line);
+
+/* top-level panic result for compiled programs: the exit() code,
+ * or 70 after reporting a throw that escaped every try */
+int ov_uncaught_code(void);
+
 /* -------------------------------------------------------- arena allocator */
 
 /* Request-scoped region allocator.  All objects allocated from an arena are

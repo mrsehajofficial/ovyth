@@ -1,0 +1,57 @@
+// GC rooting: containers under construction and loop
+// iterables must survive collections triggered by the
+// very expressions that fill them. Both backends must
+// agree (see tests/interp.sh).
+
+// list literal with an allocating element, enough
+// iterations to cross the collection threshold
+s = 0
+i = 0
+while i < 100000 {
+    junk = [str(i), "b", "c"]
+    s = s + i
+    i = i + 1
+}
+print(s)
+
+// comprehension with an allocating element
+xs = [str(x) for x in range(0, 100000)]
+print(len(xs))
+
+// loop over a list while allocating
+n = 0
+for x in [1, 2, 3] {
+    junk = [str(x), "b"]
+    n = n + x
+}
+print(n)
+
+// loop over a string while allocating
+c = 0
+for ch in "abcdefgh" {
+    junk = [str(c), "b"]
+    c = c + 1
+}
+print(c)
+
+// a panic unwinding a rooted loop keeps the root
+// stack consistent: the catch runs, the loop
+// continues, and later collections stay safe
+k = 0
+for m in range(0, 1000) {
+    try {
+        if m == 500 { throw "mid" }
+        k = k + m
+    } catch e {
+        k = k + 1000
+    }
+}
+print(k)
+
+// ... and allocations continue after the throw
+p = 0
+for q in range(0, 100000) {
+    junk = [str(q), "b"]
+    p = p + q
+}
+print(p)

@@ -46,6 +46,7 @@ class Parser {
   ast::Stmt* while_stmt();
   ast::Stmt* for_stmt();
   ast::Stmt* try_stmt();
+  ast::Stmt* import_stmt();
   ast::Stmt* return_stmt();
   ast::Stmt* block();
 

@@ -1,0 +1,4 @@
+// Module fixture for 020_modules.ov.
+function wrap(s) {
+    return "[" + s + "]"
+}

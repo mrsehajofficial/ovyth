@@ -13,9 +13,12 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #include "ast/ast.h"
 #include "backend/interp.h"
@@ -66,8 +69,160 @@ bool read_file(const std::string& path, std::string& out) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Module loading.
+//
+// `import "path"` is resolved at load time: the imported file is parsed
+// (recursively loading its own imports first) and its top-level
+// statements are concatenated into the program in dependency order.
+// Imports are side-effect-free -- a file is definitions only -- so a
+// file imported more than once is merged once, and import cycles are an
+// error. Top-level names (functions, globals) must be unique across all
+// modules; the owner map catches collisions, including against the
+// entry file itself. After loading, no Import statements remain and
+// every later phase sees one flat program.
+// ---------------------------------------------------------------------------
+struct ModuleLoader {
+  std::vector<std::string> stack;           // in-progress files (cycle detection)
+  std::set<std::string> loaded;             // already-merged files
+  std::map<std::string, std::string> owner; // top-level name -> defining file
+  std::vector<ov::Diagnostic> diags;
+
+  static void defined_names(const ov::ast::Stmt* s, std::vector<std::string>& out) {
+    if (!s) return;
+    if (s->kind == ov::ast::StmtKind::FuncDecl) {
+      out.push_back(s->name);
+    } else if (s->kind == ov::ast::StmtKind::VarDecl) {
+      for (const auto& n : s->names) out.push_back(n);
+    }
+  }
+
+  bool on_stack(const std::string& f) const {
+    for (const auto& s : stack) if (s == f) return true;
+    return false;
+  }
+
+  // Resolve an import path against the importing file's directory.
+  // Absolute paths are used as-is; relative paths are anchored to the
+  // importing file. If the file does not exist and the path has no
+  // ".ov" extension, ".ov" is appended and retried.
+  std::string resolve(const std::string& from_file, const std::string& path) const {
+    std::string p = path;
+    if (p.empty() || p[0] != '/') {
+      size_t slash = from_file.find_last_of('/');
+      p = (slash == std::string::npos ? std::string()
+                                      : from_file.substr(0, slash + 1)) + p;
+    }
+    if (::access(p.c_str(), R_OK) != 0) {
+      std::string with_ext = p;
+      if (with_ext.size() < 4 || with_ext.substr(with_ext.size() - 4) != ".ov")
+        with_ext += ".ov";
+      if (::access(with_ext.c_str(), R_OK) == 0) p = with_ext;
+    }
+    return p;
+  }
+
+  // Parse `file` and merge its statements into `out`, after merging the
+  // files it imports. `via_file`/`via_pos` locate the import statement
+  // that pulled this file in (the entry file passes its own name and a
+  // zero position) so load errors point at the right line. Returns false
+  // (and records diagnostics) on any load, cycle, or collision error.
+  bool load(const std::string& file, ov::ast::Program& out,
+            const std::string& via_file = "", int via_line = 0, int via_col = 0) {
+    if (loaded.count(file)) return true;  // merged already
+
+    std::string source;
+    if (!read_file(file, source)) {
+      diags.push_back(ov::Diagnostic{
+          via_file, via_line, via_col,
+          "cannot open imported file '" + file + "'",
+          ov::DiagKind::Error});
+      return false;
+    }
+
+    ov::Lexer lexer(source, file);
+    ov::Parser parser(lexer.scan(), file);
+    ov::ast::Program prog = parser.parse();
+    for (const auto& d : lexer.diagnostics()) diags.push_back(d);
+    for (const auto& d : prog.diags) diags.push_back(d);
+
+    stack.push_back(file);
+    bool ok = true;
+    for (ov::ast::Stmt* s : prog.statements) {
+      if (s && s->kind == ov::ast::StmtKind::Import) {
+        std::string target = resolve(file, s->import_path);
+        if (on_stack(target)) {
+          diags.push_back(ov::Diagnostic{
+              file, s->pos.line, s->pos.col,
+              "import cycle: '" + target + "' imports itself",
+              ov::DiagKind::Error});
+          ok = false;
+        } else if (!load(target, out, file, s->pos.line, s->pos.col)) {
+          ok = false;
+        }
+        continue;  // the import itself adds no statements
+      }
+
+      // Top-level names must be unique across modules.
+      std::vector<std::string> names;
+      defined_names(s, names);
+      for (const auto& n : names) {
+        auto it = owner.find(n);
+        if (it != owner.end() && it->second != file) {
+          diags.push_back(ov::Diagnostic{
+              file, s->pos.line, s->pos.col,
+              "'" + n + "' is already defined in " + it->second,
+              ov::DiagKind::Error});
+          ok = false;
+        } else {
+          owner[n] = file;
+        }
+      }
+      out.statements.push_back(s);
+    }
+    stack.pop_back();
+    loaded.insert(file);
+    return ok;
+  }
+};
+
 void print_diags(const std::vector<ov::Diagnostic>& diags) {
-  for (const auto& d : diags) std::fprintf(stderr, "%s\n", d.render().c_str());
+  int errs = 0, warns = 0, infos = 0, notes = 0;
+  for (const auto& d : diags) {
+    std::fprintf(stderr, "%s\n", d.render().c_str());
+    switch (d.kind) {
+      case ov::DiagKind::Error:   errs++;  break;
+      case ov::DiagKind::Warning: warns++; break;
+      case ov::DiagKind::Info:    infos++; break;
+      case ov::DiagKind::Note:    notes++; break;
+    }
+  }
+  std::string sum;
+  if (errs) {
+    sum += ov::diag_paint(ov::kColorRed,
+           "✖ " + std::to_string(errs) + (errs == 1 ? " error" : " errors"));
+  }
+  if (warns) {
+    if (!sum.empty()) sum += ", ";
+    sum += ov::diag_paint(ov::kColorYellow,
+           "▲ " + std::to_string(warns) + (warns == 1 ? " warning" : " warnings"));
+  }
+  if (infos) {
+    if (!sum.empty()) sum += ", ";
+    sum += ov::diag_paint(ov::kColorCyan,
+           "ℹ " + std::to_string(infos) + (infos == 1 ? " info" : " infos"));
+  }
+  if (notes) {
+    if (!sum.empty()) sum += ", ";
+    sum += ov::diag_paint(ov::kColorDim,
+           "• " + std::to_string(notes) + (notes == 1 ? " note" : " notes"));
+  }
+  if (!sum.empty()) std::fprintf(stderr, "%s\n", sum.c_str());
+  if (errs > 0) {
+    std::fprintf(stderr, "%s\n",
+                 ov::diag_paint(ov::kColorDim,
+                     "tip: fix the issues above, then run ovc again").c_str());
+  }
 }
 
 void init_usage() {
@@ -100,12 +255,12 @@ int run_init(const std::vector<std::string>& args, size_t i) {
       init_usage();
       return 0;
     } else if (a.rfind("-", 0) == 0 && a.size() > 1) {
-      std::fprintf(stderr, "ovc: unknown option '%s'\n", a.c_str());
+      ov::cli_error("unknown option '" + a + "' (see: ovc --help)");
       return 2;
     } else if (dir.empty()) {
       dir = a;
     } else {
-      std::fprintf(stderr, "ovc: init takes a single directory\n");
+      ov::cli_error("init takes a single directory");
       return 2;
     }
   }
@@ -117,14 +272,15 @@ int run_init(const std::vector<std::string>& args, size_t i) {
 
   std::string err;
   if (!ov::scaffold_project(dir, tmpl, err)) {
-    std::fprintf(stderr, "ovc: %s\n", err.c_str());
+    ov::cli_error(err);
     return 1;
   }
 
   std::string path = dir;
   while (path.size() > 1 && path.back() == '/') path.pop_back();
-  std::printf("\ncreated %s/ with the '%s' template\n\n", path.c_str(), tmpl.c_str());
-  std::printf("next:\n");
+  std::printf("\n");
+  ov::cli_ok("created " + path + "/ with the '" + tmpl + "' template");
+  std::printf("\nnext:\n");
   std::printf("  cd %s\n", dir.c_str());
   std::printf("  ovc run main.ov      run it with the interpreter\n");
   std::printf("  make build           compile to %s/build/app\n", path.c_str());
@@ -187,14 +343,14 @@ int main(int argc, char** argv) {
       std::string t = a.substr(9);
       if (t == "native") {
         opt.target_native = true;
-      } else {
-        std::fprintf(stderr, "ovc: unknown target '%s' (try: native)\n", t.c_str());
-        return 2;
-      }
+        } else {
+          ov::cli_error("unknown target '" + t + "' (try: native)");
+          return 2;
+        }
     } else if (a == "--no-strip") {
       opt.no_strip = true;
     } else if (a.rfind("-", 0) == 0 && a.size() > 1) {
-      std::fprintf(stderr, "ovc: unknown option '%s'\n", a.c_str());
+      ov::cli_error("unknown option '" + a + "' (see: ovc --help)");
       return 2;
     } else if (input.empty()) {
       input = a;
@@ -210,7 +366,7 @@ int main(int argc, char** argv) {
 
   std::string source;
   if (!read_file(input, source)) {
-    std::fprintf(stderr, "ovc: cannot open '%s'\n", input.c_str());
+    ov::cli_error("cannot open '" + input + "'");
     return 2;
   }
 
@@ -250,6 +406,21 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  // ---- modules ------------------------------------------------------------
+  // Flatten imports into one program before any later phase runs.
+  // `fmt`, `ast`, and `tokens` above already returned on the
+  // single-file view, so they still see the import statements.
+  {
+    ModuleLoader loader;
+    ov::ast::Program merged;
+    loader.load(input, merged);
+    if (!loader.diags.empty()) {
+      print_diags(loader.diags);
+      return 1;
+    }
+    program.statements.swap(merged.statements);
+  }
+
   ov::Sema sema;
   bool ok = sema.run(program);
   if (!program.diags.empty()) {
@@ -259,13 +430,16 @@ int main(int argc, char** argv) {
 
   if (opt.stats) {
     for (const auto& kv : sema.globals) {
-      std::fprintf(stderr, "  %-20s %s\n", kv.first.c_str(),
-                   ov::ty_name(kv.second));
+      char buf[512];
+      std::snprintf(buf, sizeof(buf), "  %-20s %s",
+                    kv.first.c_str(), ov::ty_name(kv.second));
+      std::fprintf(stderr, "%s\n",
+                   ov::diag_paint(ov::kColorDim, buf).c_str());
     }
   }
 
   if (cmd == "check") {
-    if (ok) std::printf("%s: ok\n", input.c_str());
+    if (ok) ov::cli_ok(input + ": ok");
     return ok ? 0 : 1;
   }
 

@@ -1,0 +1,10 @@
+// Module fixture for 020_modules.ov: plain definitions, no side
+// effects, so it is never run standalone by the test runner.
+// (The functions take their constants as arguments; a module
+// function reading a module global hits the separate pre-existing
+// native-backend limitation with top-level globals.)
+SCALE = 3
+
+function scale(x, k) {
+    return x * k
+}
