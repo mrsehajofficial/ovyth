@@ -1,0 +1,178 @@
+// Ovyth :: examples/chatbot/memory.ov
+//
+// Persistent memory module for chatbot with:
+// - File-based JSON storage for conversation history
+// - Efficient read/write with minimal I/O
+// - Session summarization for long-term memory
+// - Token-aware history truncation
+
+import "common.ov"
+
+function memory_init(path) {
+    return {"path": path, "loaded": false, "data": null, "dirty": false}
+}
+
+function memory_load(mem) {
+    if mem["loaded"] { return mem["data"] }
+    
+    content = file.read(mem["path"])
+    if content == "" {
+        mem["data"] = {
+            "sessions": [],
+            "current_session": {
+                "id": str(now()),
+                "messages": [],
+                "summary": "",
+                "token_count": 0,
+                "created_at": now()
+            },
+            "global_summary": "",
+            "total_turns": 0
+        }
+    } else {
+        mem["data"] = json.parse(content)
+        if !mem["data"]["current_session"] {
+            mem["data"]["current_session"] = {
+                "id": str(now()),
+                "messages": [],
+                "summary": "",
+                "token_count": 0,
+                "created_at": now()
+            }
+        }
+    }
+    mem["loaded"] = true
+    return mem["data"]
+}
+
+function memory_save(mem) {
+    if !mem["dirty"] { return true }
+    
+    content = json.stringify(mem["data"])
+    ok = file.write(mem["path"], content)
+    if ok {
+        mem["dirty"] = false
+        return true
+    }
+    return false
+}
+
+function memory_add_message(mem, role, content, tokens) {
+    data = memory_load(mem)
+    session = data["current_session"]
+
+    cost = or_int(tokens, estimate_tokens(content))
+    msg = {"role": role, "content": content, "timestamp": now(), "tokens": cost}
+    session["messages"].push(msg)
+    session["token_count"] = session["token_count"] + cost
+    data["total_turns"] = data["total_turns"] + 1
+    mem["dirty"] = true
+
+    return msg
+}
+
+function memory_get_history(mem, max_tokens) {
+    // 0 means "no budget": hand back the whole session.
+    if max_tokens == 0 || max_tokens == null {
+        return memory_load(mem)["current_session"]["messages"]
+    }
+
+    data = memory_load(mem)
+    messages = data["current_session"]["messages"]
+
+    picked = []
+    total = 0
+    i = len(messages) - 1
+    while i >= 0 {
+        msg = messages[i]
+        t = or_int(msg["tokens"], estimate_tokens(msg["content"]))
+        if total + t > max_tokens && len(picked) > 0 {
+            break
+        }
+        picked.push(msg)
+        total = total + t
+        i = i - 1
+    }
+
+    // Restore chronological order.
+    ordered = []
+    i = len(picked) - 1
+    while i >= 0 {
+        ordered.push(picked[i])
+        i = i - 1
+    }
+    return ordered
+}
+
+function memory_get_summary(mem) {
+    data = memory_load(mem)
+    return {
+        "session_summary": data["current_session"]["summary"],
+        "global_summary": data["global_summary"],
+        "total_turns": data["total_turns"]
+    }
+}
+
+function memory_update_summary(mem, session_summary, global_summary) {
+    data = memory_load(mem)
+    if session_summary != null {
+        data["current_session"]["summary"] = session_summary
+    }
+    if global_summary != null {
+        data["global_summary"] = global_summary
+    }
+    mem["dirty"] = true
+}
+
+function memory_start_new_session(mem) {
+    data = memory_load(mem)
+    
+    // Archive current session
+    if len(data["current_session"]["messages"]) > 0 {
+        data["sessions"].push(data["current_session"])
+        // Keep only last 10 archived sessions
+        if len(data["sessions"]) > 10 {
+            data["sessions"] = slice_array(data["sessions"], -10)
+        }
+    }
+    
+    data["current_session"] = {
+        "id": str(now()),
+        "messages": [],
+        "summary": "",
+        "token_count": 0,
+        "created_at": now()
+    }
+    mem["dirty"] = true
+}
+
+function memory_search(mem, query, limit) {
+    limit = or_int(limit, 10)
+    needle = query.lower()
+    data = memory_load(mem)
+    results = []
+
+    msgs = data["current_session"]["messages"]
+    i = 0
+    while i < len(msgs) && len(results) < limit {
+        if msgs[i]["content"].lower().contains(needle) {
+            results.push({"session": "current", "message": msgs[i]})
+        }
+        i = i + 1
+    }
+
+    j = 0
+    while j < len(data["sessions"]) && len(results) < limit {
+        archived = data["sessions"][j]["messages"]
+        i = 0
+        while i < len(archived) && len(results) < limit {
+            if archived[i]["content"].lower().contains(needle) {
+                results.push({"session": "archived", "index": j, "message": archived[i]})
+            }
+            i = i + 1
+        }
+        j = j + 1
+    }
+
+    return results
+}

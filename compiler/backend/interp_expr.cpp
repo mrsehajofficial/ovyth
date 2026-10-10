@@ -261,7 +261,7 @@ OvValue Interp::call_closure(const ClosureObj& cl, const std::vector<OvValue>& a
   const Expr* e = cl.expr;
   // Create a new scope whose parent is the captured environment, so the
   // closure body can read outer locals from the lexical scope it closed over.
-  auto local = std::make_shared<Env>(cl.env);
+  auto local = std::make_shared<Env>(cl.env, Env::FUNCTION);
   for (size_t i = 0; i < e->params.size(); i++) {
     OvValue v = i < args.size() ? args[i] : ov_nil();
     if (i >= args.size() && e->params[i].default_value)
@@ -283,7 +283,7 @@ OvValue Interp::call_function(const FnDef& fn, const ExprList& arg_exprs,
     depth_--;
     throw Throw{ov_s("maximum call depth exceeded (" + std::to_string(kMaxCallDepth) + ")")};
   }
-  auto local = std::make_shared<Env>(fn.closure);
+  auto local = std::make_shared<Env>(fn.closure, Env::FUNCTION);
   for (size_t i = 0; i < decl->params.size(); i++) {
     OvValue v;
     if (i < arg_exprs.size()) {
@@ -332,7 +332,7 @@ OvValue Interp::call_value(OvValue callee, const Expr* site, std::shared_ptr<Env
           throw Throw{ov_s(std::string("'") + decl->name + "' has no parameter named '" + na.name + "'")};
       }
       if (++depth_ > kMaxCallDepth) { depth_--; throw Throw{ov_s("stack overflow")}; }
-      auto local = std::make_shared<Env>(it->second.closure);
+      auto local = std::make_shared<Env>(it->second.closure, Env::FUNCTION);
       for (size_t k = 0; k < decl->params.size(); k++) {
         if (i > k && ov_isnil(byname[k]) && decl->params[k].default_value)
           byname[k] = eval(decl->params[k].default_value, env);
@@ -355,7 +355,7 @@ OvValue Interp::call_value(OvValue callee, const Expr* site, std::shared_ptr<Env
       std::vector<OvValue> pos;
       for (auto* a : call->args) pos.push_back(eval(a, env));
       if (++depth_ > kMaxCallDepth) { depth_--; throw Throw{ov_s("stack overflow")}; }
-      auto local = std::make_shared<Env>(it->second.closure);
+      auto local = std::make_shared<Env>(it->second.closure, Env::FUNCTION);
       const Stmt* decl = it->second.decl;
       for (size_t i = 0; i < decl->params.size(); i++) {
         OvValue v = i < pos.size() ? pos[i] : ov_nil();

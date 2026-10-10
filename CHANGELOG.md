@@ -24,6 +24,88 @@ the pre-existing native-backend limitation (top-level `let` is an
 `ov_main` local, invisible to functions); pass such values as
 arguments for now.
 
+### Built-in file I/O module — 10 Oct 2026
+
+A new `file` namespace provides persistent file operations directly
+in the language — no imports, no external dependencies. Works on
+both the interpreter and the native backend.
+
+```ov
+# Read entire file as string (empty string on error)
+content = file.read("notes.txt")
+
+# Write string to file (overwrites); returns Bool
+ok = file.write("notes.txt", "hello")
+
+# Append string to file; returns Bool
+ok = file.append("log.txt", "entry\n")
+
+# Check if file exists
+if file.exists("config.json") { ... }
+
+# Get file size in bytes (Int, -1 on error)
+sz = file.size("data.bin")
+
+# Delete file; returns Bool
+file.delete("tmp.txt")
+```
+
+The implementation lives in `runtime/src/io.c` and is exposed
+through `ovrt.h` (`ov_file_read/write/append/exists/size/delete`).
+The interpreter routes through the same C helpers via
+`ovrt_helpers.h`, so both backends produce identical results.
+
+### Interpreter scoping fix — 10 Oct 2026
+
+The tree-walking interpreter now distinguishes three scope kinds:
+`ROOT` (globals), `BLOCK` (transparent, e.g. `while`/`if` bodies),
+and `FUNCTION` (a new variable-binding boundary). Assignment
+resolution walks outward and stops at the first `FUNCTION` scope
+— so a helper's `i = 0` creates a genuine local instead of
+clobbering a same-named global. `while` loops use a single
+persistent `BLOCK` scope, so variables assigned in the body are
+visible to the condition on the next iteration. Both backends now
+agree; `tests/interp/019_gc_roots.ov` exercises the combined
+behaviour.
+
+### String slice / find / join fixes — 10 Oct 2026
+
+- `s.slice(lo)` now defaults the upper bound to the string length
+  (previously it read as 0, so `s.slice(3)` returned "").
+- `s.find(sub, from)` and `s.indexof(sub, from)` honour the
+  optional `from` offset on both backends; without it they start
+  at 0.
+- `join(sep, list)` is now a single implementation
+  (`ov_h_join` in `ovrt_helpers.c`) that handles plain `OvList`,
+  `StringArray`, `Int64Array` and `Float64Array` identically.
+  The interpreter delegates to it, eliminating a divergence where
+  native codegen emitted specialized arrays and the interpreter
+  built plain lists.
+
+### HTTP builtin now uses the connection pool — 10 Oct 2026
+
+`ov_http_request()` is a thin adapter over the pooled easy handle
+in `http_pool.c`. Every AI API call in an agent loop targets the
+same host, so the pooled connection keeps the TCP+TLS session
+warm instead of paying a 50–200 ms handshake on every turn.
+`atexit(ov_http_pool_cleanup)` is registered at first pool
+creation (not in `console.c`), so programs that never make an
+HTTP call don't pull in libcurl at all. The interpreter delegates
+to the same `ov_http_pool_request` path, keeping the two backends
+identical.
+
+### New RAG chatbot example — 10 Oct 2026
+
+`examples/chatbot/chatbot_rag.ov` demonstrates retrieval-augmented
+generation with persistent file-backed memory (using the new
+`file.*` builtins). It runs fully offline with a deterministic
+local responder; point `AI_API_URL` / `AI_API_KEY` / `AI_MODEL` at
+a real endpoint for live inference. `make chatbot-rag` runs it.
+
+The mock server now accepts a port argument (`python3 mock_server.py
+[PORT]`) and the OpenAI-compatible path was corrected to
+`/v1/chat/completions` (was `/v1/chat`).
+
 ### Unboxed loop variables — 9 Oct 2026
 
 A `for` loop over a specialized array (`range(...)` with int-literal

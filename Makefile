@@ -40,7 +40,7 @@ CC_OBJ   := $(patsubst %.cpp,$(BUILD)/%.o,$(CC_CPP))
 -include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d)
 OVC      := $(BUILD)/ovc
 
-.PHONY: all test clean runtime examples chatbot install uninstall
+.PHONY: all test clean runtime examples chatbot chatbot-rag install uninstall
 
 all: $(OVC) $(RT_LIB)
 
@@ -98,8 +98,19 @@ chatbot: $(OVC)
 	 trap 'kill $$mock 2>/dev/null' EXIT; \
 	 sleep 1; \
 	 printf 'hello from make\nexit\n' | \
-	   AI_API_KEY=test AI_API_URL=http://127.0.0.1:$(MOCK_PORT)/v1/chat AI_MODEL=mock-model \
+	   AI_API_KEY=test AI_API_URL=http://127.0.0.1:$(MOCK_PORT)/v1/chat/completions AI_MODEL=mock-model \
 	   $(OVC) run examples/chatbot/chatbot.ov
+
+# The integrated chatbot: RAG retrieval + persistent memory, fully offline.
+# Persistence goes to examples/chatbot/chatbot_rag_memory.json, so a second run
+# resumes the conversation. Point it at a real endpoint with AI_API_KEY /
+# AI_API_URL / AI_MODEL; with AI_API_KEY unset it answers from the local
+# responder so the retrieval, memory and token-budget paths still run.
+chatbot-rag: $(OVC)
+	@printf 'what is RAG?\nhow does arena allocation work?\nexit\n' | \
+	   AI_API_KEY=$(AI_API_KEY) AI_API_URL=$(AI_API_URL) AI_MODEL=$(AI_MODEL) \
+	   CHATBOT_MEMORY_PATH=examples/chatbot/chatbot_rag_memory.json \
+	   $(OVC) run examples/chatbot/chatbot_rag.ov
 
 # --- runtime self-test ----------------------------------------------------
 RT_TEST := $(BUILD)/runtime_test

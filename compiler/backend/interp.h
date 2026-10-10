@@ -43,14 +43,48 @@ class Interp {
 
   // --- environment ------------------------------------------------------
   struct Env : public std::enable_shared_from_this<Env> {
+    // Scope kinds matter for assignment resolution. ENV_BLOCK scopes (while /
+    // if bodies) are transparent plumbing inside one function; ENV_FUNCTION
+    // is the boundary a new variable binds to. Without the distinction, an
+    // assignment inside a function body walked all the way up to the globals
+    // and wrote there, so a helper's `i = 0` silently clobbered the caller's
+    // `i`. The native codegen already gives function bodies real C locals;
+    // this makes the interpreter agree with it.
+    enum Kind : uint8_t { ROOT, BLOCK, FUNCTION };
+
     std::shared_ptr<Env> parent;
     std::unordered_map<std::string, OvValue> vars;
     Env* prev_env = nullptr;
     Env* next_env = nullptr;
-    explicit Env(std::shared_ptr<Env> p = nullptr);
+    Kind kind = BLOCK;
+    explicit Env(std::shared_ptr<Env> p = nullptr, Kind k = BLOCK);
     ~Env();
     OvValue* find(const std::string& n) {
       for (Env* e = this; e; e = e->parent.get()) {
+        auto it = e->vars.find(n);
+        if (it != e->vars.end()) return &it->second;
+      }
+      return nullptr;
+    }
+// Where an assignment to `n` should land.
+    //
+    // Walks outward collecting scopes. Two rules keep the two backends
+    // identical and stop helper locals leaking into globals:
+    //
+    //   1. a BLOCK scope is transparent -- walking continues through it;
+    //   2. the ROOT (globals) scope is writable *only* when no FUNCTION
+    //      scope lies in between, i.e. from top-level code.
+    //
+    // Rule 2 is what makes a helper's `i = 0` a genuine local instead of
+    // clobbering a same-named global -- without it, `rag_embed`'s 3-gram loop
+    // called `hash_string`, whose own `i` reset the caller's `i`, and the
+    // scan spun forever. Rule 1 is what keeps a top-level `while` mutating
+    // its globals, which tests/interp/019_gc_roots.ov pins down.
+    OvValue* assign_find(const std::string& n) {
+      bool in_function = false;
+      for (Env* e = this; e; e = e->parent.get()) {
+        if (e->kind == FUNCTION) in_function = true;
+        if (e->kind == ROOT && in_function) break;
         auto it = e->vars.find(n);
         if (it != e->vars.end()) return &it->second;
       }

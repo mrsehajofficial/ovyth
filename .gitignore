@@ -10,6 +10,12 @@ build/
 # ---- binaries from running `ovc <file>.ov` in place ------------------------
 # (ovc writes the executable next to the source, with the extension removed)
 examples/chatbot/chatbot
+
+# ---- chatbot persistent memory --------------------------------------------
+# Written at runtime by examples/chatbot/chatbot_rag.ov; it holds conversation
+# history, so it is state, not source.
+examples/chatbot/chatbot_memory.json
+examples/chatbot/chatbot_rag_memory.json
 tests/gemini_ask
 /hello
 /hello_world

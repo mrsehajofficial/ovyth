@@ -1,0 +1,620 @@
+// Ovyth :: examples/chatbot/rag.ov
+//
+// Optimized RAG pipeline.
+//
+//   * sentence-aware chunking (never splits mid-sentence, keeps overlap)
+//   * hybrid retrieval: hashed n-gram vector similarity fused with BM25
+//   * two-stage rerank: phrase match + term coverage + density boosts
+//   * token-budgeted context assembly that truncates rather than drops
+//
+// Everything below is ordered so a definition only ever refers to something
+// already defined earlier in the file; Ovyth resolves in a single pass.
+
+import "common.ov"
+
+function merge_config(base, override) {
+    result = {}
+    for k in base { result[k] = base[k] }
+    if override != null {
+        for k in override { result[k] = override[k] }
+    }
+    return result
+}
+
+// ------------------------------------------------------------------ hashing
+
+// A character -> code point table. The runtime has no ord() builtin, and a
+// table keeps the common path allocation-free.
+function char_code(c) {
+    if c == "a" { return 97 }
+    if c == "b" { return 98 }
+    if c == "c" { return 99 }
+    if c == "d" { return 100 }
+    if c == "e" { return 101 }
+    if c == "f" { return 102 }
+    if c == "g" { return 103 }
+    if c == "h" { return 104 }
+    if c == "i" { return 105 }
+    if c == "j" { return 106 }
+    if c == "k" { return 107 }
+    if c == "l" { return 108 }
+    if c == "m" { return 109 }
+    if c == "n" { return 110 }
+    if c == "o" { return 111 }
+    if c == "p" { return 112 }
+    if c == "q" { return 113 }
+    if c == "r" { return 114 }
+    if c == "s" { return 115 }
+    if c == "t" { return 116 }
+    if c == "u" { return 117 }
+    if c == "v" { return 118 }
+    if c == "w" { return 119 }
+    if c == "x" { return 120 }
+    if c == "y" { return 121 }
+    if c == "z" { return 122 }
+    if c == "0" { return 48 }
+    if c == "1" { return 49 }
+    if c == "2" { return 50 }
+    if c == "3" { return 51 }
+    if c == "4" { return 52 }
+    if c == "5" { return 53 }
+    if c == "6" { return 54 }
+    if c == "7" { return 55 }
+    if c == "8" { return 56 }
+    if c == "9" { return 57 }
+    if c == " " { return 32 }
+    if c == "-" { return 45 }
+    if c == "_" { return 95 }
+    return 120
+}
+
+// Deterministic string hash (djb2 over char codes). Keeps the vector buckets
+// stable across runs so retrieval results are reproducible.
+function hash_string(s) {
+    h = 5381
+    i = 0
+    while i < len(s) {
+        c = s.slice(i, i + 1)
+        h = (h * 33 + char_code(c)) % 2147483647
+        i = i + 1
+    }
+    return h
+}
+
+function count_occurrences(haystack, needle) {
+    count = 0
+    nlen = len(needle)
+    if nlen == 0 { return 0 }
+
+    rest = haystack
+    while len(rest) >= nlen {
+        idx = rest.find(needle)
+        if idx < 0 { break }
+        count = count + 1
+        rest = rest.slice(idx + nlen)
+    }
+    return count
+}
+
+// --------------------------------------------------------------- similarity
+
+function cosine_sim(a, b) {
+    n = len(a)
+    if n > len(b) { n = len(b) }
+    dot = 0.0
+    mag_a = 0.0
+    mag_b = 0.0
+    i = 0
+    while i < n {
+        dot = dot + a[i] * b[i]
+        mag_a = mag_a + a[i] * a[i]
+        mag_b = mag_b + b[i] * b[i]
+        i = i + 1
+    }
+    mag_a = mag_a ^ 0.5
+    mag_b = mag_b ^ 0.5
+    if mag_a == 0.0 || mag_b == 0.0 { return 0.0 }
+    return dot / (mag_a * mag_b)
+}
+
+// Min-max normalise a list of {idx, score} to [0,1] in place, so the hybrid
+// fusion weights mean the same thing regardless of which signal is raw.
+function normalize_scores(scores) {
+    if len(scores) == 0 { return scores }
+    max_s = scores[0]["score"]
+    min_s = scores[0]["score"]
+    i = 1
+    while i < len(scores) {
+        if scores[i]["score"] > max_s { max_s = scores[i]["score"] }
+        if scores[i]["score"] < min_s { min_s = scores[i]["score"] }
+        i = i + 1
+    }
+    span = max_s - min_s
+    if span <= 0.0 { return scores }
+    i = 0
+    while i < len(scores) {
+        scores[i]["score"] = (scores[i]["score"] - min_s) / span
+        i = i + 1
+    }
+    return scores
+}
+
+// ------------------------------------------------------------------ vectors
+
+// Character 3-grams plus whole-word hashes, L2 normalised. The 3-grams carry
+// word shape (so "arena" and "arenas" land near each other) which a raw
+// character histogram loses entirely.
+function rag_embed(text, dim) {
+    vec = []
+    i = 0
+    while i < dim {
+        vec.push(0.0)
+        i = i + 1
+    }
+
+    lower = text.lower()
+
+    i = 0
+    while i + 3 <= len(lower) {
+        gram = lower.slice(i, i + 3)
+        bucket = hash_string(gram) % dim
+        vec[bucket] = vec[bucket] + 1.0
+        i = i + 1
+    }
+
+    words = lower.split(" ")
+    j = 0
+    while j < len(words) {
+        if len(words[j]) > 0 {
+            bucket = hash_string(words[j]) % dim
+            vec[bucket] = vec[bucket] + 2.0
+        }
+        j = j + 1
+    }
+
+    mag = 0.0
+    k = 0
+    while k < dim {
+        mag = mag + vec[k] * vec[k]
+        k = k + 1
+    }
+    mag = mag ^ 0.5
+    if mag > 0.0 {
+        k = 0
+        while k < dim {
+            vec[k] = vec[k] / mag
+            k = k + 1
+        }
+    }
+    return vec
+}
+
+// ------------------------------------------------------------------ chunking
+
+// Chunk on sentence boundaries so a fact is never cut in half, and carry the
+// last `overlap` sentences forward so one straddling a boundary survives in
+// both chunks. `chunk_chars` is the soft ceiling, not a hard truncation.
+function rag_chunk_text(text, chunk_chars, overlap) {
+    sentences = text.split(". ")
+    chunks = []
+    current = ""
+    i = 0
+    while i < len(sentences) {
+        piece = sentences[i]
+        if len(piece) > 0 {
+            piece = piece + ". "
+        }
+        if len(current) + len(piece) > chunk_chars && current != "" {
+            chunks.push(current.trim())
+
+            // Rebuild `current` from the trailing `overlap` sentences.
+            tail = []
+            back = i - 1
+            kept = 0
+            while back >= 0 && kept < overlap {
+                tail.push(sentences[back] + ". ")
+                back = back - 1
+                kept = kept + 1
+            }
+            current = ""
+            k = len(tail) - 1
+            while k >= 0 {
+                current = current + tail[k]
+                k = k - 1
+            }
+        }
+        current = current + piece
+        i = i + 1
+    }
+    if current != "" {
+        chunks.push(current.trim())
+    }
+    return chunks
+}
+
+// -------------------------------------------------------------------- index
+
+function rag_init(config) {
+    return {
+        "documents": [],
+        "chunks": [],
+        "embeddings": [],
+        "chunk_metadata": [],
+        "config": or_map(config),
+        "initialized": false
+    }
+}
+
+function rag_config_defaults() {
+    return {
+        "chunk_size": 40,
+        "chunk_overlap": 2,
+        "top_k": 6,
+        "rerank_top_k": 3,
+        "bm25_weight": 0.45,
+        "vector_weight": 0.55,
+        "max_context_tokens": 350,
+        "dim": 32
+    }
+}
+
+function rag_add_document(rag, text, metadata) {
+    doc_id = len(rag["documents"])
+    meta = or_map(metadata)
+    meta["doc_id"] = doc_id
+    meta["added_at"] = now()
+    rag["documents"].push({"text": text, "metadata": meta})
+    // Invalidate so the next query rebuilds with the new document included.
+    rag["initialized"] = false
+    return doc_id
+}
+
+function rag_add_documents(rag, docs) {
+    i = 0
+    while i < len(docs) {
+        doc = docs[i]
+        if type(doc) == "string" {
+            rag_add_document(rag, doc, {})
+        } else {
+            rag_add_document(rag, doc["text"], or_map(doc["metadata"]))
+        }
+        i = i + 1
+    }
+}
+
+// Materialise chunks + embeddings. Runs once per corpus change; every query
+// after that is pure scoring against cached vectors.
+function rag_build_index(rag) {
+    if rag["initialized"] { return }
+
+    config = merge_config(rag_config_defaults(), rag["config"])
+    chunk_chars = config["chunk_size"] * 4
+
+    all_chunks = []
+    all_metadata = []
+    all_embeddings = []
+
+    doc_idx = 0
+    while doc_idx < len(rag["documents"]) {
+        doc = rag["documents"][doc_idx]
+        chunks = rag_chunk_text(doc["text"], chunk_chars, config["chunk_overlap"])
+        chunk_idx = 0
+        while chunk_idx < len(chunks) {
+            meta = {}
+            for k in doc["metadata"] { meta[k] = doc["metadata"][k] }
+            meta["chunk_idx"] = chunk_idx
+            meta["tokens"] = estimate_tokens(chunks[chunk_idx])
+
+            all_chunks.push(chunks[chunk_idx])
+            all_metadata.push(meta)
+            all_embeddings.push(rag_embed(chunks[chunk_idx], config["dim"]))
+
+            chunk_idx = chunk_idx + 1
+        }
+        doc_idx = doc_idx + 1
+    }
+
+    rag["chunks"] = all_chunks
+    rag["chunk_metadata"] = all_metadata
+    rag["embeddings"] = all_embeddings
+    rag["initialized"] = true
+}
+
+// ----------------------------------------------------------------- retrieval
+
+// Okapi BM25 over one chunk. `idf` is precomputed per query term so the inner
+// loop is arithmetic only.
+function bm25_score(terms, chunk_lower, chunk_words, avgdl, idf) {
+    if avgdl == 0 { avgdl = 1 }
+    k1 = 1.5
+    b = 0.75
+    score = 0.0
+    i = 0
+    while i < len(terms) {
+        tf = count_occurrences(chunk_lower, terms[i])
+        if tf > 0 {
+            // Float division: an int 1/0 here would divide-by-zero panic.
+            denom = tf * 1.0 + k1 * (1.0 - b + b * chunk_words * 1.0 / avgdl)
+            score = score + idf[i] * tf * 1.0 * (k1 + 1.0) / denom
+        }
+        i = i + 1
+    }
+    return score
+}
+
+function is_punct_char(c) {
+    if c == "?" || c == "!" || c == "." || c == "," || c == ":" ||
+       c == ";" || c == "'" || c == "(" || c == ")" {
+        return true
+    }
+    return false
+}
+
+// Trim leading and trailing punctuation from one term. Query punctuation is
+// the difference between a hit and a miss: "What is RAG?" yields the term
+// "rag?", which never matches the chunk holding "RAG", so the single most
+// relevant document scores zero and loses to chunks that merely contain "is".
+function strip_punct(w) {
+    t = w
+    while len(t) > 1 {
+        if is_punct_char(t.slice(len(t) - 1)) {
+            t = t.slice(0, len(t) - 1)
+        } else {
+            return t
+        }
+    }
+    if len(t) > 1 && is_punct_char(t.slice(0, 1)) {
+        t = t.slice(1)
+    }
+    return t
+}
+
+function build_terms(query) {
+    raw = query.lower().split(" ")
+    terms = []
+    i = 0
+    while i < len(raw) {
+        w = strip_punct(raw[i])
+        if len(w) > 1 {
+            terms.push(w)
+        }
+        i = i + 1
+    }
+    if len(terms) == 0 {
+        return raw
+    }
+    return terms
+}
+
+function compute_idf(terms, chunks, n_docs) {
+    idf = []
+    i = 0
+    while i < len(terms) {
+        df = 0
+        j = 0
+        while j < n_docs {
+            if chunks[j].lower().contains(terms[i]) {
+                df = df + 1
+            }
+            j = j + 1
+        }
+        // Smoothed, scaled into a stable range so a term absent from the whole
+        // corpus cannot dominate one that appears everywhere.
+        raw = 1.0 + (n_docs - df) / (df + 1.0)
+        idf.push(raw / 10.0)
+        i = i + 1
+    }
+    return idf
+}
+
+function avg_doc_length(chunks, n_docs) {
+    if n_docs == 0 { return 1 }
+    total = 0
+    i = 0
+    while i < n_docs {
+        total = total + len(chunks[i].split(" "))
+        i = i + 1
+    }
+    return total / n_docs
+}
+
+function scalar_scores(chunks, n_docs, terms, idf, avgdl) {
+    scores = []
+    i = 0
+    while i < n_docs {
+        chunk_lower = chunks[i].lower()
+        scores.push({
+            "idx": i,
+            "score": bm25_score(terms, chunk_lower, len(chunk_lower.split(" ")), avgdl, idf)
+        })
+        i = i + 1
+    }
+    return scores
+}
+
+// Selection-sort the top `k` entries of `scores`; k is small (<= 8) so the
+// quadratic inner loop costs less than building and sorting a full index.
+function take_top(candidates, k) {
+    j = 0
+    while j < k && j < len(candidates) {
+        best = j
+        m = j + 1
+        while m < len(candidates) {
+            if candidates[m]["score"] > candidates[best]["score"] {
+                best = m
+            }
+            m = m + 1
+        }
+        tmp = candidates[j]
+        candidates[j] = candidates[best]
+        candidates[best] = tmp
+        j = j + 1
+    }
+    selected = []
+    i = 0
+    while i < k && i < len(candidates) {
+        selected.push(candidates[i])
+        i = i + 1
+    }
+    return selected
+}
+
+// Two-stage rerank over the fused shortlist. Boosts, in order of strength:
+// exact phrase match, per-term coverage, then raw term density.
+function rerank(query_lower, terms, shortlist, rag, rerank_top_k) {
+    scored = []
+    i = 0
+    while i < len(shortlist) {
+        idx = shortlist[i]["idx"]
+        chunk_lower = rag["chunks"][idx].lower()
+        score = shortlist[i]["score"]
+
+        if chunk_lower.contains(query_lower) {
+            score = score * 1.8
+        }
+
+        hits = 0
+        k = 0
+        while k < len(terms) {
+            if chunk_lower.contains(terms[k]) {
+                hits = hits + 1
+            }
+            k = k + 1
+        }
+        coverage = 0.0
+        if len(terms) > 0 { coverage = hits * 1.0 / len(terms) }
+        score = score * (1.0 + coverage * 0.6)
+
+        density = 0
+        k = 0
+        while k < len(terms) {
+            density = density + count_occurrences(chunk_lower, terms[k])
+            k = k + 1
+        }
+        score = score + density * 0.02
+
+        scored.push({"idx": idx, "score": score})
+        i = i + 1
+    }
+
+    top = take_top(scored, rerank_top_k)
+
+    results = []
+    i = 0
+    while i < len(top) {
+        idx = top[i]["idx"]
+        results.push({
+            "text": rag["chunks"][idx],
+            "score": top[i]["score"],
+            "metadata": rag["chunk_metadata"][idx]
+        })
+        i = i + 1
+    }
+    return results
+}
+
+function rag_retrieve(rag, query, config_override) {
+    if !rag["initialized"] {
+        rag_build_index(rag)
+    }
+
+    config = merge_config(merge_config(rag_config_defaults(), rag["config"]), config_override)
+    chunks = rag["chunks"]
+    n_docs = len(chunks)
+    if n_docs == 0 {
+        return []
+    }
+
+    terms = build_terms(query)
+    query_lower = query.lower()
+    idf = compute_idf(terms, chunks, n_docs)
+    avgdl = avg_doc_length(chunks, n_docs)
+
+    // Stage 1a: vector similarity.
+    query_emb = rag_embed(query, config["dim"])
+    vector_scores = []
+    i = 0
+    while i < n_docs {
+        vector_scores.push({"idx": i, "score": cosine_sim(query_emb, rag["embeddings"][i])})
+        i = i + 1
+    }
+    normalize_scores(vector_scores)
+
+    // Stage 1b: keyword relevance.
+    keyword_scores = scalar_scores(chunks, n_docs, terms, idf, avgdl)
+    normalize_scores(keyword_scores)
+
+    // Fuse the two normalised signals.
+    fused = []
+    i = 0
+    while i < n_docs {
+        fused.push({
+            "idx": i,
+            "score": config["vector_weight"] * 1.0 * vector_scores[i]["score"] +
+                     config["bm25_weight"] * 1.0 * keyword_scores[i]["score"]
+        })
+        i = i + 1
+    }
+
+    top_k = config["top_k"]
+    if top_k > n_docs {
+        top_k = n_docs
+    }
+    shortlist = take_top(fused, top_k)
+
+    // Stage 2: precision rerank.
+    return rerank(query_lower, terms, shortlist, rag, config["rerank_top_k"])
+}
+
+// ------------------------------------------------------------------ assembly
+
+// Assemble chunks into a context block under a hard token ceiling. A chunk
+// that would overflow is truncated to the space left rather than dropped, so
+// a long-but-relevant chunk still contributes its opening sentences.
+function rag_assemble_context(results, max_tokens) {
+    max_tokens = or_int(max_tokens, 350)
+
+    parts = []
+    used = 0
+    i = 0
+    while i < len(results) {
+        text = results[i]["text"]
+        tokens = estimate_tokens(text)
+
+        if used + tokens > max_tokens {
+            remaining = max_tokens - used
+            if remaining > 25 {
+                take = remaining * 4
+                if take > len(text) { take = len(text) }
+                parts.push("[" + str(i + 1) + "] " + text.slice(0, take) + "...")
+                used = max_tokens
+            }
+            i = len(results)
+        } else {
+            parts.push("[" + str(i + 1) + "] (doc:" +
+                       str(results[i]["metadata"]["doc_id"]) + ") " + text)
+            used = used + tokens
+            i = i + 1
+        }
+    }
+
+    return {
+        "context": join("\n\n", parts),
+        "tokens_used": used,
+        "sources": len(parts)
+    }
+}
+
+function rag_query(rag, query, config_override) {
+    results = rag_retrieve(rag, query, config_override)
+    config = merge_config(merge_config(rag_config_defaults(), rag["config"]), config_override)
+    assembled = rag_assemble_context(results, config["max_context_tokens"])
+
+    return {
+        "query": query,
+        "results": results,
+        "context": assembled["context"],
+        "context_tokens": assembled["tokens_used"],
+        "sources": assembled["sources"]
+    }
+}

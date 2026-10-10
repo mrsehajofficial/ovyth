@@ -3,15 +3,17 @@
 Ovyth :: examples/chatbot/mock_server.py
 A mock OpenAI-compatible API server for testing the chatbot without an API key.
 
-Run this in one terminal:
-    python3 examples/chatbot/mock_server.py
+Run this in one terminal (optionally with a port, default 8765):
+    python3 examples/chatbot/mock_server.py [port]
 
 Then run the chatbot:
-    AI_API_URL=http://localhost:8765 AI_API_KEY=dummy ovc run examples/chatbot/chatbot.ov
+    AI_API_URL=http://localhost:8765/v1/chat/completions AI_API_KEY=dummy \
+      ovc run examples/chatbot/chatbot_rag.ov
 """
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
+import sys
 
 responses = [
     {"role": "assistant", "content": "Hello! I'm a mock AI assistant. How can I help you?"},
@@ -68,7 +70,11 @@ class ChatHandler(BaseHTTPRequestHandler):
         pass  # Suppress logging
 
 if __name__ == "__main__":
-    server = HTTPServer(("localhost", 8765), ChatHandler)
-    print("Mock server running at http://localhost:8765")
+    # `make chatbot MOCK_PORT=9000` passes the port here. It was hardcoded
+    # before, which made that override silently a no-op and left the server
+    # stuck on 8765 -- so a second run failed with "Address already in use".
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    server = HTTPServer(("localhost", port), ChatHandler)
+    print("Mock server running at http://localhost:%d" % port)
     print("Press Ctrl+C to stop")
     server.serve_forever()

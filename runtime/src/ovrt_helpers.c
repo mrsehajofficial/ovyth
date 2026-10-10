@@ -46,7 +46,16 @@ int ov_h_value_method(OvValue base, const char* name, OvValue a0, OvValue a1,
     if (!strcmp(name, "bytes")) { *out = ov_str_bytes(s); return 0; }
     if (!strcmp(name, "split")) { *out = ov_str_split(s, a0.str); return 0; }
     if (!strcmp(name, "replace")){ *out = ov_str(ov_str_replace(s, a0.str, a1.str)); return 0; }
-    if (!strcmp(name, "slice")) { *out = ov_str(ov_str_slice(s, a0.i, a1.i)); return 0; }
+    if (!strcmp(name, "slice")) {
+      /* Upper bound defaults to the string length so s.slice(lo) yields the
+       * tail; a nil second argument would otherwise read as hi = 0. */
+      int64_t lo = a0.i;
+      int64_t hi = (int64_t)s->len;
+      if (ov_tagof(a1) == OV_INT) hi = a1.i;
+      else if (ov_tagof(a1) == OV_FLOAT) hi = (int64_t)a1.f;
+      *out = ov_str(ov_str_slice(s, lo, hi));
+      return 0;
+    }
     if (!strcmp(name, "pad"))   { *out = ov_str(ov_str_pad(s, a0.i, a1.i, 1)); return 0; }
     if (!strcmp(name, "startswith")) {
       *out = ov_bool(ov_str_find(s, a0.str, 0) == 0); return 0;
@@ -59,7 +68,12 @@ int ov_h_value_method(OvValue base, const char* name, OvValue a0, OvValue a1,
       *out = ov_bool(ov_str_contains(s, a0.str)); return 0;
     }
     if (!strcmp(name, "indexof") || !strcmp(name, "find")) {
-      *out = ov_int(ov_str_find(s, a0.str, 0)); return 0;
+      /* `from` is the optional second argument; without it the search starts
+       * at 0, matching indexof's single-argument form. */
+      int64_t from = 0;
+      if (!ov_isnil(a1)) from = (ov_tagof(a1) == OV_FLOAT) ? (int64_t)a1.f : a1.i;
+      *out = ov_int(ov_str_find(s, a0.str, from));
+      return 0;
     }
   }
 
@@ -566,18 +580,71 @@ OvValue ov_h_sum(OvValue list, int* threw) {
   return all_int ? ov_int(i) : ov_float(d);
 }
 
+/* join(sep, list)
+ *
+ * The native backend lowers a homogeneous list literal to a specialized
+ * array (OvStringArray / OvInt64Array / OvFloat64Array), while the
+ * interpreter builds a plain OvList. Both must produce identical output, so
+ * this handles every collection kind and the interpreter routes through the
+ * very same function -- one implementation, no drift.
+ */
 OvValue ov_h_join(OvValue sep, OvValue list) {
-  if (ov_tagof(list) != OV_LIST) return ov_str(ov_str_new("", 0));
+  if (ov_tagof(sep) != OV_STRING) return ov_str(ov_str_new("", 0));
 
-  /* Use string builder for O(n) join instead of repeated concatenation */
+  const char* sepbytes = sep.str->bytes;
+  size_t seplen = sep.str->len;
+
   OvStrBuilder* sb = ov_sb_new();
   int first = 1;
-  for (uint32_t i = 0; i < list.list->len; i++) {
-    if (!first) ov_sb_append(sb, sep.str->bytes, sep.str->len);
-    OvStr* s = ov_render(list.list->items[i]);
-    ov_sb_append(sb, s->bytes, s->len);
-    first = 0;
+
+  switch (ov_tagof(list)) {
+    case OV_LIST: {
+      OvList* l = list.list;
+      for (uint32_t i = 0; i < l->len; i++) {
+        if (!first) ov_sb_append(sb, sepbytes, seplen);
+        OvStr* s = ov_render(l->items[i]);
+        ov_sb_append(sb, s->bytes, s->len);
+        first = 0;
+      }
+      break;
+    }
+    case OV_STRA: {
+      OvStringArray* a = list.stra;
+      for (uint32_t i = 0; i < a->len; i++) {
+        if (!first) ov_sb_append(sb, sepbytes, seplen);
+        if (a->data[i]) ov_sb_append(sb, a->data[i]->bytes, a->data[i]->len);
+        first = 0;
+      }
+      break;
+    }
+    case OV_I64A: {
+      OvInt64Array* a = list.i64a;
+      char buf[32];
+      for (uint32_t i = 0; i < a->len; i++) {
+        if (!first) ov_sb_append(sb, sepbytes, seplen);
+        int n = snprintf(buf, sizeof(buf), "%lld", (long long)a->data[i]);
+        if (n > 0) ov_sb_append(sb, buf, (size_t)n);
+        first = 0;
+      }
+      break;
+    }
+    case OV_F64A: {
+      OvFloat64Array* a = list.f64a;
+      char buf[40];
+      for (uint32_t i = 0; i < a->len; i++) {
+        if (!first) ov_sb_append(sb, sepbytes, seplen);
+        int n = snprintf(buf, sizeof(buf), "%g", a->data[i]);
+        if (n > 0) ov_sb_append(sb, buf, (size_t)n);
+        first = 0;
+      }
+      break;
+    }
+    default:
+      /* Not a collection: mirror the previous behaviour rather than panic. */
+      ov_sb_free(sb);
+      return ov_str(ov_str_new("", 0));
   }
+
   OvStr* result = ov_sb_finish(sb);
   return ov_str(result);
 }

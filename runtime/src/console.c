@@ -25,7 +25,12 @@ void ov_runtime_shutdown(void) {
   fflush(stdout);
   fflush(stderr);
   /* Run the collector once at exit so leaks in long-running services are
-   * visible in ov_heap_bytes() during benchmarks. */
+   * visible in ov_heap_bytes() during benchmarks.
+   *
+   * The pooled HTTP connections are NOT closed here: http_pool.c registers its
+   * own atexit() handler the first time a pool is created. Referencing it from
+   * this file would make every program depend on http_pool.o and libcurl, even
+   * ones that never make a request. */
   ov_gc_collect();
 }
 

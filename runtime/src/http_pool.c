@@ -321,7 +321,15 @@ OvHttpResponse* ov_http_pool_request(OvHttpPool* pool,
 static OvHttpPool* g_default_pool = NULL;
 
 OvHttpPool* ov_http_default_pool(void) {
-  if (!g_default_pool) g_default_pool = ov_http_pool_new(8);
+  if (!g_default_pool) {
+    g_default_pool = ov_http_pool_new(8);
+    /* Register cleanup here rather than calling it from ov_runtime_shutdown().
+     * console.o is linked into every program, so a reference from it would
+     * drag http_pool.o -- and therefore libcurl -- into binaries that never
+     * touch http.*, defeating --gc-sections. Registering at pool creation means
+     * only programs that actually make an HTTP call pay for the teardown. */
+    atexit(ov_http_pool_cleanup);
+  }
   return g_default_pool;
 }
 

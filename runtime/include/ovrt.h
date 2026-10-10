@@ -670,6 +670,17 @@ void     ov_arena_free(OvArena* a);    /* free everything incl. struct      */
 size_t   ov_arena_used(OvArena* a);
 size_t   ov_arena_peak(OvArena* a);
 
+/* ----------------------------------------------------------- file I/O */
+
+OvStr* ov_file_read(const char* path);           /* returns empty string on error */
+int    ov_file_write(const char* path, const char* data, size_t len);
+int    ov_file_append(const char* path, const char* data, size_t len);
+int    ov_file_exists(const char* path);
+int64_t ov_file_size(const char* path);
+int    ov_file_delete(const char* path);
+int    ov_dir_create(const char* path);
+OvValue ov_dir_list(const char* path);           /* returns list of filenames */
+
 /* ------------------------------------------------- fast / SIMD JSON */
 
 /* Drop-in replacement for ov_json_parse with optional arena for temporaries. */

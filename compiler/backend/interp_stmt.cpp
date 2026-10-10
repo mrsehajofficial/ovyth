@@ -13,14 +13,15 @@ using namespace ast;
 
 // ---------------------------------------------------------------------------
 Interp::Interp(const Program& program, std::string filename)
-    : prog_(program), file_(std::move(filename)), globals_(std::make_shared<Env>(nullptr)) {}
+    : prog_(program), file_(std::move(filename)),
+      globals_(std::make_shared<Env>(nullptr, Env::ROOT)) {}
 
 Interp::~Interp() {}
 
 std::deque<OvValue> Interp::root_stack_;
 Interp::Env* Interp::active_envs_head_ = nullptr;
 
-Interp::Env::Env(std::shared_ptr<Env> p) : parent(std::move(p)) {
+Interp::Env::Env(std::shared_ptr<Env> p, Kind k) : parent(std::move(p)), kind(k) {
   if (active_envs_head_) active_envs_head_->prev_env = this;
   next_env = active_envs_head_;
   prev_env = nullptr;
@@ -84,7 +85,7 @@ int Interp::run() {
       globals_->vars[s->name] = ov_nil();  // reserve the name
     }
   }
-  // `http`, `json`, `str`, `math` and `time` are namespaces: maps holding their
+  // `http`, `json`, `str`, `math`, `time` and `file` are namespaces: maps holding their
   // methods as closures. `time` needs no entries -- `time.clock` / `time.now`
   // are recognised by name -- but the entry must exist, or a dotted call would
   // try to evaluate the bare identifier `time` and fail.
@@ -93,11 +94,13 @@ int Interp::run() {
   OvMap* str_ns = ov_map_new();
   OvMap* math_ns = ov_map_new();
   OvMap* time_ns = ov_map_new();
+  OvMap* file_ns = ov_map_new();
   globals_->vars["http"] = ov_map(http_ns);
   globals_->vars["json"] = ov_map(json_ns);
   globals_->vars["str"] = ov_map(str_ns);
   globals_->vars["math"] = ov_map(math_ns);
   globals_->vars["time"] = ov_map(time_ns);
+  globals_->vars["file"] = ov_map(file_ns);
 
   try {
     exec_block(prog_.statements, globals_);
@@ -142,7 +145,11 @@ void Interp::exec_stmt(const Stmt* s, std::shared_ptr<Env> env) {
         }
       }
       for (size_t i = 0; i < n; i++) {
-        OvValue* slot = env ? env->find(s->names[i]) : nullptr;
+        // Same rule as an assignment: bind to the innermost function scope,
+        // never write through to a global that merely happens to share the
+        // name. `find()` walked the whole chain, which made a helper's
+        // `total = 0` clobber the caller's `total`.
+        OvValue* slot = env ? env->assign_find(s->names[i]) : nullptr;
         if (slot) *slot = tmp[i].get();
         else if (env) env->vars[s->names[i]] = tmp[i].get();
       }
@@ -200,10 +207,22 @@ void Interp::exec_stmt(const Stmt* s, std::shared_ptr<Env> env) {
     }
 
     case StmtKind::While: {
+      // Create a single persistent scope for the loop so that variables
+      // assigned in the body are visible to the condition on the next
+      // iteration. Use BLOCK kind so it behaves like a transparent block
+      // (matching native backend semantics where while loops share the
+      // outer scope). If the body is a single Block statement, execute its
+      // statements directly in this loop scope to avoid a nested scope.
+      auto loop_env = std::make_shared<Env>(env, Env::BLOCK);
+      const bool body_is_block =
+          s->body.size() == 1 && s->body[0]->kind == StmtKind::Block;
       for (;;) {
-        if (!ov_truthy(eval(s->expr, env))) break;
-        auto inner = std::make_shared<Env>(env);
-        exec_block(s->body, inner);
+        if (!ov_truthy(eval(s->expr, loop_env))) break;
+        if (body_is_block) {
+          exec_block(s->body[0]->body, loop_env);
+        } else {
+          exec_block(s->body, loop_env);
+        }
         if (signal_.flow == Flow::Break) { signal_ = Signal{}; break; }
         if (signal_.flow == Flow::Continue) { signal_ = Signal{}; continue; }
         if (signal_.flow != Flow::Normal) return;
@@ -327,7 +346,9 @@ void Interp::assign_to(Expr* target, OvValue value, std::shared_ptr<Env> env) {
   Root val_root(value);
   switch (target->kind) {
     case ExprKind::Identifier: {
-      OvValue* slot = env ? env->find(target->name) : nullptr;
+      // Bind in the innermost *function* scope that already declares the name;
+      // otherwise declare it here rather than writing through to a global.
+      OvValue* slot = env ? env->assign_find(target->name) : nullptr;
       if (slot) *slot = val_root.get();
       else if (env) env->vars[target->name] = val_root.get();
       return;

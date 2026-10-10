@@ -170,6 +170,31 @@ padded   = "ab".pad(5)            # "   ab"  (left-padded, space fill)
 dotted   = "ab".pad(5, 46)        # "...ab"  (46 is the fill code point)
 ```
 
+### Files
+
+Persistent file I/O is built in — no imports, no external dependencies.
+Works identically on both the interpreter and the compiled backend.
+
+```ov
+# Read entire file (empty string on error)
+content = file.read("notes.txt")
+
+# Write (overwrites); returns Bool
+ok = file.write("notes.txt", "hello")
+
+# Append; returns Bool
+ok = file.append("log.txt", "entry\n")
+
+# Existence check
+if file.exists("config.json") { ... }
+
+# Size in bytes (Int, -1 on error)
+sz = file.size("data.bin")
+
+# Delete; returns Bool
+file.delete("tmp.txt")
+```
+
 ### Interpolation
 
 ```ov
@@ -404,10 +429,7 @@ question "why did it see that?".
 | environment | `env` `env_or` `setenv` |
 | conversion | `len` `str` `int` `float` `bool` `type` `range` |
 | json | `json.parse` `json.stringify` `json.valid` `json.extract` `json.get_int` `json.get_float` `json.get_str` |
-| http | `http.get` `http.post` `http.put` `http.delete` |
-| strings | `upper` `lower` `trim` `split` `join` `contains` `replace` `indexof` `repeat` `startswith` `endswith` `pad` `chars` `bytes` |
-| lists | `push` `pop` `insert` `remove` `sort` `reverse` `contains` `indexof` `extend` `length` `sum` |
-| maps | `get` `set` `has` `delete` `keys` `values` `items` `count` `merge` |
+| files | `file.read` `file.write` `file.append` `file.exists` `file.size` `file.delete` |
 | math | `abs` `sqrt` `floor` `ceil` `round` `min` `max` `sum` `pow` |
 | misc | `time.clock` `time.now` `gc` `exit` `throw` `assert` |
 
@@ -448,7 +470,7 @@ Transport failures (DNS, TLS, timeout) are raised as catchable errors, so
 
 ---
 
-## 9. Modules
+## 10. Modules
 
 `import "path"` pulls another `.ov` file's top-level definitions into
 your program. Paths are resolved relative to the importing file; if the
@@ -481,7 +503,7 @@ as arguments until top-level globals become visible to functions there.
 
 ---
 
-## 10. Known limitations
+## 11. Known limitations
 
 Worth knowing before you rely on something:
 
@@ -507,7 +529,7 @@ semantics down.
 
 ---
 
-## 11. Project layout
+## 12. Project layout
 
 ```
 compiler/          the ovc compiler (C++17)
@@ -530,6 +552,7 @@ make test                              # unit + both-backend regression
 bash tests/interp.sh                   # language tests only
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
+make chatbot-rag                       # RAG chatbot with persistent memory
 bash benchmarks/run.sh                 # benchmark suite
 bash benchmarks/compare.sh             # Ovyth vs C vs Python
 bash benchmarks/compare_ai.sh --release # AI pipeline vs C vs Python

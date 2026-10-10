@@ -5,6 +5,9 @@
 #include <ctime>
 
 #include "interp.h"
+/* The native codegen delegates string/list builtins to these helpers; using
+ * the same entry points here is what keeps the two backends identical. */
+#include "ovrt_helpers.h"
 
 namespace ov {
 using namespace ast;
@@ -181,7 +184,8 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
       const bool base_is_ident = callee->a && callee->a->kind == ExprKind::Identifier;
       const std::string ns = base_is_ident ? callee->a->name : std::string();
       const bool is_ns = (ns == "http" || ns == "json" || ns == "math" ||
-                         ns == "str"  || ns == "os"   || ns == "time");
+                         ns == "str"  || ns == "os"   || ns == "time" ||
+                         ns == "file");
       if (is_ns) {
         // `http.get(...)`: the namespace has no field of that name, so call the
         // qualified builtin `ns.method`; but a real field (e.g. a user variable
@@ -212,12 +216,27 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
           }
           if (f == "contains")   return ov_bool(ov_str_contains(s, a0.str));
           if (f == "replace")    return ov_str(ov_str_replace(s, a0.str, a1.str));
-          if (f == "indexof" || f == "find") return ov_int(ov_str_find(s, a0.str, 0));
+          if (f == "indexof" || f == "find") {
+            // `find(sub, from)`: honour the offset when it is supplied.
+            int64_t from = 0;
+            if (ov_tagof(a1) == OV_INT) from = a1.i;
+            else if (ov_tagof(a1) == OV_FLOAT) from = (int64_t)a1.f;
+            return ov_int(ov_str_find(s, a0.str, from));
+          }
           if (f == "chars")      return ov_str_chars(s);
           if (f == "bytes")      return ov_str_bytes(s);
           if (f == "repeat")     return ov_str(ov_str_repeat(s, a0.i));
           if (f == "length")     return ov_int(s->len);
-          if (f == "slice")      return ov_str(ov_str_slice(s, a0.i, a1.i));
+          if (f == "slice") {
+            /* s.slice(lo, hi) or s.slice(lo). The upper bound defaults to the
+             * string length: a nil second argument previously read as 0, so
+             * s.slice(3) returned "" instead of the tail. */
+            int64_t lo = a0.i;
+            int64_t hi = (int64_t)s->len;
+            if (ov_tagof(a1) == OV_INT) hi = a1.i;
+            else if (ov_tagof(a1) == OV_FLOAT) hi = (int64_t)a1.f;
+            return ov_str(ov_str_slice(s, lo, hi));
+          }
           if (f == "pad")        return ov_str(ov_str_pad(s, a0.i, a1.i, 1));
         }
         if (ov_tagof(base) == OV_LIST) {
@@ -395,14 +414,11 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
     return ov_str_split(ARG(0).str, mk_str(sep));
   }
   if (q == "join") {
-    OvValue sep = ARG(0), list = ARG(1);
-    if (ov_tagof(list) != OV_LIST) return ov_str_val("");
-    OvStr* acc = ov_str_new("", 0);
-    for (uint32_t i = 0; i < list.list->len; i++) {
-      if (i) acc = ov_str_concat(acc, sep.str);
-      acc = ov_str_concat(acc, ov_render(list.list->items[i]));
-    }
-    return ov_str(acc);
+    /* Delegate to the same helper the native backend emits, so a join over a
+     * specialized array (which the native codegen produces for a homogeneous
+     * list literal) and over a plain OvList (what the interpreter builds)
+     * produce byte-identical output. */
+    return ov_h_join(ARG(0), ARG(1));
   }
   if (q == "startswith") return ov_bool(ov_str_find(ARG(0).str, ARG(1).str, 0) == 0);
   if (q == "endswith") {
@@ -420,7 +436,18 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
   if (q == "replace") return ov_str(ov_str_replace(ARG(0).str, ARG(1).str, ARG(2).str));
   if (q == "indexof" || q == "find") {
     OvValue needle = ARG(0), hay = ARG(1);
-    if (ov_tagof(hay) == OV_STRING) return ov_int(ov_str_find(hay.str, needle.str, 0));
+    /* find(s, sub, from): the third argument is the search offset. It was
+     * dropped before, so a caller scanning forward got the first hit forever
+     * and could never advance past it. */
+    int64_t from = 0;
+    if (args.size() > 2) {
+      OvValue f = ARG(2);
+      from = (ov_tagof(f) == OV_FLOAT) ? (int64_t)f.f : f.i;
+    }
+    if (ov_tagof(hay) == OV_STRING) {
+      if (ov_tagof(needle) != OV_STRING) return bad("find() needs a String pattern");
+      return ov_int(ov_str_find(hay.str, needle.str, from));
+    }
     if (ov_tagof(hay) == OV_LIST)   return ov_int(ov_list_index(hay.list, needle));
     return ov_int(-1);
   }
@@ -532,6 +559,48 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
     clock_gettime(CLOCK_REALTIME, &ts);
     return ov_int((int64_t)ts.tv_sec);
   }
+  
+  // ------------------------------------------------------------ file I/O
+  if (q == "file.read") {
+    std::string path = str_arg(ARG(0));
+    OvStr* s = ov_file_read(path.c_str());
+    return ov_str(s);
+  }
+  if (q == "file.write") {
+    std::string path = str_arg(ARG(0));
+    OvValue data = ARG(1);
+    std::string text = str_arg(data);
+    int ok = ov_file_write(path.c_str(), text.c_str(), text.size());
+    return ov_bool(ok);
+  }
+  if (q == "file.append") {
+    std::string path = str_arg(ARG(0));
+    OvValue data = ARG(1);
+    std::string text = str_arg(data);
+    int ok = ov_file_append(path.c_str(), text.c_str(), text.size());
+    return ov_bool(ok);
+  }
+  if (q == "file.exists") {
+    std::string path = str_arg(ARG(0));
+    return ov_bool(ov_file_exists(path.c_str()));
+  }
+  if (q == "file.size") {
+    std::string path = str_arg(ARG(0));
+    return ov_int(ov_file_size(path.c_str()));
+  }
+  if (q == "file.delete") {
+    std::string path = str_arg(ARG(0));
+    return ov_bool(ov_file_delete(path.c_str()));
+  }
+  if (q == "dir.create") {
+    std::string path = str_arg(ARG(0));
+    return ov_bool(ov_dir_create(path.c_str()));
+  }
+  if (q == "dir.list") {
+    std::string path = str_arg(ARG(0));
+    return ov_dir_list(path.c_str());
+  }
+
   if (q == "gc") {
     std::string what = args.empty() ? std::string("collect") : str_arg(eval(args[0], env));
     if (what == "stats") {

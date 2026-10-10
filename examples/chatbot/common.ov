@@ -1,0 +1,31 @@
+// Ovyth :: examples/chatbot/common.ov
+//
+// Shared utilities for memory.ov and rag.ov
+
+function or_int(v, fallback) {
+    if v == null { return fallback }
+    return v
+}
+
+function or_map(v) {
+    if v == null { return {} }
+    return v
+}
+
+function estimate_tokens(text) {
+    // Rough estimation: ~4 chars per token for English
+    return (len(text) + 3) / 4
+}
+
+function slice_array(arr, start) {
+    if start < 0 {
+        start = len(arr) + start
+    }
+    result = []
+    i = start
+    while i < len(arr) {
+        result.push(arr[i])
+        i = i + 1
+    }
+    return result
+}

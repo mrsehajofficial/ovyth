@@ -1,0 +1,51 @@
+import "rag.ov"
+
+docs = [
+    "Ovyth is a compiled language for AI automation and agent workloads. It compiles .ov files to native executables with zero VM overhead.",
+    "RAG stands for Retrieval Augmented Generation. It retrieves relevant context from a knowledge base before sending a prompt to an LLM.",
+    "Arena allocators free all objects in O(1) by releasing an entire memory block, avoiding per-object malloc and free overhead.",
+    "Connection pooling reuses TCP and TLS sessions across requests, eliminating 50 to 200 milliseconds of handshake overhead per API call.",
+    "JSON parsing is on the hot path for every LLM API call. SIMD scanning can process 16 bytes per instruction instead of one."
+]
+
+rag = rag_init({
+    "chunk_size": 40,
+    "chunk_overlap": 2,
+    "top_k": 6,
+    "rerank_top_k": 3,
+    "bm25_weight": 0.45,
+    "vector_weight": 0.55,
+    "max_context_tokens": 120,
+    "dim": 32
+})
+
+i = 0
+while i < len(docs) {
+    rag_add_document(rag, docs[i], {"source": "kb", "doc_id": i})
+    i = i + 1
+}
+
+queries = [
+    "how does arena allocation handle memory?",
+    "what is RAG retrieval?",
+    "connection pooling TLS overhead",
+    "which fruit grows in orchards?",
+    "json parsing performance"
+]
+
+q = 0
+while q < len(queries) {
+    print("QUERY: " + queries[q])
+    result = rag_query(rag, queries[q], null)
+    r = 0
+    while r < len(result["results"]) {
+        hit = result["results"][r]
+        print("  " + str(r + 1) + " score=" + str(round(hit["score"] * 1000.0) / 1000.0) +
+              " doc=" + str(hit["metadata"]["doc_id"]))
+        print("     " + hit["text"].slice(0, 90))
+        r = r + 1
+    }
+    print("  context_tokens=" + str(result["context_tokens"]) + " sources=" + str(result["sources"]))
+    print("")
+    q = q + 1
+}

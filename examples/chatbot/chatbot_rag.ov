@@ -1,0 +1,484 @@
+// Ovyth :: examples/chatbot/chatbot_rag.ov
+//
+// Integrated Chatbot: RAG retrieval + persistent memory, token-budgeted.
+//
+// Runs offline. With AI_API_KEY set it talks to an OpenAI-compatible
+// endpoint; without one it answers from a deterministic local responder so
+// the whole retrieval + memory + context path is still exercised.
+//
+//   ./build/ovc run examples/chatbot/chatbot_rag.ov < input.txt
+//
+// Commands:
+//   exit / quit   leave
+//   new           archive the session and start fresh
+//   stats         memory summary
+//   search <q>    grep the stored conversations
+//
+// Token strategy (the burn control):
+//   1. history is trimmed newest-first against MAX_HISTORY_TOKENS
+//   2. RAG returns rerank_top_k chunks, then context is assembled against
+//      MAX_RAG_TOKENS and mid-truncated rather than dropped
+//   3. the two budgets never overlap the model's output allowance
+
+import "memory.ov"
+import "rag.ov"
+
+// --- configuration ---------------------------------------------------------
+
+api_key = env_or("AI_API_KEY", "")
+api_url = env_or("AI_API_URL", "https://api.example.com/v1/chat")
+model   = env_or("AI_MODEL", "gpt-4o-mini")
+mem_path = env_or("CHATBOT_MEMORY_PATH", "./chatbot_memory.json")
+
+demo_mode = false
+if api_key == "" {
+    demo_mode = true
+    // Name the variable that is actually missing, and report what *was*
+    // picked up -- a half-configured run (URL and model set, key unset) is
+    // otherwise indistinguishable from a fresh checkout.
+    print("DEMO MODE: AI_API_KEY is not set, so answers come from the local")
+    print("           knowledge base instead of a model. To use a live model,")
+    print("           export AI_API_KEY (AI_API_URL and AI_MODEL are already")
+    print("           respected). Current settings:")
+    print("           AI_API_URL = " + api_url)
+    print("           AI_MODEL   = " + model)
+}
+
+// Token budgets. These are the only knobs that control spend.
+MAX_HISTORY_TOKENS = 700
+MAX_RAG_TOKENS = 350
+MAX_RESPONSE_TOKENS = 400
+
+// The retrieved block is a *supplement*, not a cage. An earlier wording said
+// "answer from the context provided, otherwise say so", which forbade the model
+// from using anything else -- so "what's your name?" or "what did I just ask?"
+// were refused even though the history was sitting in the same payload. Say
+// plainly that the context comes first and that everything else is fair game.
+SYSTEM_PROMPT = "You are Ovyth's assistant. You have three sources: the retrieved CONTEXT when it is relevant, the conversation history in this thread, and your own knowledge. Answer directly and concisely. When the context is not relevant, just answer normally instead of refusing. Only say the context is insufficient when the question is genuinely about something the context was supposed to supply."
+
+// --- memory ----------------------------------------------------------------
+
+mem = memory_init(mem_path)
+data = memory_load(mem)
+print("memory: " + str(len(data["current_session"]["messages"])) + " messages, " +
+      str(data["total_turns"]) + " total turns, " + str(len(data["sessions"])) + " archived")
+
+// --- knowledge base -------------------------------------------------------
+
+rag = rag_init({
+    "chunk_size": 40,
+    "chunk_overlap": 2,
+    "top_k": 6,
+    "rerank_top_k": 3,
+    "similarity_threshold": 0.05,
+    "bm25_weight": 0.45,
+    "vector_weight": 0.55,
+    "max_context_tokens": MAX_RAG_TOKENS,
+    "dim": 32
+})
+
+documents = [
+    "Ovyth is a compiled language for AI automation and agent workloads. It compiles .ov files to native executables with zero VM overhead.",
+    "RAG stands for Retrieval Augmented Generation. It retrieves relevant context from a knowledge base before sending a prompt to an LLM.",
+    "Vector search finds the most semantically similar chunks to a query by computing cosine similarity between embedding vectors.",
+    "Arena allocators free all objects in O(1) by releasing an entire memory block, avoiding per-object malloc and free overhead.",
+    "JSON parsing is on the hot path for every LLM API call. SIMD scanning can process 16 bytes per instruction instead of one.",
+    "Connection pooling reuses TCP and TLS sessions across requests, eliminating 50 to 200 milliseconds of handshake overhead per API call.",
+    "Pipeline fusion combines multiple data transformations into a single pass, reducing allocations and improving cache locality.",
+    "io_uring provides asynchronous I/O using shared submission and completion rings, reducing syscall overhead for high throughput workloads.",
+    "Ovyth uses a mark sweep collector with arena allocation for efficient memory management in long running AI agents.",
+    "The Ovyth compiler emits LLVM IR for native performance, with an interpreter mode for fast iteration."
+]
+
+i = 0
+while i < len(documents) {
+    rag_add_document(rag, documents[i], {"source": "kb", "topic": "ovyth"})
+    i = i + 1
+}
+print("knowledge base: " + str(len(documents)) + " documents")
+
+// One config map, threaded through the helpers above as a parameter.
+cfg = {
+    "demo_mode": demo_mode,
+    "api_key": api_key,
+    "api_url": api_url,
+    "model": model,
+    "system_prompt": SYSTEM_PROMPT,
+    "max_history_tokens": MAX_HISTORY_TOKENS,
+    "max_rag_tokens": MAX_RAG_TOKENS,
+    "max_response_tokens": MAX_RESPONSE_TOKENS
+}
+
+// ---------------------------------------------------------------- answering
+
+function min_of(a, b) {
+    if a < b { return a }
+    return b
+}
+
+// Exact-match greeting test: "hi there" is a greeting, "what is a hit counter"
+// is not, so the list stays exact rather than substring-based.
+function is_greeting(q) {
+    t = q.trim().lower()
+    if t == "hi" || t == "hello" || t == "hey" || t == "yo" || t == "hiya" ||
+       t == "sup" || t == "howdy" || t == "greetings" {
+        return true
+    }
+    if t.startswith("hi ") || t.startswith("hey ") || t.startswith("hello ") ||
+       t.startswith("good morning") || t.startswith("good evening") ||
+       t.startswith("good afternoon") {
+        return true
+    }
+    return false
+}
+
+// The assembler tags each chunk "[N] (doc:X) " so a reader can trace provenance.
+// Quoting a chunk verbatim in an answer therefore reads like debug output, so
+// strip both markers before the passage is used as prose.
+function strip_citation(chunk) {
+    t = chunk.trim()
+    if t.startswith("[") {
+        close = t.find("]")
+        if close >= 0 && close < 6 {
+            t = t.slice(close + 1).trim()
+        }
+    }
+    if t.startswith("(") {
+        close = t.find(")")
+        if close >= 0 {
+            t = t.slice(close + 1).trim()
+        }
+    }
+    return t
+}
+
+// Trim to a whole sentence where possible, so a quoted passage never ends
+// mid-word or mid-clause. Falls back to a word boundary, then a hard cut.
+function first_sentences(text, limit) {
+    if len(text) <= limit { return text }
+
+    window = text.slice(0, limit)
+
+    last_dot = -1
+    i = 0
+    while i < len(window) {
+        if window.slice(i, i + 1) == "." { last_dot = i }
+        i = i + 1
+    }
+    // Only trust a sentence break in the back half, otherwise "trimming" would
+    // return the first three words of every passage.
+    if last_dot >= limit / 2 {
+        return text.slice(0, last_dot + 1)
+    }
+
+    last_space = -1
+    i = 0
+    while i < len(window) {
+        if window.slice(i, i + 1) == " " { last_space = i }
+        i = i + 1
+    }
+    if last_space > 0 && last_space > limit / 4 {
+        return text.slice(0, last_space) + "..."
+    }
+    return window + "..."
+}
+
+// Short function words that appear in almost every question and almost every
+// chunk, so matching on them proves nothing.
+function is_stopword(w) {
+    if w == "the" || w == "and" || w == "for" || w == "are" || w == "was" ||
+       w == "what" || w == "how" || w == "why" || w == "who" || w == "does" ||
+       w == "with" || w == "this" || w == "that" || w == "from" || w == "have" ||
+       w == "can" || w == "you" || w == "your" || w == "its" || w == "not" {
+        return true
+    }
+    return false
+}
+
+// A quoted passage is only worth showing if it shares at least one significant
+// word with the question. The fused retrieval score cannot make this call on its
+// own: min-max normalisation lifts the best chunk of every result set, so an
+// off-corpus query still produces a confident-looking 0.55-0.6.
+function shares_term(question, text) {
+    words = question.lower().split(" ")
+    t = text.lower()
+    i = 0
+    while i < len(words) {
+        w = words[i]
+        if len(w) >= 3 && !is_stopword(w) && t.contains(w) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// A deterministic stand-in for the model. Greetings and known topics are
+// answered directly; anything else is only answered if the retriever was
+// actually confident, so an off-corpus question is refused instead of being
+// handed the least-bad irrelevant chunk.
+function local_answer(question, context, top_score) {
+    q = question.trim().lower()
+
+    if is_greeting(q) {
+        return "Hey! No AI_API_KEY is set, so I'm answering from a small built-in knowledge base instead of a live model. Ask me about Ovyth, RAG retrieval, arena allocation, connection pooling or JSON parsing -- or export AI_API_KEY to use a real model."
+    }
+
+    if q.contains("who are you") || q.contains("what can you do") {
+        return "I'm the Ovyth demo assistant. I retrieve relevant chunks from a 10-document knowledge base and keep our conversation in a JSON file so it survives a restart. Try: what is RAG?"
+    }
+
+    if q.contains("arena") && q.contains("memory") {
+        return "Ovyth frees arena allocations in O(1) by releasing the whole block, so long-running agents avoid per-object free overhead."
+    }
+    if q.contains("rag") || q.contains("retriev") {
+        return "RAG retrieves relevant chunks from a knowledge base before the prompt reaches the model. This pipeline fuses vector and keyword scores, then reranks for precision."
+    }
+    if q.contains("connection") || q.contains("pool") || q.contains("tls") {
+        return "Connection pooling keeps the TCP and TLS session warm, removing 50 to 200 ms of handshake per API call."
+    }
+    if q.contains("json") || q.contains("parse") {
+        return "JSON parsing is the hot path for every LLM call. Ovyth's SIMD scanner reads 16 bytes per instruction."
+    }
+    if q.contains("arena") {
+        return "Arena allocators release an entire block in O(1), which is why they suit agent loops that allocate heavily."
+    }
+
+    // Quote the strongest passage, cleaned and trimmed to whole sentences --
+    // but only when it actually shares a term with the question. Falling back
+    // to "the least-bad chunk" is how a chatbot ends up confidently wrong.
+    if context == "" {
+        return "I don't have anything relevant for that in the knowledge base. Try asking about Ovyth, RAG retrieval, arena allocation, connection pooling, or JSON parsing."
+    }
+
+    blocks = context.split("\n\n")
+    answer = ""
+    b = 0
+    while b < len(blocks) {
+        cleaned = strip_citation(blocks[b])
+        if len(cleaned) > len(answer) {
+            answer = cleaned
+        }
+        b = b + 1
+    }
+    if answer == "" || !shares_term(question, answer) {
+        return "I don't have anything relevant for that in the knowledge base. Try asking about Ovyth, RAG retrieval, arena allocation, connection pooling, or JSON parsing."
+    }
+    return "From the knowledge base: " + first_sentences(answer, 220)
+}
+
+// Config arrives as a parameter rather than a captured global: the native
+// backend lowers top-level bindings to C locals of main, so a function body
+// cannot reach them. Passing the map explicitly keeps this example identical
+// on both backends.
+//
+// This is the live-model path. The offline path is chosen by the caller, which
+// has the retrieval scores the local responder needs to decide whether the
+// context is worth quoting at all.
+function call_llm(cfg, messages) {
+    response = http.post(
+        cfg["api_url"],
+        headers = {
+            "Authorization": "Bearer " + cfg["api_key"],
+            "Content-Type": "application/json"
+        },
+        json = {
+            "model": cfg["model"],
+            "messages": messages,
+            "temperature": 0.4,
+            "max_tokens": cfg["max_response_tokens"]
+        },
+        timeout = 30
+    )
+
+    // A bare status code is useless for debugging, so report what the server
+    // actually said. A 404 here is nearly always a path problem: this client
+    // POSTs to AI_API_URL as given, and OpenAI-compatible servers expose the
+    // chat route at /chat/completions, not at /v1.
+    if response["status"] != 200 {
+        status = str(response["status"])
+        // Not `body or ""`: `or` yields a Bool, so the fallback would render
+        // as the literal "true" and bury the server's actual message.
+        detail = ""
+        if response["body"] != null {
+            detail = str(response["body"])
+        }
+        if len(detail) > 240 {
+            detail = detail.slice(0, 240) + "..."
+        }
+        hint = ""
+        if response["status"] == 404 {
+            hint = "  [hint: the chat endpoint is usually <base>/chat/completions, e.g. AI_API_URL=" + cfg["api_url"] + "/chat/completions]"
+        }
+        return "[HTTP " + status + " from " + cfg["api_url"] + "] " + detail + hint
+    }
+    parsed = json.parse(response["body"])
+    return parsed["choices"][0]["message"]["content"]
+}
+
+// ------------------------------------------------------- prompt construction
+
+function build_messages(cfg, user_query, context, history) {
+    messages = [{"role": "system", "content": cfg["system_prompt"]}]
+
+    // Retrieved context rides in a system message so it can be evicted
+    // independently of the user's own turn history.
+    if context != "" {
+        messages.push({"role": "system", "content": "REFERENCE MATERIAL (use only if relevant to the question):\n" + context})
+    }
+
+    // Newest-first history trim against the token budget.
+    picked = []
+    used = 0
+    i = len(history) - 1
+    while i >= 0 {
+        msg = history[i]
+        t = msg["tokens"]
+        if used + t > cfg["max_history_tokens"] && len(picked) > 0 {
+            i = -1
+        } else {
+            picked.push(msg)
+            used = used + t
+            i = i - 1
+        }
+    }
+
+    // Chronological order for the model.
+    j = len(picked) - 1
+    while j >= 0 {
+        messages.push({"role": picked[j]["role"], "content": picked[j]["content"]})
+        j = j - 1
+    }
+
+    messages.push({"role": "user", "content": user_query})
+    return {"messages": messages, "history_tokens": used}
+}
+
+function extract_topics(messages) {
+    topics = []
+    for msg in messages {
+        if msg["role"] == "user" {
+            words = msg["content"].lower().split(" ")
+            for w in words {
+                if len(w) > 5 {
+                    known = false
+                    for t in topics {
+                        if t == w { known = true }
+                    }
+                    if !known && len(topics) < 12 {
+                        topics.push(w)
+                    }
+                }
+            }
+        }
+    }
+    return join(", ", topics)
+}
+
+// --- main loop ------------------------------------------------------------
+
+print("")
+print("=== Ovyth chatbot: RAG + persistent memory ===")
+print("commands: exit | new | stats | search <query>")
+print("")
+
+turns = 0
+
+while true {
+    line = input("> ")
+
+    if line == null { break }
+
+    command = line.trim()
+    if command == "" { continue }
+    if command == "exit" || command == "quit" { break }
+
+    if command == "new" {
+        memory_start_new_session(mem)
+        memory_save(mem)
+        print("archived. starting a fresh session.")
+        continue
+    }
+
+    if command == "stats" {
+        summary = memory_get_summary(mem)
+        print("turns: " + str(summary["total_turns"]) +
+              "  archived: " + str(len(data["sessions"])) +
+              "  session_tokens: " + str(data["current_session"]["token_count"]))
+        if summary["session_summary"] != "" {
+            print("topics: " + summary["session_summary"])
+        }
+        continue
+    }
+
+    if command.startswith("search ") {
+        hits = memory_search(mem, command.slice(7), 5)
+        print("memory hits: " + str(len(hits)))
+        for hit in hits {
+            print("  [" + hit["session"] + "] " + hit["message"]["content"].slice(0, 70))
+        }
+        continue
+    }
+
+    turns = turns + 1
+
+    // 1. retrieve
+    retrieval = rag_query(rag, command, null)
+    context = retrieval["context"]
+
+    // 2. budget the conversation
+    history = memory_get_history(mem, MAX_HISTORY_TOKENS)
+    built = build_messages(cfg, command, context, history)
+    messages = built["messages"]
+
+    prompt_tokens = estimate_tokens(SYSTEM_PROMPT) +
+                    estimate_tokens(context) +
+                    built["history_tokens"] +
+                    estimate_tokens(command)
+
+    // 3. generate
+    t0 = time.clock()
+    // Declared before the branches: an assignment inside an if-body binds in
+    // that body's scope, so `reply` has to already exist to be readable after.
+    reply = ""
+    top_score = 0.0
+    if len(retrieval["results"]) > 0 {
+        top_score = retrieval["results"][0]["score"]
+    }
+    if cfg["demo_mode"] {
+        reply = local_answer(command, context, top_score)
+    } else {
+        reply = call_llm(cfg, messages)
+    }
+    elapsed = (time.clock() - t0) * 1000.0
+
+    print("assistant (" + str(round(elapsed)) + "ms): " + reply)
+    print("  [tokens] prompt~" + str(prompt_tokens) +
+          " (history " + str(built["history_tokens"]) +
+          " + context " + str(retrieval["context_tokens"]) +
+          " of budget " + str(MAX_HISTORY_TOKENS + MAX_RAG_TOKENS) +
+          "), chunks " + str(retrieval["sources"]))
+    print("")
+
+    // 4. persist
+    q_tokens = estimate_tokens(command)
+    a_tokens = estimate_tokens(reply)
+    memory_add_message(mem, "user", command, q_tokens)
+    memory_add_message(mem, "assistant", reply, a_tokens)
+
+    // Summarize periodically, not every turn: it is the one thing that would
+    // otherwise add work for no answer-quality gain.
+    if turns % 8 == 0 {
+        topics = extract_topics(data["current_session"]["messages"])
+        if topics != "" {
+            memory_update_summary(mem, topics, null)
+        }
+    }
+
+    if turns % 4 == 0 {
+        memory_save(mem)
+    }
+}
+
+memory_save(mem)
+print("saved " + str(len(data["current_session"]["messages"])) + " messages to " + mem_path)

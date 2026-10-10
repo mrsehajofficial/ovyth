@@ -1419,7 +1419,8 @@ std::string Gen::emit_closure(const Expr* e) {
   std::vector<std::string> captures;
   for (const auto& n : free_vars) {
     if (userfns_.count(n)) continue;                       // global function
-    if (n == "http" || n == "json" || n == "str" || n == "math" || n == "time")
+    if (n == "http" || n == "json" || n == "str" || n == "math" || n == "time" ||
+        n == "file")
       continue;                                            // namespace root
     std::string* c = lookup(n);
     if (!c) continue;  // unknown name: leave for the body's own error path
@@ -1711,6 +1712,35 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
     if (name == "clock") return "ov_float(ov_h_now())";
     if (name == "now")   return "ov_int((int64_t)ov_h_now())";
   }
+  if (ns == "file") {
+    // Persistence builtins. Each takes a path string; ov_file_read/write are
+    // plain C in the runtime (io.c). `write`/`append` return Bool.
+    auto A = [&](size_t i) { return i < args.size() ? args[i] : "ov_nil()"; };
+    if (name == "read") {
+      return "({ OvValue _p = " + A(0) + "; ov_str(ov_file_read(" +
+             "ov_tagof(_p) == OV_STRING ? _p.str->bytes : \"\")); })";
+    }
+    if (name == "write" || name == "append") {
+      const char* fn = (name[0] == 'w') ? "ov_file_write" : "ov_file_append";
+      std::string r = fresh();
+      return "({ OvValue _p = " + A(0) + ", _d = " + A(1) + "; int " + r + " = " +
+             std::string(fn) + "(ov_tagof(_p) == OV_STRING ? _p.str->bytes : \"\", "
+             "ov_tagof(_d) == OV_STRING ? _d.str->bytes : \"\", "
+             "ov_tagof(_d) == OV_STRING ? _d.str->len : 0); ov_bool(" + r + "); })";
+    }
+    if (name == "exists") {
+      return "({ OvValue _p = " + A(0) + "; ov_bool(ov_file_exists(" +
+             "ov_tagof(_p) == OV_STRING ? _p.str->bytes : \"\")); })";
+    }
+    if (name == "delete") {
+      return "({ OvValue _p = " + A(0) + "; ov_bool(ov_file_delete(" +
+             "ov_tagof(_p) == OV_STRING ? _p.str->bytes : \"\")); })";
+    }
+    if (name == "size") {
+      return "({ OvValue _p = " + A(0) + "; ov_int(ov_file_size(" +
+             "ov_tagof(_p) == OV_STRING ? _p.str->bytes : \"\")); })";
+    }
+  }
   fail("unsupported namespace call '" + ns + "." + name + "'");
   return "ov_nil()";
 }
@@ -1933,7 +1963,8 @@ std::string Gen::emit_call(const Expr* e) {
     const Expr* base = callee->a;
     if (base && base->kind == ExprKind::Identifier) {
       const std::string& ns = base->name;
-      if (ns == "http" || ns == "json" || ns == "math" || ns == "time" || ns == "str")
+      if (ns == "http" || ns == "json" || ns == "math" || ns == "time" || ns == "str" ||
+          ns == "file")
         return call_namespace(ns, callee->name, e);
     }
     return call_value_method(e, ex(base));
