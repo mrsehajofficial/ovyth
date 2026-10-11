@@ -5,6 +5,71 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### Three packages, and the examples become applications — 11 Oct 2026
+
+`greet` (the canonical first package), `ai` (OpenAI-compatible chat
+transport plus conversation shaping) and `rag` (chunk, store, retrieve,
+prompt) are published to the registry and install with
+`ovc pkg install <name>`.
+
+They are modules, not applications: nothing runs at import time, each one
+takes and returns plain data, and the caller owns the state. The chatbot
+and rag-pipeline examples are now built *on* them rather than
+reimplementing them — `examples/chatbot/chatbot.ov` is the loop, the prompt
+and the demo mode, and everything that talks to a model is `ai_*`;
+`examples/rag/rag_pipeline.ov` is a corpus, three queries and a
+persistence round trip, and everything else is `rag_*`.
+
+Writing a package has three rules, all forced by how Ovyth resolves names:
+
+- **prefix every public name** (`ai_`, `rag_`). Top-level names from every
+  module and the entry file are flattened into one program, so the prefix
+  *is* the namespace and an unprefixed export collides with the next
+  package's.
+- **hold no state in the module.** A top-level `let` is invisible to
+  functions on the native backend, and two packages sharing a global is a
+  collision — the caller owns the data and passes it in.
+- **take data, return data**, so anything a module hands back can be
+  printed or serialized.
+
+`registry/README.md` documents all of it, plus the sharp edges that cost
+time to find: comments are `//` (not `#`), helpers must be defined before
+their callers, `^` is XOR rather than power (so `sqrt`/`pow`, never
+`x ^ 0.5`), and a function value works as a literal argument but a named
+function reference does not.
+
+### Three backend bugs, found by writing the packages — 11 Oct 2026
+
+Building the modules surfaced three real divergences between the
+interpreter and the native backend. All three are fixed, each with a test
+in `tests/interp/` that fails on at least one backend if it regresses.
+
+**`time.now()` reported the monotonic clock.** Two dispatch sites in the
+codegen mapped it to the monotonic helper, so the native backend returned
+time-since-boot where the interpreter returned unix seconds. Added
+`ov_h_now_realtime()` to the runtime and pointed both sites at it.
+(`021_time_now.ov`)
+
+**`type()` printed `?` for any specialized array.** The native backend
+emits an `Int64Array` for `[1, 2, 3]` where the interpreter builds a plain
+`List`, and `ov_tag_name` had no case for the array tags. Both backends now
+call them `List`. (`022_type_of_literals.ov`)
+
+**A local's type leaked between functions.** sema's proven-type map was
+keyed by name alone, so one function's int counter made another
+function's float of the same name an `int64_t` — and the generated code
+then read `.i` off a float-holding union, producing a raw bit pattern
+(`0x3FF0000000000000`) where a number was expected. The same leak turned a
+one-character string into an int. The map is now keyed by the enclosing
+function, and codegen's seeding ignores locals so the leak cannot come
+back. (`023_locals_same_name.ov`)
+
+Two more fixes the packages needed: a directory next to the importing file
+no longer shadows an installed package (it used to be accepted as a
+resolved import, and the program then compiled with none of the module's
+definitions and no error to explain why), and `install.sh`/`make examples`
+install the packages they need.
+
 ### `uninstall.sh`, and a sprite that says goodnight — 11 Oct 2026
 
 `./uninstall.sh` removes what `install.sh` put there and nothing else —

@@ -1,0 +1,13 @@
+// time.now() is unix seconds — a wall-clock reading. time.clock() is a
+// monotonic reading, so the two live on different scales and the native
+// backend must agree with the interpreter about which is which. It used to
+// report time-since-boot for time.now(), which is the monotonic clock's job.
+t = time.now()
+c = time.clock()
+
+if t < 1000000000 { throw "time.now() looks like a monotonic clock, not unix seconds" }
+if t > 3000000000 { throw "time.now() is larger than any plausible unix timestamp" }
+if c < 0 { throw "time.clock() should never be negative" }
+if c >= t { throw "a monotonic clock cannot have overtaken the wall clock" }
+
+print("time.now is a unix timestamp and time.clock is monotonic: ok")

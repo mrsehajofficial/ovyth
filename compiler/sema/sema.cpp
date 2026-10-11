@@ -62,7 +62,7 @@ void Sema::define(const std::string& name, Ty t, bool proven_int, bool proven_fl
     info.ty = t;
     info.is_proven_int = proven_int;
     info.is_proven_float = proven_float;
-    proven_types[name] = info;
+    proven_types[proven_key(name)] = info;
   }
 }
 
@@ -209,6 +209,8 @@ Ty Sema::check_stmt(Stmt* s) {
 
       push_scope(true);
       Ty saved_ret = current_return_;
+      std::string saved_fn = cur_fn_;
+      cur_fn_ = s->name;
       current_return_ = sig.ret;
       for (size_t i = 0; i < s->params.size(); i++) {
         Ty t = s->params[i].type ? type_from(s->params[i].type) : Ty::Unknown;
@@ -225,6 +227,7 @@ Ty Sema::check_stmt(Stmt* s) {
                           ty_name(sig.ret) + " but has no return statement");
       }
       current_return_ = saved_ret;
+      cur_fn_ = saved_fn;
       pop_scope();
       return Ty::Nil;
     }

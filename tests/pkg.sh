@@ -142,6 +142,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# a directory in the project must not shadow an installed package
+#
+# Regression: local import resolution accepted any readable path, so an
+# unrelated `greet/` directory next to the importer swallowed `import "greet"`
+#  and the program compiled with none of the module's definitions -- no error,
+#  just missing functions.
+mkdir -p "$BIN/work/greet"
+printf 'not a module\n' > "$BIN/work/greet/keep.txt"
+cat > "$BIN/work/shadow.ov" <<'EOF'
+import "greet"
+print(greet("shadow"))
+EOF
+out="$("$OVC" run "$BIN/work/shadow.ov" 2>&1)"
+grep -q "hello, shadow" <<<"$out" && ok "a directory does not shadow a package" \
+  || bad "a directory does not shadow a package" "$out"
+
+# A real module file still wins, exactly as it should.
+cat > "$BIN/work/greet.ov" <<'EOF'
+function greet(who) {
+    return "LOCAL " + who
+}
+EOF
+out="$("$OVC" run "$BIN/work/shadow.ov" 2>&1)"
+grep -q "LOCAL shadow" <<<"$out" && ok "a local module still shadows a package" \
+  || bad "a local module still shadows a package" "$out"
+rm -f "$BIN/work/greet.ov"
+
+# ---------------------------------------------------------------------------
 # a local module shadows the installed package
 # ---------------------------------------------------------------------------
 cat > "$BIN/work/greet.ov" <<'EOF'

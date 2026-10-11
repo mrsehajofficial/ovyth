@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ast/ast.h"
@@ -105,6 +106,17 @@ struct ModuleLoader {
     return false;
   }
 
+  // A local import is only resolved by a *file*. access(R_OK) succeeds on a
+  // directory too, and a directory that happens to share a module's name
+  // would otherwise shadow an installed package — and then read_file() would
+  // hand back an empty string, so the program would compile with none of the
+  // module's definitions and no error to explain why.
+  static bool is_module_file(const std::string& p) {
+    struct stat st;
+    return ::access(p.c_str(), R_OK) == 0 && ::stat(p.c_str(), &st) == 0 &&
+           S_ISREG(st.st_mode);
+  }
+
   // Resolve an import path against the importing file's directory.
   // Local files win; only when nothing is found there does an installed
   // package get to answer, so a project can always shadow a global package
@@ -119,13 +131,13 @@ struct ModuleLoader {
       p = (slash == std::string::npos ? std::string()
                                       : from_file.substr(0, slash + 1)) + p;
     }
-    if (::access(p.c_str(), R_OK) != 0) {
+    if (!is_module_file(p)) {
       std::string with_ext = p;
       if (with_ext.size() < 4 || with_ext.substr(with_ext.size() - 4) != ".ov")
         with_ext += ".ov";
-      if (::access(with_ext.c_str(), R_OK) == 0) p = with_ext;
+      if (is_module_file(with_ext)) p = with_ext;
     }
-    if (::access(p.c_str(), R_OK) != 0) {
+    if (!is_module_file(p)) {
       std::string pkg = ov::resolve_package_import(path);
       if (!pkg.empty()) return pkg;
     }

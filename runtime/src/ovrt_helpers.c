@@ -479,10 +479,22 @@ OvValue ov_h_call(OvValue callee, OvValue args[], int n, OvValue** slot, int* ar
 }
 
 /* ------------------------------------------------------------------ misc */
+
+/* Seconds from a monotonic clock — the right answer for "how long did this
+ * take", and the only one that is meaningful for benchmarking. */
 double ov_h_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* Seconds from the wall clock — "what time is it". codegen used to map
+ * time.now() onto the monotonic helper, which made the native backend
+ * report time-since-boot where the interpreter reported a unix timestamp. */
+int64_t ov_h_now_realtime(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return (int64_t)ts.tv_sec;
 }
 
 static double as_double(OvValue v, int* threw) {

@@ -50,7 +50,20 @@ class Sema {
   std::unordered_map<std::string, Ty> globals;
   
   // Proven type info for codegen optimization.
+  //
+  // Keyed by proven_key(): a global is program-wide and keyed by its bare
+  // name, a local by the function that owns it. The same name can be an int
+  // counter in one function and a string in another, and a flat per-name map
+  // silently applies whichever was analysed last to both — which is how a
+  // float local came to be emitted as int64_t.
   std::unordered_map<std::string, TyInfo> proven_types;
+
+  // The function whose body is being checked; empty at top level.
+  std::string cur_fn_;
+
+  std::string proven_key(const std::string& name) const {
+    return cur_fn_.empty() ? name : cur_fn_ + "/" + name;
+  }
 
  private:
   void error(const ast::Pos& pos, const std::string& msg);

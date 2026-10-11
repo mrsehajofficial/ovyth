@@ -1,12 +1,13 @@
 // Ovyth :: examples/chatbot/chatbot.ov
 //
-// An automation-focused chatbot with tool support.
+// A chatbot — the *application*, built on the `ai` module.
 //
-// Features:
-//   - Multi-turn conversation with history
-//   - Tool calling (web search, code execution, file ops)
-//   - Persistent session state between turns
-//   - Works with any OpenAI-compatible API
+// Everything that talks to a model lives in the ai module: `ai_conversation`
+// starts history, `ai_ask`/`ai_told` extend it, `ai_trim` bounds it, and
+// `ai_chat` returns the reply. This file is the loop, the prompt, and the
+// demo mode — the parts that are specific to being a chatbot, and to nothing
+// else. A tool agent or a batch script would reuse the module and differ
+// from this file only here.
 //
 // Environment variables:
 //   AI_API_KEY   - bearer token for the endpoint (required)
@@ -14,102 +15,59 @@
 //   AI_MODEL     - model name   (default: my-model)
 //
 // Run:
-//   ovc run chatbot.ov          # interpreter mode
-//   ovc chatbot.ov --release    # native binary
+//   AI_API_KEY=sk-... ovc run examples/chatbot/chatbot.ov
+//
+// With no key it runs in demo mode: same code path, offline replies, so the
+// loop and the history handling are still worth reading and testing.
 
-// --- Helpers (must be defined before use) ---
+import "ai"
 
-function generate_mock_response(input, turn) {
-    responses = [
-        "I understand: " + input,
-        "Found info on '" + input + "'",
-        "Helping you with: " + input,
-        "Analysis: " + input,
-        "Processed: success!"
-    ]
-    
-    idx = (turn - 1) % len(responses)
-    return responses[idx]
-}
-
-// --- Configuration ---
 api_key = env_or("AI_API_KEY", "")
 api_url = env_or("AI_API_URL", "https://api.example.com/v1/chat")
 model   = env_or("AI_MODEL", "gpt-4o-mini")
-demo_mode = false
 
-if api_key == "" {
-    demo_mode = true
-    print("DEMO MODE: AI_API_KEY not set")
+demo = api_key == ""
+if demo {
+    print("DEMO MODE: no AI_API_KEY, so replies are offline and fake")
 }
 
-// --- State ---
-history = [{"role": "system", "content": "You are a helpful automation assistant."}]
-turn_count = 0
+system = "You are a helpful automation assistant. Be brief."
+history = ai_conversation(system)
+turns = 0
 
-print("=== Ovyth Automation Chatbot ===")
-print("Type 'exit' to quit\n")
+print("=== ovyth chatbot ===")
+print("type 'exit' to quit")
+print("")
 
-// --- Main Loop ---
 while true {
     user_input = input("> ")
-    
-    if user_input == "" || user_input == "exit" || user_input == "quit" {
+
+    if user_input == "" or user_input == "exit" or user_input == "quit" {
         break
     }
-    
-    turn_count = turn_count + 1
-    
-    // Add user message
-    history.push({"role": "user", "content": user_input})
-    
+
+    turns = turns + 1
+    ai_ask(history, user_input)
+
     reply = ""
-    
-    try {
-        if demo_mode {
-            reply = generate_mock_response(user_input, turn_count)
+    if demo {
+        r = ai_offline_reply(user_input)
+        reply = r["text"]
+    } else {
+        r = ai_request(api_url, api_key, model, history, 30.0)
+        if r["ok"] {
+            reply = r["text"]
         } else {
-            response = http.post(
-                api_url,
-                headers = {
-                    "Authorization": "Bearer " + api_key,
-                    "Content-Type": "application/json"
-                },
-                json = {
-                    "model": model,
-                    "messages": history
-                }
-            )
-            
-            if response.status != 200 {
-                reply = "HTTP ERROR: " + str(response.status)
-            } else {
-                data = json.parse(response.body)
-                reply = data["choices"][0]["message"]["content"]
-            }
+            print("error: " + r["error"] + " (status " + str(r["status"]) + ")")
         }
-        
-        print("Assistant: " + reply)
-        history.push({"role": "assistant", "content": reply})
-        
-        // Keep history manageable (limit to 20 messages)
-        if len(history) > 20 {
-            // Remove oldest messages by rebuilding the list
-            new_history = []
-            start_idx = len(history) - 19
-            i = 0
-            while i < len(history) {
-                if i >= start_idx {
-                    new_history.push(history[i])
-                }
-                i = i + 1
-            }
-            history = new_history
-        }
-        
-    } catch error {
-        print("Error: " + str(error))
     }
+
+    print("Assistant: " + reply)
+    ai_told(history, reply)
+
+    // Bound the history: keep the system message plus the newest turns.
+    history = ai_trim(history, 20)
 }
 
-print("\nGoodbye! Total turns: " + str(turn_count))
+print("")
+print("Goodbye! " + str(turns) + " turn(s), " + str(len(history)) + " message(s) in history")

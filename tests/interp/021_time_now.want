@@ -1,0 +1,1 @@
+time.now is a unix timestamp and time.clock is monotonic: ok

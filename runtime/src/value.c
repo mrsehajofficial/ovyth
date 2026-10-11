@@ -228,6 +228,13 @@ const char* ov_tag_name(OvTag t) {
     case OV_LIST:   return "List";
     case OV_MAP:    return "Map";
     case OV_FUNC:   return "Function";
+    /* The specialized arrays are a storage detail, not a different language
+     * type: the native backend emits an Int64Array for `[1, 2, 3]` where the
+     * interpreter builds a plain List, so type() has to call both the same
+     * name or the two backends disagree about a program's own values. */
+    case OV_I64A:
+    case OV_F64A:
+    case OV_STRA:   return "List";
   }
   return "?";
 }

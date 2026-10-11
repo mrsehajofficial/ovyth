@@ -1,0 +1,43 @@
+// A local's type must not leak between functions.
+//
+// sema's proven-type map used to be keyed by name alone, so one function's
+// int counter made another function's float of the same name an int64_t —
+// which is how a float local came out as a raw bit pattern on the native
+// backend. The same leak turned a character string into an int.
+function float_v() {
+    v = 0.0
+    v = v + 1.0
+    return v
+}
+
+function int_v() {
+    v = 0
+    v = v + 1
+    return v
+}
+
+// `c` is an int counter here, and a one-character string in the next function.
+function counter() {
+    c = 0
+    c = c + 1
+    return c
+}
+
+function vowels(text) {
+    i = 0
+    n = 0
+    while i < len(text) {
+        c = text[i]
+        if c == "a" or c == "e" or c == "i" or c == "o" or c == "u" {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+print("float:", float_v())
+print("int:", int_v())
+print("counter:", counter())
+print("vowels in 'hello':", vowels("hello"))
+print("vowels in 'ovyth':", vowels("ovyth"))

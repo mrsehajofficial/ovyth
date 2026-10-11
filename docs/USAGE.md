@@ -547,21 +547,48 @@ works from any directory on the machine — not just the project that happens
 to hold the files. Same idea as Python's `site-packages`.
 
 ```bash
-ovc pkg search greeting          # what is in the registry?
-ovc pkg info greet               # versions, source, license
-ovc pkg install greet            # download + install globally
-import "greet"                   # in any .ov file, anywhere
+ovc pkg search ai                # what is in the registry?
+ovc pkg info rag                 # versions, source, license
+ovc pkg install ai               # download + install globally
+import "ai"                      # in any .ov file, anywhere
 
 ovc pkg list                     # what is installed
-ovc pkg update greet             # upgrade to the newest version
+ovc pkg update rag               # upgrade to the newest version
 ovc pkg remove greet             # uninstall
 ```
+
+Three packages are published: **`greet`** (greeting helpers, the canonical
+first one), **`ai`** (talk to an OpenAI-compatible endpoint, including
+conversation shaping) and **`rag`** (chunk, store, retrieve, prompt). They
+are modules, not applications — nothing runs at import time and each takes
+and returns plain data, so they compose into an agent or a five-line script.
 
 On a terminal, `install` shows each step as it happens and ends with a
 `try it` panel; `list` and `search` have a header rule; `info` comes in a
 box. All of it is decoration for humans only: **piped output is byte-for-byte
 what it was**, so scripts, CI and golden-file tests are unaffected, and
 `NO_COLOR=1` keeps the structure while dropping the colour.
+
+### Writing a package
+
+A package is a directory of `.ov` files with one entry module named after it
+(or `main.ov`); submodules import under the package name. Three rules matter
+more than anything else, because of how Ovyth resolves names:
+
+1. **Prefix every public name** (`ai_`, `rag_`). Ovyth flattens all top-level
+   names from every module and the entry file into one program, so the prefix
+   *is* the namespace. A package exporting `search()` collides with the next
+   package that does.
+2. **Hold no state in the module.** A top-level `let` is invisible to
+   functions on the native backend, and two packages sharing a global name is
+   a collision. The caller owns the data and passes it in.
+3. **Take data, return data** — strings, ints, floats, lists and maps — so
+   anything the module hands back can be printed or `json.stringify`'d.
+
+Sharp edges, learned the hard way: comments are `//`, not `#`; a helper must
+be defined before the function that calls it; `^` is XOR rather than power
+(use `sqrt`/`pow`); and a function value works as a *literal* argument but a
+named function reference does not. `registry/README.md` has the full guide.
 
 ### The store
 

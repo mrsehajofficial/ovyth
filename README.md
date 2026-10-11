@@ -131,13 +131,19 @@ The full tour — lists, comprehensions, slices, tuples, the stdlib — is in [d
 works from any directory on the machine — Python's `site-packages`, for Ovyth:
 
 ```bash
-ovc pkg search greet        # what is in the registry?
-ovc pkg install greet       # download + install globally
-ovc pkg list                # what is installed
+ovc pkg search ai          # what is in the registry?
+ovc pkg install ai         # download + install globally
+ovc pkg list               # what is installed
 
 # then, in any .ov file, anywhere:
-#   import "greet"
+#   import "ai"
 ```
+
+Three are published. **`greet`** (the canonical first one), **`ai`** (talk to an
+OpenAI-compatible endpoint, including conversation shaping) and **`rag`**
+(chunk, store, retrieve, prompt). All three are modules, not applications:
+nothing runs at import time, each takes and returns plain data, and the
+chatbot and rag examples are built *on* them rather than duplicating them.
 
 Packages live in `$OVYTH_HOME/packages` (`~/.ovyth/packages` by default, so
 `OVYTH_HOME=/tmp/ci` isolates a build). A file next to your own `.ov` always
@@ -147,7 +153,9 @@ modules — there is nothing to build per package.
 The default index is this repository's `registry/registry.json`, served over
 GitHub's raw CDN: adding a package to that file and merging is publishing, and
 no package code lives here — entries point at the author's own repository.
-The full guide and the index format are in
+Writing one has three rules: prefix every public name (`ai_`, `rag_`) because
+top-level names are flattened into one program, hold no state in the module,
+and take data and return data. The full guide and the index format are in
 [docs/USAGE.md](docs/USAGE.md#11-packages) and [registry/](registry/README.md).
 
 ## Examples

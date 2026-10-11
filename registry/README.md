@@ -32,7 +32,7 @@ ovc pkg install mypkg
 {
   "packages": {
     "greet": {
-      "description": "Greeting helpers for scripts and CLIs",
+      "description": "greeting helpers — the canonical first package",
       "license": "MIT",
       "homepage": "https://github.com/you/ovyth-greet",
       "versions": {
@@ -77,22 +77,53 @@ the package, or `main.ov`:
 mytools/
   mytools.ov      <- import "mytools"
   extra.ov        <- import "mytools/extra"
+  README.md       <- what it is for, and how to use it
 ```
 
-Installing checks for that entry and refuses the package without it.
-Top-level names must be unique across the whole program, installed packages
-included — a collision is reported with both file names, same as for a local
-`import`.
+## Writing a module: the three rules
 
-## Using a different index
+Modules are the part of the language you will get wrong if you write them
+like Python. Three rules, all of them forced by how Ovyth works:
 
-The default is a starting point, not a restriction. `--registry=<url>` and
-`OVYTH_REGISTRY` point at any index, a `file://` URL reads one off disk,
-and a failed fetch falls back to whatever is cached locally — so an offline
-machine installs from the last index it saw.
+**1. Prefix every public name.** Ovyth flattens *all* top-level names from
+every module and the entry file into one program. A package that exports
+`search()` collides with the next package that does, and the compiler will
+tell you both file names and stop. So the convention is a prefix:
 
-```bash
-ovc pkg install greet --registry=https://example.com/my-index.json
-export OVYTH_REGISTRY=https://example.com/my-index.json
-ovc pkg install greet
+```ov
+// rag.ov — every public name starts rag_
+function rag_chunk(text, size, overlap) { ... }
+function rag_topk(store, query, k) { ... }
 ```
+
+**2. Hold no state in the module.** Top-level `let` is a local of `ov_main`
+and functions cannot see it on the native backend, and two packages sharing
+a global name is a collision. So the caller owns the data and passes it in:
+
+```ov
+// the caller's store, serialisable, theirs to keep or discard
+store = rag_build(docs, 8, 2)
+hits = rag_topk(store, query, 2)
+```
+
+**3. Take data and return data.** Strings, ints, floats, lists and maps —
+never a class, never a module-level singleton. Anything the module returns
+you can `print`, `json.stringify` or hand to another package.
+
+Two more that save time:
+
+- **Comments are `//` and `/* */`.** `#` is not a comment character; a file
+  that starts with one fails to parse.
+- **Define helpers before they are used.** A name resolves at the call site,
+  so a callee has to be written above its caller in the same file.
+- **`^` is XOR, not power.** Use `sqrt(x)` and `pow(x, y)`; `2.0 ^ 0.5` is
+  `2`, and a vector "normalised" with `^ 0.5` is not normalised at all.
+- **A function value passed as a literal works; a named function reference
+  does not.** Pass `function(x) {...}`, not the name of a `function` you
+  declared.
+
+## Publishing your own
+
+The `repo` field points at a public git repository whose root holds the
+entry module, tagged with the version (`v1.0.0` or `1.0.0`, both work). Add
+the JSON entry here and it is installed.

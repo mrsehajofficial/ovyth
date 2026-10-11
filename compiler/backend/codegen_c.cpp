@@ -227,6 +227,10 @@ class Gen {
   std::unordered_set<std::string> proven_floats_;
 
   // Check if a Ovyth variable name is proven int/float from sema in any scope
+  //
+  // The sema fallback is keyed by the function being emitted as well as the
+  // name, so one function's int counter cannot make another function's string
+  // of the same name an int64_t.
   bool is_proven_int_any_scope(const std::string& name) const {
     for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
       auto it = scopes_[i].find(name);
@@ -235,7 +239,7 @@ class Gen {
       }
     }
     // Not in current codegen scopes, check sema
-    auto it = sema_.proven_types.find(name);
+    auto it = sema_.proven_types.find(sema_fn_key(name));
     return it != sema_.proven_types.end() && it->second.is_proven_int;
   }
   bool is_proven_float_any_scope(const std::string& name) const {
@@ -245,13 +249,53 @@ class Gen {
         return proven_floats_.count(it->second) > 0;
       }
     }
-    auto it = sema_.proven_types.find(name);
+    auto it = sema_.proven_types.find(sema_fn_key(name));
     return it != sema_.proven_types.end() && it->second.is_proven_float;
   }
 
-  // Initialize proven types from sema at codegen start
+  // The key sema recorded this name under: "fn/name" inside a function, the
+  // bare name for a global. cur_fn_ is the function currently being emitted,
+  // matching the one sema was checking.
+  std::string sema_fn_key(const std::string& name) const {
+    return cur_fn_.empty() ? name : cur_fn_ + "/" + name;
+  }
+
+  // Settle which unboxed form a declaration may use.
+  //
+  // sema's proven-type map is keyed by Ovyth name alone, with no function to
+  // disambiguate, so the same name can be proven int in one function and
+  // float in another. When a declaration's own initializer disagrees with the
+  // claim, the initializer wins -- declaring `v = 0.0` as int64_t and reading
+  // `.i` off the float union is how a float local became a raw bit pattern.
+  //
+  // The int test has to come first: is_float_expr() is deliberately
+  // permissive (an int literal is a legal float operand), so testing it first
+  // would turn every `i = 0` into a double.
+  void resolve_unbox(const Expr* init, bool& pi, bool& pf) {
+    if (pi && pf) {  // sema claims both: no unboxed form is safe
+      pi = pf = false;
+      return;
+    }
+    if (!init) return;
+    if (pf && is_int_expr(init)) {
+      pf = false;
+      pi = true;
+      return;
+    }
+    if (pi && is_float_expr(init) && !is_int_expr(init)) {
+      pi = false;
+      pf = true;
+    }
+  }
+
+  // Seed the proven sets from sema.
+  //
+  // Only globals: a local's entry is keyed by its function, and seeding it here
+  // under a bare C name would re-create the cross-function leak this keying
+  // exists to prevent. Locals are resolved while their function is emitted.
   void init_proven_types() {
     for (const auto& kv : sema_.proven_types) {
+      if (kv.first.find('/') != std::string::npos) continue;  // a function local
       const std::string& name = kv.first;
       const TyInfo& info = kv.second;
       // Use the C variable name that will be generated for this Ovyth name
@@ -1710,7 +1754,7 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
   }
   if (ns == "time") {
     if (name == "clock") return "ov_float(ov_h_now())";
-    if (name == "now")   return "ov_int((int64_t)ov_h_now())";
+    if (name == "now")   return "ov_int(ov_h_now_realtime())";
   }
   if (ns == "file") {
     // Persistence builtins. Each takes a path string; ov_file_read/write are
@@ -1946,7 +1990,7 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
     return "({ OvValue _n = " + ARG(0) + ", _h = " + ARG(1) + "; ov_bool(ov_tagof(_h) == OV_STRING && ov_tagof(_n) == OV_STRING ? ov_str_contains(_h.str, _n.str) : ov_in(_n, _h)); })";
   if (q == "join") return "ov_h_join(" + ARG(0) + ", " + ARG(1) + ")";
   if (q == "clock" || q == "time.clock") return "ov_float(ov_h_now())";
-  if (q == "now" || q == "time.now") return "ov_int((int64_t)ov_h_now())";
+  if (q == "now" || q == "time.now") return "ov_int(ov_h_now_realtime())";
   if (q == "gc") return "ov_h_gc(" + ARG(0) + ")";
 
   fail("unknown function '" + q + "'");
@@ -2075,6 +2119,7 @@ case StmtKind::VarDecl: {
         const std::string& name = s->names[i];
         bool pi = is_proven_int_any_scope(name);
         bool pf = is_proven_float_any_scope(name);
+        resolve_unbox(i < s->values.size() ? s->values[i] : nullptr, pi, pf);
         std::string rhs;
         if (i < s->values.size() && s->values[i]) {
           if (pi && is_int_expr(s->values[i])) {
@@ -2115,6 +2160,7 @@ case StmtKind::VarDecl: {
           const std::string& name = s->names[i];
           bool pi = is_proven_int_any_scope(name);
           bool pf = is_proven_float_any_scope(name);
+          if (pi && pf) { pi = pf = false; }
           std::string elem_rhs;
           if (pi) {
             elem_rhs = "((ov_tagof(" + list_expr + ") == OV_LIST && " + std::to_string(i) +

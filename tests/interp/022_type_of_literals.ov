@@ -1,0 +1,19 @@
+// type() has to name the same thing on both backends. The native backend
+// emits a specialized Int64Array for [1, 2, 3] where the interpreter builds
+// a plain List, and both must print "List" -- an unhandled array tag printed
+// "?" instead, so the two backends disagreed about a program's own values.
+ints   = [1, 2, 3]
+floats = [1.5, 2.5]
+strs   = ["a", "b"]
+mixed  = [1, "a", 2.5, true]
+
+print(type(ints))
+print(type(floats))
+print(type(strs))
+print(type(mixed))
+print(type({"a": 1}))
+print(type(1))
+print(type(1.5))
+print(type("s"))
+print(type(true))
+print(type(null))

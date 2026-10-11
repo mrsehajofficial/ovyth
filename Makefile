@@ -76,10 +76,21 @@ $(OVC): $(CC_OBJ) $(RT_LIB)
 # key and a network, so it is filtered out rather than breaking `make examples`
 # for someone who just cloned the repo -- `make chatbot` runs it against the
 # bundled mock server instead.
+#
+# Two examples are applications on the published packages (rag_pipeline on
+# `rag`, chatbot on `ai`), so the packages are installed first. That is the
+# point: an example shows the module being used, not re-implemented.
 EXAMPLES := $(filter-out examples/chatbot/chatbot.ov, \
               $(wildcard examples/*/*.ov examples/*.ov))
 
-examples: $(OVC)
+modules:
+	@set -e; for p in ai rag; do \
+	  $(OVC) pkg install $$p >/dev/null 2>&1 || \
+	    echo "  ---- note: could not install '$$p' (network?);" \
+	         "examples that use it will fail"; \
+	done
+
+examples: $(OVC) modules
 	@set -e; for f in $(EXAMPLES); do \
 	  echo "  ---- running $$f"; \
 	  $(OVC) run "$$f" < /dev/null; \

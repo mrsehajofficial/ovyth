@@ -74,7 +74,8 @@ OvValue ov_h_make_func_value(const char* name, int arity, OvFnPtr fn);
 OvValue ov_h_call(OvValue callee, OvValue args[], int n, OvValue** slot, int* argc);
 
 /* clock_gettime(CLOCK_MONOTONIC) in seconds. */
-double ov_h_now(void);
+double ov_h_now(void);          /* monotonic seconds — for measuring        */
+int64_t ov_h_now_realtime(void); /* unix seconds — for timestamps           */
 
 /* Numeric builtins that need a coerced numeric value. Each throws (sets the
  * pending error) when the argument is not a number. */
