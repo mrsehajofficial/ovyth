@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "lexer/diagnostic.h"
+#include "tools/ui.h"
 
 extern "C" {
 #include "ovrt.h"
@@ -733,6 +734,15 @@ bool looks_like_path(const std::string& s) {
          s.rfind("./", 0) == 0 || s.rfind("../", 0) == 0 || s.rfind("~/", 0) == 0;
 }
 
+// Long absolute paths are the norm in this UI (~/.ovyth/packages/x), and they
+// do not fit a step line. Collapse the home prefix so the interesting part —
+// the package name — survives the clip.
+std::string shorten_path(const std::string& p) {
+  const std::string home = home_dir();
+  if (!home.empty() && p.rfind(home, 0) == 0) return "~" + p.substr(home.size());
+  return p;
+}
+
 std::string expand_user(const std::string& s) {
   if (s.rfind("~/", 0) != 0) return s;
   const std::string home = home_dir();
@@ -1009,6 +1019,20 @@ int install_usage(bool ok) {
   return ok ? 0 : 2;
 }
 
+// The panel after a successful install: what the user actually wanted to know.
+// Piped, it is the single tip line this command has always printed.
+void print_try_it(const std::string& name) {
+  if (!ov::ui_tty()) {
+    std::printf("\ntip: import \"%s\" now works from any directory\n",
+                name.c_str());
+    return;
+  }
+  std::printf("\n");
+  ov::ui_panel_begin("try it");
+  ov::ui_panel_line("import \"" + name + "\"", "in any .ov file");
+  ov::ui_panel_end();
+}
+
 int cmd_install(const std::vector<std::string>& args, bool refresh) {
   bool force = false;
   std::string spec;
@@ -1041,11 +1065,16 @@ int cmd_install(const std::vector<std::string>& args, bool refresh) {
       ov::cli_error("cannot name a package after '" + spec + "'");
       return 1;
     }
+    ov::ui_step("copying from " + shorten_path(src));
     ok = install_from_path(name, src, "0.0.0", force, err);
     if (ok) {
-      ov::cli_ok("installed " + name + " from " + src);
-      std::printf("\ntip: import \"%s\" now works from any directory\n",
-                  name.c_str());
+      ov::ui_step_done();
+      ov::ui_step("installing into " + shorten_path(install_dest(name)));
+      ov::ui_step_done();
+      ov::ui_success("installed " + name + " from " + shorten_path(src));
+      print_try_it(name);
+    } else {
+      ov::ui_step_fail();
     }
   } else {
     std::string name, version;
@@ -1057,10 +1086,13 @@ int cmd_install(const std::vector<std::string>& args, bool refresh) {
 
     std::vector<IndexEntry> index;
     bool from_cache = false;
+    ov::ui_step("reading the registry index");
     if (!load_index(refresh, index, err, &from_cache)) {
+      ov::ui_step_fail();
       ov::cli_error(err);
       return 1;
     }
+    ov::ui_step_done(from_cache ? "ok (cached)" : "ok");
 
     const IndexEntry* entry = index_find(index, name);
     if (!entry) {
@@ -1105,20 +1137,33 @@ int cmd_install(const std::vector<std::string>& args, bool refresh) {
     }
     if (ver.empty()) ver = "0.0.0";
 
-    if (!src.path.empty())
+    ov::ui_step("resolving " + name);
+    ov::ui_step_done(ver);
+
+    if (!src.path.empty()) {
+      ov::ui_step("copying from " + shorten_path(expand_user(src.path)));
       ok = install_from_path(name, expand_user(src.path), ver, force, err);
-    else if (!src.repo.empty())
+      if (ok) ov::ui_step_done();
+    } else if (!src.repo.empty()) {
+      ov::ui_step("cloning " + shorten_path(src.repo));
       ok = install_from_repo(name, src.repo, ver, force, err);
-    else if (!src.url.empty())
+      if (ok) ov::ui_step_done();
+    } else if (!src.url.empty()) {
+      ov::ui_step("downloading " + shorten_path(src.url));
       ok = install_from_url(name, src.url, ver, force, err);
-    else {
+      if (ok) ov::ui_step_done();
+    } else {
       err = "package '" + name + "' " + ver + " lists no source";
-      ok = false;
     }
+
     if (ok) {
-      ov::cli_ok("installed " + name + " " + ver + (from_cache ? " (index cache)" : ""));
-      std::printf("\ntip: import \"%s\" now works from any directory\n",
-                  name.c_str());
+      ov::ui_step("installing into " + shorten_path(install_dest(name)));
+      ov::ui_step_done();
+      ov::ui_success("installed " + name + " " + ver +
+                     (from_cache ? "  (index cached)" : ""));
+      print_try_it(name);
+    } else {
+      ov::ui_step_fail();
     }
   }
 
@@ -1148,21 +1193,27 @@ int cmd_list() {
     }
   }
   if (metas.empty()) {
-    ov::cli_info("no packages installed");
+    ov::ui_info_line("no packages installed yet");
     std::printf("\ninstall one with:  ovc pkg install <name>\n");
     return 0;
   }
 
-  std::printf("%-24s %-12s %s\n", "NAME", "VERSION", "SOURCE");
+  // Same two column widths the raw printf used, so piped output is unchanged.
+  std::vector<ov::UiColumn> cols = {{"NAME", 24}, {"VERSION", 12}, {"SOURCE", -1}};
+  std::vector<std::vector<std::string>> rows;
   std::sort(metas.begin(), metas.end(),
             [](const InstalledMeta& a, const InstalledMeta& b) {
               return a.name < b.name;
             });
-  for (const auto& m : metas)
-    std::printf("%-24s %-12s %s\n", m.name.c_str(), m.version.c_str(),
-                m.source.c_str());
-  std::printf("\n%d package(s) in %s\n", (int)metas.size(),
-              packages_root().c_str());
+  for (const auto& m : metas) rows.push_back({m.name, m.version, m.source});
+  ov::ui_table(cols, rows);
+
+  if (ov::ui_tty())
+    std::printf("\n   %d package%s · %s\n", (int)metas.size(),
+                metas.size() == 1 ? "" : "s", packages_root().c_str());
+  else
+    std::printf("\n%d package(s) in %s\n", (int)metas.size(),
+                packages_root().c_str());
   return 0;
 }
 
@@ -1203,12 +1254,15 @@ int cmd_remove(const std::vector<std::string>& args) {
       rc = 1;
       continue;
     }
+    ov::ui_step("removing " + shorten_path(dir));
     if (!remove_tree(dir)) {
+      ov::ui_step_fail();
       ov::cli_error("cannot remove " + dir);
       rc = 1;
       continue;
     }
-    ov::cli_ok("removed " + name);
+    ov::ui_step_done();
+    ov::ui_success("removed " + name);
   }
   return rc;
 }
@@ -1244,17 +1298,29 @@ int cmd_search(const std::vector<std::string>& args, bool refresh) {
   }
 
   std::string needle = lowercase(term);
+  std::vector<ov::UiColumn> cols = {{"NAME", 24}, {"VERSION", 10}, {"DESCRIPTION", -1}};
+  std::vector<std::vector<std::string>> rows;
   int hits = 0;
   for (const auto& e : index) {
     std::string hay = lowercase(e.name + " " + e.description);
     if (needle.empty() || hay.find(needle) != std::string::npos) {
       std::string ver = e.versions.empty() ? "-" : e.versions.back().first;
-      std::printf("%-24s %-10s %s\n", e.name.c_str(), ver.c_str(),
-                  e.description.empty() ? "(no description)" : e.description.c_str());
+      rows.push_back({e.name, ver,
+                      e.description.empty() ? "(no description)" : e.description});
       hits++;
     }
   }
-  if (!hits) std::printf("nothing matches '%s'\n", term.c_str());
+  if (!hits) {
+    if (ov::ui_tty())
+      std::printf("\n   %s nothing matches '%s'\n", ov::ui_dim(ov::kNote).c_str(),
+                  term.c_str());
+    else
+      std::printf("nothing matches '%s'\n", term.c_str());
+    return 0;
+  }
+  ov::ui_table(cols, rows);
+  if (ov::ui_tty())
+    std::printf("\n   %d match%s\n", hits, hits == 1 ? "" : "es");
   return 0;
 }
 
@@ -1272,48 +1338,51 @@ int cmd_info(const std::vector<std::string>& args, bool refresh) {
   std::string err;
   bool have_index = load_index(refresh, index, err);
 
-  std::printf("package     %s\n", name.c_str());
+  if (ov::ui_tty()) ov::ui_panel_begin(name);
+  ov::ui_field("package", name);
 
   if (have_index) {
     const IndexEntry* e = index_find(index, name);
     if (e) {
       std::string ver = e->versions.empty() ? "-" : e->versions.back().first;
-      std::printf("version     %s (registry)\n", ver.c_str());
+      ov::ui_field("version", ver + " (registry)");
       if (!e->description.empty())
-        std::printf("description %s\n", e->description.c_str());
-      if (!e->license.empty()) std::printf("license     %s\n", e->license.c_str());
-      if (!e->homepage.empty()) std::printf("homepage    %s\n", e->homepage.c_str());
+        ov::ui_field("description", e->description);
+      if (!e->license.empty()) ov::ui_field("license", e->license);
+      if (!e->homepage.empty()) ov::ui_field("homepage", e->homepage);
       const SourceRef& s = e->versions.back().second;
-      if (!s.path.empty()) std::printf("source      %s\n", s.path.c_str());
-      else if (!s.repo.empty()) std::printf("source      %s (git)\n", s.repo.c_str());
-      else if (!s.url.empty()) std::printf("source      %s\n", s.url.c_str());
+      if (!s.path.empty()) ov::ui_field("source", s.path);
+      else if (!s.repo.empty()) ov::ui_field("source", s.repo + "  (git)");
+      else if (!s.url.empty()) ov::ui_field("source", s.url);
       if (e->versions.size() > 1) {
-        std::printf("versions    ");
+        std::string all;
         for (size_t i = 0; i < e->versions.size(); i++)
-          std::printf("%s%s", i ? " " : "", e->versions[i].first.c_str());
-        std::printf("\n");
+          all += (i ? " " : "") + e->versions[i].first;
+        ov::ui_field("versions", all);
       }
     } else {
-      std::printf("registry    not listed\n");
+      ov::ui_field("registry", "not listed");
     }
   } else {
-    std::printf("registry    unavailable (%s)\n", err.c_str());
+    ov::ui_field("registry", "unavailable (" + err + ")");
   }
 
   if (installed) {
     InstalledMeta m = read_meta(dest);
-    std::printf("installed   yes\n");
-    std::printf("location    %s\n", dest.c_str());
+    ov::ui_field("installed", "yes");
+    ov::ui_field("location", dest);
     if (m.valid) {
-      if (!m.version.empty()) std::printf("version     %s (installed)\n", m.version.c_str());
-      if (!m.installed_at.empty()) std::printf("installed   %s\n", m.installed_at.c_str());
-      if (!m.source.empty()) std::printf("from        %s\n", m.source.c_str());
+      if (!m.version.empty()) ov::ui_field("version", m.version + " (installed)");
+      if (!m.installed_at.empty())
+        ov::ui_field("installed", m.installed_at);
+      if (!m.source.empty()) ov::ui_field("from", m.source);
     }
     std::string entry = package_entry(dest, name);
-    if (!entry.empty()) std::printf("import      import \"%s\"\n", name.c_str());
+    if (!entry.empty()) ov::ui_field("import", "import \"" + name + "\"");
   } else {
-    std::printf("installed   no\n");
+    ov::ui_field("installed", "no");
   }
+  if (ov::ui_tty()) ov::ui_panel_end();
   if (!have_index && !installed) return 1;
   return 0;
 }
@@ -1336,15 +1405,17 @@ int cmd_update(const std::vector<std::string>& args, bool refresh) {
   std::vector<IndexEntry> index;
   std::string err;
   bool from_cache = false;
+  ov::ui_step("refreshing the registry index");
   if (!load_index(true, index, err, &from_cache)) {
+    ov::ui_step_fail();
     ov::cli_error(err);
     return 1;
   }
-  ov::cli_ok("registry index refreshed" +
-             std::string(from_cache ? " (from cache)" : ""));
+  ov::ui_step_done(from_cache ? "ok (cached)" : "ok");
+  ov::ui_success("registry index refreshed" +
+                 std::string(from_cache ? "  (from cache)" : ""));
 
   if (name.empty()) {
-    std::printf("\ninstalled packages:\n");
     return cmd_list();
   }
 
@@ -1362,6 +1433,10 @@ int cmd_update(const std::vector<std::string>& args, bool refresh) {
   const std::string& ver = e->versions.back().first;
   const SourceRef& src = e->versions.back().second;
 
+  ov::ui_step("resolving " + name);
+  ov::ui_step_done(ver);
+  ov::ui_step("installing into " + shorten_path(install_dest(name)));
+
   bool ok = false;
   if (!src.path.empty())
     ok = install_from_path(name, expand_user(src.path), ver, true, err);
@@ -1370,13 +1445,15 @@ int cmd_update(const std::vector<std::string>& args, bool refresh) {
   else if (!src.url.empty())
     ok = install_from_url(name, src.url, ver, true, err);
   if (!ok) {
+    ov::ui_step_fail();
     ov::cli_error("upgrade failed: " + err);
     return 1;
   }
+  ov::ui_step_done();
   if (had == ver)
-    ov::cli_ok(name + " " + ver + " is already the newest version");
+    ov::ui_success(name + " " + ver + " is already the newest version");
   else
-    ov::cli_ok("upgraded " + name + " " + had + " -> " + ver);
+    ov::ui_success("upgraded " + name + " " + had + " → " + ver);
   return 0;
 }
 

@@ -5,6 +5,50 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### Ovyth has a face — 11 Oct 2026
+
+The installer, `ovc version`, `ovc init` and every `ovc pkg` command now
+greet a human instead of printing a build log. A small sprite — sparkle
+eyes, a heart, `✦` as her mark — introduces the installer and `ovc
+version`; `ovc pkg install` shows a step-by-step progress list ending in
+a `try it` panel; `pkg list` and `pkg search` gained a header rule;
+`pkg info` gained a box.
+
+```
+$ ./install.sh
+   ✦
+       /\      /\          ✦ O v y t h ✦   0.1.4
+      /  \____/  \         a tiny compiled
+     |  *      *  |         language
+     |      w      |
+     |   '----'   |
+      \          /
+       '.______.'
+         |  |        ♥
+        (_)(_)
+
+   ⬡ building ovc and libovrt.a ......... done (4.2s)
+   ⬡ installing into ~/.local
+       • bin/ovc            the compiler
+       • lib/libovrt.a      linked into every compiled program
+       • include/ovrt.h     the runtime API, handed to clang
+   ♥ try it:  ovc init myapp && cd myapp && make run
+```
+
+**The rule that makes it safe:** decoration is TTY-only. When stdout is
+piped — packaging, CI, a golden-file test — every mark, colour and box
+is gone and the output is byte-for-byte what it was before, which is why
+`tests/pkg.sh` and `tests/interp.sh` are unaffected. `NO_COLOR` is
+honoured too: set it and the structure survives while the colour does
+not. All of it lives in one new header, `compiler/tools/ui.h`, with a
+UTF-8-aware width helper so box borders line up in every terminal.
+
+`tests/ui.sh` (13 checks, run from `make test`) guards the rule: it
+asserts that no command emits an escape byte or a box-drawing character
+when piped, that `NO_COLOR` suppresses colour, that `ovc version` is
+still one parseable line, and that the strings the other suites grep for
+are still printed.
+
 ### Package manager — 11 Oct 2026
 
 `ovc pkg` installs a package into a global store

@@ -30,10 +30,11 @@ make examples   # run every example through the interpreter
 | `compiler/ast/` | the AST types and the dumper |
 | `compiler/sema/` | name resolution and type checking |
 | `compiler/backend/` | the two backends: `interp_*.cpp` and `codegen_c.cpp` |
-| `compiler/tools/` | `ovc fmt` and `ovc init` |
+| `compiler/tools/` | `ovc fmt`, `ovc init`, and `ui.h` — the terminal pretty-printing layer |
 | `runtime/` | the C runtime compiled programs link against |
 | `tests/interp/` | language tests, run through **both** backends |
 | `tests/pkg.sh` | package manager regression (install/import/remove) |
+| `tests/ui.sh` | decoration is TTY-only: pipes stay plain and byte-stable |
 | `registry/` | the package index and how to publish to it |
 | `examples/` | runnable examples (chatbot, rag, tool_agent) |
 | `benchmarks/` | performance benchmarks and comparison scripts |
@@ -73,6 +74,7 @@ Read the golden file before committing it — a `.want` captured from a wrong un
 - **C (runtime):** C11, four-space indent, `ov_` / `ov_h_` prefixes.
 - **Ovyth (`tests/`, `examples/`):** four-space indent.
 - Keep the source grep-able. Prefer a clear function name over a comment that restates the code.
+- **Terminal output is for humans, and pipes are for programs.** Anything in `tools/ui.h` must print nothing at all when stdout is not a TTY, so `tests/ui.sh`, `tests/pkg.sh` and `tests/interp.sh` can keep comparing bytes. If you add a `printf` to a command, ask what it does when piped.
 
 ## Before you open a pull request
 
@@ -80,7 +82,6 @@ Read the golden file before committing it — a `.want` captured from a wrong un
 - [ ] New behaviour has a test in `tests/interp/`, or a reason it can't.
 - [ ] `README.md` / `docs/USAGE.md` updated if user-visible behaviour changed.
 - [ ] `CHANGELOG.md` updated under a new version heading.
-
 CI (`.github/workflows/ci.yml`) runs the same steps on every push, plus a `ovc init` smoke test, so it's worth running `make test` locally first.
 
 ## Reporting a bug

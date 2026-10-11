@@ -533,6 +533,12 @@ ovc pkg update greet             # upgrade to the newest version
 ovc pkg remove greet             # uninstall
 ```
 
+On a terminal, `install` shows each step as it happens and ends with a
+`try it` panel; `list` and `search` have a header rule; `info` comes in a
+box. All of it is decoration for humans only: **piped output is byte-for-byte
+what it was**, so scripts, CI and golden-file tests are unaffected, and
+`NO_COLOR=1` keeps the structure while dropping the colour.
+
 ### The store
 
 Packages live in `$OVYTH_HOME/packages/<name>` — `~/.ovyth/packages` by
@@ -656,6 +662,7 @@ Run everything:
 make test                              # unit + both-backend regression
 bash tests/interp.sh                   # language tests only
 bash tests/pkg.sh                      # package manager only
+bash tests/ui.sh                       # pipes stay plain (NO_COLOR, no escapes)
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 make chatbot-rag                       # RAG chatbot with persistent memory

@@ -124,6 +124,7 @@ test: $(OVC) $(RT_TEST)
 	@$(RT_TEST)
 	@bash tests/interp.sh
 	@bash tests/pkg.sh
+	@bash tests/ui.sh
 
 # --- install --------------------------------------------------------------
 # ovc resolves libovrt.a and the runtime headers relative to its own path (see

@@ -30,6 +30,7 @@
 #include "sema/sema.h"
 #include "tools/fmt.h"
 #include "tools/scaffold.h"
+#include "tools/ui.h"
 
 namespace {
 
@@ -293,10 +294,18 @@ int run_init(const std::vector<std::string>& args, size_t i) {
   while (path.size() > 1 && path.back() == '/') path.pop_back();
   std::printf("\n");
   ov::cli_ok("created " + path + "/ with the '" + tmpl + "' template");
-  std::printf("\nnext:\n");
-  std::printf("  cd %s\n", dir.c_str());
-  std::printf("  ovc run main.ov      run it with the interpreter\n");
-  std::printf("  make build           compile to %s/build/app\n", path.c_str());
+  if (ov::ui_tty()) {
+    ov::ui_panel_begin("next");
+    ov::ui_panel_line("cd " + dir, "go there");
+    ov::ui_panel_line("ovc run main.ov", "run it now");
+    ov::ui_panel_line("make build", "compile it");
+    ov::ui_panel_end();
+  } else {
+    std::printf("\nnext:\n");
+    std::printf("  cd %s\n", dir.c_str());
+    std::printf("  ovc run main.ov      run it with the interpreter\n");
+    std::printf("  make build           compile to %s/build/app\n", path.c_str());
+  }
   return 0;
 }
 
@@ -310,6 +319,9 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (args[0] == "version" || args[0] == "--version" || args[0] == "-v") {
+    // The sprite greets a human; the version line stays last and plain so
+    // `ovc version` is still one parseable line when piped.
+    ov::ui_wordmark(kVersion);
     std::printf("ovc %s (Ovyth)\n", kVersion);
     return 0;
   }
