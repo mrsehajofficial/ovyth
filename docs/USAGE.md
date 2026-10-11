@@ -66,10 +66,34 @@ The installer copies three things:
 <prefix>/bin/ovc            the compiler
 <prefix>/lib/libovrt.a      the runtime compiled programs link against
 <prefix>/include/ovrt.h     the runtime headers ovc passes to clang
+<prefix>/include/ovrt_helpers.h
 ```
 
 `ovc` locates the last two relative to its own path, so there is nothing
 to configure and you can move the prefix afterwards.
+
+On a terminal the installer is greeted by Ovyth's sprite and shows its
+progress as steps; piped, it prints the plain list of paths, escape-code
+free, which is what a packaging script wants. `NO_COLOR=1` keeps the
+structure and drops the colour.
+
+### Uninstalling
+
+```bash
+./uninstall.sh                       # remove the install in ~/.local
+./uninstall.sh /usr/local            # remove it from a prefix
+./uninstall.sh --purge               # also remove ~/.ovyth and your packages
+```
+
+The uninstaller removes exactly the files the installer wrote — never a
+directory it did not create, and a directory only if it is empty
+afterwards, so a `bin/` you keep something else in survives. It reports
+each file's size and the total freed, then signs off.
+
+Your installed packages are yours: by default they are left alone and you
+are told where they are. `--purge` removes the package store too, and
+refuses if `OVYTH_HOME` points at something that does not look like a
+store (`$HOME`, `/`).
 
 ### Starting a project
 

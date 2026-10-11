@@ -101,6 +101,50 @@ grep -q 'bin/ovc' <<<"$inst" && grep -q 'libovrt.a' <<<"$inst" \
 grep -q 'try it:' <<<"$inst" && ok "install.sh still prints the try-it hint" \
   || bad "install.sh still prints the try-it hint" "$inst"
 
+# --- the uninstaller removes what the installer put there -------------------
+# Install into a throwaway prefix, then remove it, and check that exactly the
+# four files are gone — and that anything else in those directories is not.
+p="$BIN/prefix"
+bash install.sh "$p" >/dev/null 2>&1
+for f in bin/ovc lib/libovrt.a include/ovrt.h include/ovrt_helpers.h; do
+  [ -f "$p/$f" ] || { bad "uninstall setup: $f installed" "missing"; }
+done
+# A file the installer never wrote: it and its directory must survive.
+touch "$p/bin/not-ours"
+
+un="$(bash uninstall.sh "$p" 2>&1 | cat -v)"
+if grep -q '\^\[' <<<"$un"; then
+  bad "uninstall.sh is plain when piped" "escape codes present"
+else
+  ok "uninstall.sh is plain when piped"
+fi
+for f in bin/ovc lib/libovrt.a include/ovrt.h include/ovrt_helpers.h; do
+  if [ -e "$p/$f" ]; then bad "uninstall removed $f" "still there"
+  else ok "uninstall removed $f"; fi
+done
+[ -e "$p/bin/not-ours" ] && ok "uninstall leaves other files alone" \
+  || bad "uninstall leaves other files alone" "not-ours was deleted"
+[ -d "$p/bin" ] && ok "uninstall keeps a non-empty directory" \
+  || bad "uninstall keeps a non-empty directory" "bin/ was removed"
+# Empty directories the installer created and left empty do go.
+[ -d "$p/include" ] && bad "uninstall removes emptied directories" "include/ remains" \
+  || ok "uninstall removes emptied directories"
+
+bash uninstall.sh --help >/dev/null 2>&1 && ok "uninstall.sh --help" \
+  || bad "uninstall.sh --help"
+# Uninstalling something that was never installed is a quiet success, not an error.
+bash uninstall.sh "$BIN/never-installed" >/dev/null 2>&1 \
+  && ok "uninstall of a missing prefix is not an error" \
+  || bad "uninstall of a missing prefix is not an error"
+# --purge must refuse to delete a directory that is not a package store.
+if out="$(OVYTH_HOME="$HOME" bash uninstall.sh "$BIN/prefix" --purge 2>&1)"; then
+  bad "--purge refuses a non-store path" "expected a non-zero exit"
+else
+  grep -qi "does not look like a store" <<<"$out" \
+    && ok "--purge refuses a non-store path" \
+    || bad "--purge refuses a non-store path" "$out"
+fi
+
 echo
 echo "ovc ui regression: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

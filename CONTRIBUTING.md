@@ -34,7 +34,7 @@ make examples   # run every example through the interpreter
 | `runtime/` | the C runtime compiled programs link against |
 | `tests/interp/` | language tests, run through **both** backends |
 | `tests/pkg.sh` | package manager regression (install/import/remove) |
-| `tests/ui.sh` | decoration is TTY-only: pipes stay plain and byte-stable |
+| `tests/ui.sh` | decoration is TTY-only, and `install.sh` / `uninstall.sh` behave |
 | `registry/` | the package index and how to publish to it |
 | `examples/` | runnable examples (chatbot, rag, tool_agent) |
 | `benchmarks/` | performance benchmarks and comparison scripts |

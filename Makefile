@@ -145,11 +145,11 @@ install: all
 	install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h $(DESTDIR)$(PREFIX)/include/
 	@echo "installed ovc into $(DESTDIR)$(PREFIX)"
 
+# Delegated to uninstall.sh so `make uninstall` and `./uninstall.sh` do the
+# same thing and say the same thing: the four files go, directories go only if
+# they are empty, and --purge is the opt-in for the package store.
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/ovc \
-	      $(DESTDIR)$(PREFIX)/lib/libovrt.a \
-	      $(DESTDIR)$(PREFIX)/include/ovrt.h \
-	      $(DESTDIR)$(PREFIX)/include/ovrt_helpers.h
+	@DESTDIR="$(DESTDIR)" bash ./uninstall.sh "$(PREFIX)"
 
 clean:
 	rm -rf $(BUILD)

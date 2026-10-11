@@ -5,6 +5,72 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### `uninstall.sh`, and a sprite that says goodnight — 11 Oct 2026
+
+`./uninstall.sh` removes what `install.sh` put there and nothing else —
+by design: the four installed files are removed individually, and the
+directories only if they are empty afterwards, so a `bin/` the user keeps
+something else in survives. It reports each file with its size, and ends
+with the total freed.
+
+Ovyth wakes to say hello and sleeps to say goodbye: the installer greets
+with the sprite awake, the uninstaller says hello with her awake and then
+signs off with her asleep — eyes closed, a purr, the heart moved to her
+feet.
+
+```
+$ ./uninstall.sh
+   ✦
+       /\      /\          ✦ O v y t h ✦   goodbye
+      /  \____/  \         it was nice having you here
+     |  *      *  |         let me tidy up
+     |      w      |
+     |   '----'   |
+      \          /
+       '.______.'
+         |  |        ♥
+        (_)(_)
+
+   ⬡ found 4 files in ~/.local ............ done
+       • bin/ovc  (15.4 MB)
+       • lib/libovrt.a  (658.1 KB)
+       • include/ovrt.h  (27.5 KB)
+       • include/ovrt_helpers.h  (3.7 KB)
+   ⬡ removing bin/ovc ...................... done
+   ...
+   ⬡ removing empty directory bin .......... done
+
+   ✓ Ovyth is uninstalled — 16.1 MB freed
+
+   ♥
+       /\      /\          ✦ O v y t h ✦   goodnight
+      /  \____/  \         thank you for having me
+     |  -      -  |         z z z
+     |      w      |
+     |   '----'   |
+      \          /
+       '.______.'
+         |  |
+        (_)(_)        ♥
+
+   ♥ come back soon
+```
+
+Your installed packages are never touched without `--purge`: by default
+the uninstaller removes the compiler and runtime, tells you your packages
+are still in `~/.ovyth`, and leaves them. `--purge` removes the store
+too, and refuses outright if `OVYTH_HOME` is set to something that is not
+a store (`$HOME`, `/`) — a destructive path needs an explicit, plausible
+destination.
+
+Same output rules as everything else: decoration on a terminal only,
+nothing but plain lines when piped, `NO_COLOR` respected.
+
+`tests/ui.sh` grew to 24 checks, including that the uninstaller removes
+exactly the four installed files, leaves a file it did not install, keeps
+the directory that file is in, removes directories it emptied, and refuses
+`--purge` on a non-store path.
+
 ### Ovyth has a face — 11 Oct 2026
 
 The installer, `ovc version`, `ovc init` and every `ovc pkg` command now

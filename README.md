@@ -54,6 +54,7 @@ Install to PATH:
 ./install.sh                 # ~/.local/bin/ovc (no sudo)
 ./install.sh /usr/local      # /usr/local/bin/ovc (needs sudo)
 make install PREFIX=$HOME/.local
+./uninstall.sh               # take it back off
 ```
 
 The installer copies three things: `bin/ovc`, `lib/libovrt.a`, `include/ovrt.h`. `ovc` finds the last two relative to its own path — no environment variables, no pkg-config, relocatable.
@@ -184,6 +185,7 @@ AI_API_URL=http://localhost:8765/v1/chat/completions AI_API_KEY=dummy \
 make test                              # unit + both-backend regression
 bash tests/interp.sh                   # language tests only
 bash tests/pkg.sh                      # package manager only
+bash tests/ui.sh                       # installer + output rules
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 make chatbot-rag                       # RAG chatbot with persistent memory
@@ -191,6 +193,7 @@ bash benchmarks/run.sh                 # benchmark suite
 bash benchmarks/compare.sh             # Ovyth vs C vs Python
 bash benchmarks/compare_ai.sh --release # AI pipeline vs C vs Python
 make install PREFIX=$HOME/.local       # put ovc on your PATH
+./uninstall.sh                         # take it back off
 ```
 
 ## Known limitations
