@@ -565,9 +565,9 @@ both files, exactly as it does for a local `import`.
 
 ### Publishing
 
-Point at an index with `--registry=<url>` or `OVYTH_REGISTRY`. The index is
-JSON, cached in the store for an hour (`--refresh` re-fetches; a failed fetch
-falls back to the cache, so an offline machine keeps working):
+The default index is this repository's `registry/registry.json`, served over
+GitHub's raw CDN. There is nothing to deploy: add a package to that file,
+merge to `main`, and it is published — users see it within a few minutes.
 
 ```json
 {
@@ -575,7 +575,7 @@ falls back to the cache, so an offline machine keeps working):
     "greet": {
       "description": "a friendly greeting",
       "license": "MIT",
-      "homepage": "https://example.com/greet",
+      "homepage": "https://github.com/you/ovyth-greet",
       "versions": {
         "1.0.0": {
           "repo": "https://github.com/you/ovyth-greet.git"
@@ -587,14 +587,17 @@ falls back to the cache, so an offline machine keeps working):
 ```
 
 A version's source is a `repo` (git — the version, or its `v`-prefixed tag,
-is cloned), a `url` (tarball) or a `path` (local directory, handy for
-testing and for an index that points at your own checkout).
+is cloned), a `url` (tarball) or a `path` (local directory). Prefer `repo`:
+the download traffic then lands on the author's git host instead of on this
+project, and versions are tags rather than file names.
 `ovc pkg install greet@1.0.0` pins a version; `ovc pkg install greet` takes
 the newest.
 
-`registry/README.md` in this repository is a ready-to-host index: add your
-package to `registry/registry.json`, push, and point `--registry` at the raw
-URL.
+The index is fetched over HTTP and cached in the store for an hour
+(`--refresh` re-fetches; a failed fetch falls back to the cache, so an
+offline machine keeps working). `--registry=<url>` or `OVYTH_REGISTRY` point
+at any other index, and a `file://` URL reads one off disk.
+`registry/README.md` has the full format and the publishing flow.
 
 Installing is the whole story — there is no per-package build step. The
 source is copied into the store, `.ovpkg.json` records where it came from,
@@ -638,7 +641,7 @@ runtime/           the C runtime that compiled programs link against
   src/*.c            GC, strings, containers, JSON, HTTP, console, file I/O
 tests/interp/      language tests, run through BOTH backends
 tests/pkg.sh       package manager regression (install/import/remove)
-registry/          the package index and how to publish to it
+registry/          the live package index served to `ovc pkg`
 benchmarks/        benchmark suite and comparison driver
 examples/          runnable examples, including chatbot/
 docs/USAGE.md           this guide

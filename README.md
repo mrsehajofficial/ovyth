@@ -141,8 +141,12 @@ ovc pkg list                # what is installed
 Packages live in `$OVYTH_HOME/packages` (`~/.ovyth/packages` by default, so
 `OVYTH_HOME=/tmp/ci` isolates a build). A file next to your own `.ov` always
 wins over an installed package, and each package is just a directory of `.ov`
-modules — there is nothing to build per package. The full guide, the index
-format, and a ready-to-host index are in
+modules — there is nothing to build per package.
+
+The default index is this repository's `registry/registry.json`, served over
+GitHub's raw CDN: adding a package to that file and merging is publishing, and
+no package code lives here — entries point at the author's own repository.
+The full guide and the index format are in
 [docs/USAGE.md](docs/USAGE.md#11-packages) and [registry/](registry/README.md).
 
 ## Examples

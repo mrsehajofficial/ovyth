@@ -36,6 +36,13 @@ reads one off disk). A failed fetch falls back to the cached index, so
 an offline machine keeps working; `--refresh` forces a fetch. Each
 installed package records its origin in `.ovpkg.json`.
 
+The default index is this repository's `registry/registry.json`, served
+over GitHub's raw CDN — there is nothing to deploy and no separate
+registry service: adding a package to that file and merging is
+publishing. Package *code* stays out of this repository; entries point
+at the author's own repository (`repo` preferred, so download traffic
+lands on the author's host), and the index file itself is a few KB.
+
 `tests/pkg.sh` drives install → import (both backends) → reinstall
 policy → search/info/update → remove against a throwaway
 `OVYTH_HOME`, and runs from `make test`.

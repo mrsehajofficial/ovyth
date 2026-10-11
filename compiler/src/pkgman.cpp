@@ -79,10 +79,16 @@ constexpr const char* kPkgMeta = ".ovpkg.json";
 constexpr const char* kRegistryCache = "registry.json";
 constexpr long kCacheTtl = 3600;
 
-// Default registry index. Self-hosted by the project so a fresh install needs
-// no configuration; override with --registry=... or OVYTH_REGISTRY.
+// Default registry index, served from this repository over GitHub's raw CDN.
+//
+// It is deliberately not a service of its own: the index is one small JSON
+// file that lives in git beside the compiler, is versioned with it, and is
+// served by infrastructure that already exists. Package *code* never touches
+// it either -- each entry points at the author's own repository, so the
+// downloads are absorbed by whoever hosts the package. Moving to a dedicated
+// host later is a change to this one constant.
 constexpr const char* kRegistryUrl =
-    "https://raw.githubusercontent.com/mrsehajofficial/ovyth-packages/main/"
+    "https://raw.githubusercontent.com/mrsehajofficial/ovyth/main/registry/"
     "registry.json";
 
 bool mkdir_one(const std::string& p) {
