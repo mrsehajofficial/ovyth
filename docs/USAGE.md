@@ -195,6 +195,9 @@ sz = file.size("data.bin")
 file.delete("tmp.txt")
 ```
 
+An installed package's modules import the same way, from any directory on
+the machine — see [Packages](#11-packages).
+
 ### Interpolation
 
 ```ov
@@ -369,10 +372,16 @@ unchanged.
 | `ovc fmt prog.ov` | print canonically formatted source |
 | `ovc ast prog.ov` | dump the syntax tree |
 | `ovc tokens prog.ov` | dump the token stream |
+| `ovc pkg install <name>` | install a package globally |
+| `ovc pkg list` | show the installed packages |
+| `ovc pkg remove <name>` | uninstall a package |
+| `ovc pkg search <term>` | search the registry |
+| `ovc pkg info <name>` | registry and installed detail for one package |
 | `ovc version` | print the version |
 
 Use `--release` for anything you ship. For iterating, plain `-O2` compiles
-faster and keeps symbols for a debugger.
+faster and keeps symbols for a debugger. `ovc pkg --help` lists the package
+manager's subcommands and flags.
 
 ---
 
@@ -477,6 +486,10 @@ your program. Paths are resolved relative to the importing file; if the
 path has no `.ov` extension it is appended and retried, so both
 `import "util.ov"` and `import "util"` work.
 
+When nothing is found next to the importing file, the global package store
+is consulted — an installed package imports the same way, from any
+directory. See [Packages](#11-packages) below.
+
 ```ov
 import "mods/mathx.ov"
 
@@ -503,7 +516,94 @@ as arguments until top-level globals become visible to functions there.
 
 ---
 
-## 11. Known limitations
+## 11. Packages
+
+`ovc pkg` installs packages into a global store so that `import "name"`
+works from any directory on the machine — not just the project that happens
+to hold the files. Same idea as Python's `site-packages`.
+
+```bash
+ovc pkg search greeting          # what is in the registry?
+ovc pkg info greet               # versions, source, license
+ovc pkg install greet            # download + install globally
+import "greet"                   # in any .ov file, anywhere
+
+ovc pkg list                     # what is installed
+ovc pkg update greet             # upgrade to the newest version
+ovc pkg remove greet             # uninstall
+```
+
+### The store
+
+Packages live in `$OVYTH_HOME/packages/<name>` — `~/.ovyth/packages` by
+default. `OVYTH_HOME` relocates the whole store, so CI or a test run can
+keep its packages to itself:
+
+```bash
+OVYTH_HOME=/tmp/ci-store ovc pkg install greet
+```
+
+Resolution order is **local first, package second**: a file next to the
+importing `.ov` always wins over an installed package, so a project can
+shadow a global package (or vendor a patched copy) without uninstalling
+anything.
+
+### What a package looks like
+
+A package is a plain directory of `.ov` files with one entry module named
+after the package (or `main.ov`). Submodules import under the package name:
+
+```
+mymath/
+  mymath.ov        <- import "mymath"
+  stats.ov         <- import "mymath/stats"
+```
+
+Top-level names must be unique across the whole program — installed
+packages included. The module loader already reports a collision and names
+both files, exactly as it does for a local `import`.
+
+### Publishing
+
+Point at an index with `--registry=<url>` or `OVYTH_REGISTRY`. The index is
+JSON, cached in the store for an hour (`--refresh` re-fetches; a failed fetch
+falls back to the cache, so an offline machine keeps working):
+
+```json
+{
+  "packages": {
+    "greet": {
+      "description": "a friendly greeting",
+      "license": "MIT",
+      "homepage": "https://example.com/greet",
+      "versions": {
+        "1.0.0": {
+          "repo": "https://github.com/you/ovyth-greet.git"
+        }
+      }
+    }
+  }
+}
+```
+
+A version's source is a `repo` (git — the version, or its `v`-prefixed tag,
+is cloned), a `url` (tarball) or a `path` (local directory, handy for
+testing and for an index that points at your own checkout).
+`ovc pkg install greet@1.0.0` pins a version; `ovc pkg install greet` takes
+the newest.
+
+`registry/README.md` in this repository is a ready-to-host index: add your
+package to `registry/registry.json`, push, and point `--registry` at the raw
+URL.
+
+Installing is the whole story — there is no per-package build step. The
+source is copied into the store, `.ovpkg.json` records where it came from,
+and your program compiles the package's source in exactly like a local
+`import`.
+
+---
+
+## 12. Known limitations
 
 Worth knowing before you rely on something:
 
@@ -529,14 +629,16 @@ semantics down.
 
 ---
 
-## 12. Project layout
+## 13. Project layout
 
 ```
 compiler/          the ovc compiler (C++17)
 runtime/           the C runtime that compiled programs link against
   include/ovrt.h     the C API: values, strings, lists, maps, GC
-  src/*.c            GC, strings, containers, JSON, HTTP, console
+  src/*.c            GC, strings, containers, JSON, HTTP, console, file I/O
 tests/interp/      language tests, run through BOTH backends
+tests/pkg.sh       package manager regression (install/import/remove)
+registry/          the package index and how to publish to it
 benchmarks/        benchmark suite and comparison driver
 examples/          runnable examples, including chatbot/
 docs/USAGE.md           this guide
@@ -550,6 +652,7 @@ Run everything:
 ```bash
 make test                              # unit + both-backend regression
 bash tests/interp.sh                   # language tests only
+bash tests/pkg.sh                      # package manager only
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 make chatbot-rag                       # RAG chatbot with persistent memory

@@ -119,7 +119,31 @@ The full tour — lists, comprehensions, slices, tuples, the stdlib — is in [d
 | `ovc ast <file.ov>` | dump the AST |
 | `ovc tokens <file.ov>` | dump the token stream |
 | `ovc fmt <file.ov>` | canonical formatting (stdout) |
+| `ovc pkg install <name>` | install a package globally |
+| `ovc pkg list` | show installed packages |
+| `ovc pkg search <term>` | search the registry |
 | `ovc version` | print version |
+
+## Packages
+
+`ovc pkg` installs a package into a global store, and `import "name"` then
+works from any directory on the machine — Python's `site-packages`, for Ovyth:
+
+```bash
+ovc pkg search greet        # what is in the registry?
+ovc pkg install greet       # download + install globally
+ovc pkg list                # what is installed
+
+# then, in any .ov file, anywhere:
+#   import "greet"
+```
+
+Packages live in `$OVYTH_HOME/packages` (`~/.ovyth/packages` by default, so
+`OVYTH_HOME=/tmp/ci` isolates a build). A file next to your own `.ov` always
+wins over an installed package, and each package is just a directory of `.ov`
+modules — there is nothing to build per package. The full guide, the index
+format, and a ready-to-host index are in
+[docs/USAGE.md](docs/USAGE.md#11-packages) and [registry/](registry/README.md).
 
 ## Examples
 
@@ -155,6 +179,7 @@ AI_API_URL=http://localhost:8765/v1/chat/completions AI_API_KEY=dummy \
 ```bash
 make test                              # unit + both-backend regression
 bash tests/interp.sh                   # language tests only
+bash tests/pkg.sh                      # package manager only
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 make chatbot-rag                       # RAG chatbot with persistent memory

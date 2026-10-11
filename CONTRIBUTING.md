@@ -24,6 +24,7 @@ make examples   # run every example through the interpreter
 
 | path | what lives there |
 |---|---|
+| `compiler/src/` | `ovc`'s entry point, the module loader, the native driver, and the package manager (`pkgman.cpp`) |
 | `compiler/lexer/` | source text → tokens |
 | `compiler/parser/` | tokens → AST |
 | `compiler/ast/` | the AST types and the dumper |
@@ -32,6 +33,8 @@ make examples   # run every example through the interpreter
 | `compiler/tools/` | `ovc fmt` and `ovc init` |
 | `runtime/` | the C runtime compiled programs link against |
 | `tests/interp/` | language tests, run through **both** backends |
+| `tests/pkg.sh` | package manager regression (install/import/remove) |
+| `registry/` | the package index and how to publish to it |
 | `examples/` | runnable examples (chatbot, rag, tool_agent) |
 | `benchmarks/` | performance benchmarks and comparison scripts |
 | `docs/` | the usage guide and the performance notes |

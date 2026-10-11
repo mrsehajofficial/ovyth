@@ -5,6 +5,41 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### Package manager — 11 Oct 2026
+
+`ovc pkg` installs a package into a global store
+(`$OVYTH_HOME/packages/<name>`, default `~/.ovyth/packages`) and
+`import "name"` then resolves from any directory on the machine —
+site-packages for Ovyth. Resolution stays **local first, package
+second**, so a project can shadow or vendor over a global package
+without uninstalling it.
+
+```
+ovc pkg search greeting     # what is in the registry?
+ovc pkg install greet       # download + install globally
+ovc pkg list                # what is installed
+ovc pkg update greet        # upgrade
+ovc pkg remove greet        # uninstall
+```
+
+A package is a plain directory of `.ov` files with an entry module named
+after it (or `main.ov`); submodules import as `import "<pkg>/<mod>"`.
+There is nothing to build per package — modules are flattened into the
+program at compile time, exactly like a local `import`.
+
+Sources, in order of preference: a `path` (local directory), a `repo`
+(git; the version, or its `v`-prefixed tag, is cloned shallowly — `.git`
+is dropped on install) or a `url` (tarball). The registry is a JSON
+index fetched over HTTP, cached for an hour and keyed by URL, and
+`--registry=` / `OVYTH_REGISTRY` point at any index (a `file://` URL
+reads one off disk). A failed fetch falls back to the cached index, so
+an offline machine keeps working; `--refresh` forces a fetch. Each
+installed package records its origin in `.ovpkg.json`.
+
+`tests/pkg.sh` drives install → import (both backends) → reinstall
+policy → search/info/update → remove against a throwaway
+`OVYTH_HOME`, and runs from `make test`.
+
 ### Modules and imports — 9 Oct 2026
 
 `import "path"` loads another `.ov` file and flattens its top-level

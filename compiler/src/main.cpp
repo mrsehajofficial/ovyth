@@ -26,6 +26,7 @@
 #include "driver.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
+#include "pkgman.h"
 #include "sema/sema.h"
 #include "tools/fmt.h"
 #include "tools/scaffold.h"
@@ -46,6 +47,7 @@ void usage() {
       "  ovc ast <file.ov>          dump the AST\n"
       "  ovc tokens <file.ov>       dump the token stream\n"
       "  ovc fmt <file.ov>          canonical formatting (stdout)\n"
+      "  ovc pkg ...                the package manager (install/search/...)\n"
       "  ovc version\n"
       "\n"
       "options:\n"
@@ -103,9 +105,12 @@ struct ModuleLoader {
   }
 
   // Resolve an import path against the importing file's directory.
-  // Absolute paths are used as-is; relative paths are anchored to the
-  // importing file. If the file does not exist and the path has no
-  // ".ov" extension, ".ov" is appended and retried.
+  // Local files win; only when nothing is found there does an installed
+  // package get to answer, so a project can always shadow a global package
+  // (site-packages after the current directory, in other words). Absolute
+  // paths are used as-is; relative paths are anchored to the importing file.
+  // If the file does not exist and the path has no ".ov" extension, ".ov" is
+  // appended and retried.
   std::string resolve(const std::string& from_file, const std::string& path) const {
     std::string p = path;
     if (p.empty() || p[0] != '/') {
@@ -118,6 +123,10 @@ struct ModuleLoader {
       if (with_ext.size() < 4 || with_ext.substr(with_ext.size() - 4) != ".ov")
         with_ext += ".ov";
       if (::access(with_ext.c_str(), R_OK) == 0) p = with_ext;
+    }
+    if (::access(p.c_str(), R_OK) != 0) {
+      std::string pkg = ov::resolve_package_import(path);
+      if (!pkg.empty()) return pkg;
     }
     return p;
   }
@@ -135,7 +144,11 @@ struct ModuleLoader {
     if (!read_file(file, source)) {
       diags.push_back(ov::Diagnostic{
           via_file, via_line, via_col,
-          "cannot open imported file '" + file + "'",
+          "cannot open imported file '" + file + "'" +
+              (ov::packages_root().empty()
+                   ? std::string()
+                   : " (not found next to the importer, and not installed in " +
+                         ov::packages_root() + ")"),
           ov::DiagKind::Error});
       return false;
     }
@@ -303,6 +316,13 @@ int main(int argc, char** argv) {
   if (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
     usage();
     return 0;
+  }
+
+  // `pkg` owns its own argument grammar (subcommands, --registry=...), so it
+  // is answered before the compiler's option parser sees it.
+  if (args[0] == "pkg" || args[0] == "package") {
+    return ov::run_pkg_command(
+        std::vector<std::string>(args.begin() + 1, args.end()));
   }
 
   // ---- split command from options ---------------------------------------
