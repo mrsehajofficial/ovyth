@@ -549,13 +549,19 @@ to hold the files. Same idea as Python's `site-packages`.
 ```bash
 ovc pkg search ai                # what is in the registry?
 ovc pkg info rag                 # versions, source, license
-ovc pkg install ai               # download + install globally
+ovc pkg install ai rag greet     # several at once
 import "ai"                      # in any .ov file, anywhere
 
 ovc pkg list                     # what is installed
 ovc pkg update rag               # upgrade to the newest version
 ovc pkg remove greet             # uninstall
 ```
+
+Several packages go in one command: the index is fetched once for the whole
+run, every name is validated before anything is installed (so a bad name in
+the middle cannot leave half a list applied), and the run ends with one
+summary and one `try it` panel covering everything. A local directory and a
+registry package can be mixed in the same command.
 
 Three packages are published: **`greet`** (greeting helpers, the canonical
 first one), **`ai`** (talk to an OpenAI-compatible endpoint, including

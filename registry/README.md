@@ -23,7 +23,7 @@ it here *is* publishing.
 ```bash
 ovc pkg search mypkg                # confirm it is listed
 ovc pkg info mypkg                  # versions and source
-ovc pkg install mypkg
+ovc pkg install mypkg otherpkg      # as many as you like in one command
 ```
 
 ## The format

@@ -83,11 +83,16 @@ $(OVC): $(CC_OBJ) $(RT_LIB)
 EXAMPLES := $(filter-out examples/chatbot/chatbot.ov, \
               $(wildcard examples/*/*.ov examples/*.ov))
 
+# "Already installed" is the goal met, not a failure, so it is not reported as
+# one -- only a real failure (no network, say) gets a note.
 modules:
 	@set -e; for p in ai rag; do \
-	  $(OVC) pkg install $$p >/dev/null 2>&1 || \
-	    echo "  ---- note: could not install '$$p' (network?);" \
-	         "examples that use it will fail"; \
+	  out="$$($(OVC) pkg install $$p 2>&1)" || { \
+	    case "$$out" in \
+	      *"already installed"*) ;; \
+	      *) echo "  ---- note: could not install '$$p': $$out" ;; \
+	    esac; \
+	  }; \
 	done
 
 examples: $(OVC) modules

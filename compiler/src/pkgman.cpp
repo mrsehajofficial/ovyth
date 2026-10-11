@@ -1013,6 +1013,7 @@ int install_usage(bool ok) {
   std::printf(
       "usage:\n"
       "  ovc pkg install <name>[@version]   from the registry\n"
+      "  ovc pkg install <a> <b> <c>        several at once\n"
       "  ovc pkg install /path/to/pkg       from a local directory\n"
       "\n"
       "options: --force   --registry=<url>   --refresh\n");
@@ -1020,22 +1021,120 @@ int install_usage(bool ok) {
 }
 
 // The panel after a successful install: what the user actually wanted to know.
-// Piped, it is the single tip line this command has always printed.
-void print_try_it(const std::string& name) {
+// Piped, it is the tip lines this command has always printed.
+void print_try_it(const std::vector<std::string>& names) {
+  if (names.empty()) return;
   if (!ov::ui_tty()) {
-    std::printf("\ntip: import \"%s\" now works from any directory\n",
-                name.c_str());
+    for (const std::string& n : names)
+      std::printf("\ntip: import \"%s\" now works from any directory\n", n.c_str());
     return;
   }
   std::printf("\n");
   ov::ui_panel_begin("try it");
-  ov::ui_panel_line("import \"" + name + "\"", "in any .ov file");
+  for (const std::string& n : names)
+    ov::ui_panel_line("import \"" + n + "\"", "in any .ov file");
   ov::ui_panel_end();
 }
 
+// Install one spec. `index` is the registry, already fetched for the whole
+// run; it is ignored for a local-directory spec. On success `name` and `ver`
+// name what went in, so the caller can summarise.
+bool install_one(const std::string& spec, bool force,
+                 const std::vector<IndexEntry>& index, std::string& label,
+                 std::string& name, std::string& ver, std::string& err) {
+  if (looks_like_path(spec)) {
+    // A local directory: the directory's own name is the package name.
+    std::string src = expand_user(spec);
+    std::string base = base_name(src);
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    name = base;
+    ov::ui_step("copying from " + shorten_path(src));
+    bool ok = install_from_path(base, src, "0.0.0", force, err);
+    if (!ok) return false;
+    ov::ui_step_done();
+    ov::ui_step("installing into " + shorten_path(install_dest(base)));
+    ov::ui_step_done();
+    ver = "0.0.0";
+    label = name + " from " + shorten_path(src);
+    return true;
+  }
+
+  std::string version;
+  parse_spec(spec, name, version);
+
+  const IndexEntry* entry = index_find(index, name);
+  if (!entry) {
+    err = "no package named '" + name + "' in the registry";
+    std::vector<std::string> near = index_similar(index, name);
+    if (!near.empty()) {
+      err += " (did you mean: ";
+      for (size_t i = 0; i < near.size() && i < 5; i++)
+        err += (i ? ", " : "") + near[i];
+      err += "?)";
+    }
+    return false;
+  }
+
+  // Pick the version: the pinned one, or the newest published.
+  SourceRef src;
+  if (version.empty()) {
+    if (entry->versions.empty()) {
+      err = "package '" + name + "' has no installable source";
+      return false;
+    }
+    ver = entry->versions.back().first;
+    src = entry->versions.back().second;
+  } else {
+    for (const auto& [v, s] : entry->versions) {
+      if (v == version) {
+        src = s;
+        break;
+      }
+    }
+    if (!src.any()) {
+      err = "package '" + name + "' has no version " + version + " (have: ";
+      for (size_t i = 0; i < entry->versions.size(); i++)
+        err += (i ? ", " : "") + entry->versions[i].first;
+      err += ")";
+      return false;
+    }
+  }
+  if (ver.empty()) ver = "0.0.0";
+  label = name + " " + ver;
+
+  ov::ui_step("resolving " + name);
+  ov::ui_step_done(ver);
+
+  bool ok = false;
+  if (!src.path.empty()) {
+    ov::ui_step("copying from " + shorten_path(expand_user(src.path)));
+    ok = install_from_path(name, expand_user(src.path), ver, force, err);
+    if (ok) ov::ui_step_done();
+  } else if (!src.repo.empty()) {
+    ov::ui_step("cloning " + shorten_path(src.repo));
+    ok = install_from_repo(name, src.repo, ver, force, err);
+    if (ok) ov::ui_step_done();
+  } else if (!src.url.empty()) {
+    ov::ui_step("downloading " + shorten_path(src.url));
+    ok = install_from_url(name, src.url, ver, force, err);
+    if (ok) ov::ui_step_done();
+  } else {
+    err = "package '" + name + "' " + ver + " lists no source";
+  }
+  if (!ok) return false;
+
+  ov::ui_step("installing into " + shorten_path(install_dest(name)));
+  ov::ui_step_done();
+  return true;
+}
+
+// A ceiling on one command, so a pasted list of a hundred names cannot turn
+// into a hundred clones without the user noticing what they asked for.
+constexpr size_t kMaxInstallSpecs = 32;
+
 int cmd_install(const std::vector<std::string>& args, bool refresh) {
   bool force = false;
-  std::string spec;
+  std::vector<std::string> specs;
   for (const std::string& a : args) {
     if (a == "--force" || a == "-f") {
       force = true;
@@ -1044,48 +1143,47 @@ int cmd_install(const std::vector<std::string>& args, bool refresh) {
     } else if (a.rfind("-", 0) == 0 && a.size() > 1) {
       ov::cli_error("unknown option '" + a + "' (see: ovc pkg install --help)");
       return 2;
-    } else if (spec.empty()) {
-      spec = a;
-    } else {
-      ov::cli_error("install takes a single package");
-      return 2;
+    } else if (std::find(specs.begin(), specs.end(), a) == specs.end()) {
+      // Repeats are dropped rather than installed twice: a list pasted with a
+      // duplicate should not fail on the second copy.
+      specs.push_back(a);
     }
   }
-  if (spec.empty()) return install_usage(false);
+  if (specs.empty()) return install_usage(false);
+  if (specs.size() > kMaxInstallSpecs) {
+    ov::cli_error("that is " + std::to_string(specs.size()) +
+                  " packages; install at most " +
+                  std::to_string(kMaxInstallSpecs) + " at a time");
+    return 2;
+  }
 
-  bool ok = false;
-  std::string err;
-
-  if (looks_like_path(spec)) {
-    // A local directory: the directory's own name is the package name.
-    std::string src = expand_user(spec);
-    std::string name = base_name(src);
-    while (!name.empty() && name.back() == '/') name.pop_back();
-    if (name.empty() || name == "." || name == "..") {
-      ov::cli_error("cannot name a package after '" + spec + "'");
-      return 1;
+  // Validate every name before installing anything, so a bad name in the
+  // middle of a list cannot leave half a command applied.
+  for (const std::string& spec : specs) {
+    if (looks_like_path(spec)) {
+      std::string base = base_name(expand_user(spec));
+      while (!base.empty() && base.back() == '/') base.pop_back();
+      if (base.empty() || base == "." || base == "..") {
+        ov::cli_error("cannot name a package after '" + spec + "'");
+        return 1;
+      }
+      continue;
     }
-    ov::ui_step("copying from " + shorten_path(src));
-    ok = install_from_path(name, src, "0.0.0", force, err);
-    if (ok) {
-      ov::ui_step_done();
-      ov::ui_step("installing into " + shorten_path(install_dest(name)));
-      ov::ui_step_done();
-      ov::ui_success("installed " + name + " from " + shorten_path(src));
-      print_try_it(name);
-    } else {
-      ov::ui_step_fail();
-    }
-  } else {
     std::string name, version;
     parse_spec(spec, name, version);
     if (!valid_package_name(name)) {
       ov::cli_error("'" + name + "' is not a valid package name");
       return 1;
     }
+  }
 
-    std::vector<IndexEntry> index;
-    bool from_cache = false;
+  // One index fetch for the whole run, whether it is one package or ten.
+  std::vector<IndexEntry> index;
+  bool from_cache = false, needs_index = false;
+  for (const std::string& spec : specs)
+    if (!looks_like_path(spec)) needs_index = true;
+  if (needs_index) {
+    std::string err;
     ov::ui_step("reading the registry index");
     if (!load_index(refresh, index, err, &from_cache)) {
       ov::ui_step_fail();
@@ -1093,85 +1191,48 @@ int cmd_install(const std::vector<std::string>& args, bool refresh) {
       return 1;
     }
     ov::ui_step_done(from_cache ? "ok (cached)" : "ok");
+  }
 
-    const IndexEntry* entry = index_find(index, name);
-    if (!entry) {
-      std::string msg = "no package named '" + name + "' in the registry";
-      std::vector<std::string> near = index_similar(index, name);
-      if (!near.empty()) {
-        msg += " (did you mean: ";
-        for (size_t i = 0; i < near.size() && i < 5; i++)
-          msg += (i ? ", " : "") + near[i];
-        msg += "?)";
-      }
-      ov::cli_error(msg);
-      return 1;
+  std::vector<std::string> labels;      // "greet 1.0.0", for one line each
+  std::vector<std::string> names;       // "greet", for the import lines
+  int failed = 0;
+  for (const std::string& spec : specs) {
+    std::string label, name, ver, err;
+    if (install_one(spec, force, index, label, name, ver, err)) {
+      labels.push_back(label);
+      names.push_back(name);
+      // Piped: one line per package, exactly as a single-package install
+      // printed it (icon included, via ui_success's piped form). A terminal
+      // gets the summary below instead.
+      if (!ov::ui_tty()) std::printf("%s installed %s\n", ov::kOk, label.c_str());
+      continue;
     }
+    failed++;
+    ov::ui_step_fail();
+    ov::cli_error(err);
+  }
 
-    // Pick the version: the pinned one, or the newest published.
-    std::string ver = version;
-    SourceRef src;
-    if (ver.empty()) {
-      if (entry->versions.empty()) {
-        ov::cli_error("package '" + name + "' has no installable source");
-        return 1;
-      }
-      ver = entry->versions.back().first;
-      src = entry->versions.back().second;
-    } else {
-      for (const auto& [v, s] : entry->versions) {
-        if (v == version) {
-          src = s;
-          break;
-        }
-      }
-      if (!src.any()) {
-        std::string msg = "package '" + name + "' has no version " + version +
-                          " (have: ";
-        for (size_t i = 0; i < entry->versions.size(); i++)
-          msg += (i ? ", " : "") + entry->versions[i].first;
-        msg += ")";
-        ov::cli_error(msg);
-        return 1;
-      }
-    }
-    if (ver.empty()) ver = "0.0.0";
+  if (labels.empty()) return 1;
 
-    ov::ui_step("resolving " + name);
-    ov::ui_step_done(ver);
-
-    if (!src.path.empty()) {
-      ov::ui_step("copying from " + shorten_path(expand_user(src.path)));
-      ok = install_from_path(name, expand_user(src.path), ver, force, err);
-      if (ok) ov::ui_step_done();
-    } else if (!src.repo.empty()) {
-      ov::ui_step("cloning " + shorten_path(src.repo));
-      ok = install_from_repo(name, src.repo, ver, force, err);
-      if (ok) ov::ui_step_done();
-    } else if (!src.url.empty()) {
-      ov::ui_step("downloading " + shorten_path(src.url));
-      ok = install_from_url(name, src.url, ver, force, err);
-      if (ok) ov::ui_step_done();
-    } else {
-      err = "package '" + name + "' " + ver + " lists no source";
-    }
-
-    if (ok) {
-      ov::ui_step("installing into " + shorten_path(install_dest(name)));
-      ov::ui_step_done();
-      ov::ui_success("installed " + name + " " + ver +
+  if (ov::ui_tty()) {
+    if (labels.size() == 1) {
+      ov::ui_success("installed " + labels[0] +
                      (from_cache ? "  (index cached)" : ""));
-      print_try_it(name);
     } else {
-      ov::ui_step_fail();
+      std::string msg = "installed " + std::to_string(labels.size()) + " packages" +
+                        (from_cache ? "  (index cached)" : "");
+      if (failed) msg += ", " + std::to_string(failed) + " failed";
+      ov::ui_success(msg);
     }
   }
-
-  if (!ok) {
-    ov::cli_error("install failed: " + err);
-    return 1;
-  }
-  return 0;
+  // A panel on a terminal, the tip lines this command has always printed when
+  // piped -- for every package, however many were asked for.
+  print_try_it(names);
+  if (ov::ui_tty() && failed)
+    std::printf("\n   %s %d of %d packages failed; see above\n",
+                ov::ui_red(ov::kFail).c_str(), failed,
+                (int)(labels.size() + failed));
+  return failed ? 1 : 0;
 }
 
 int cmd_list() {
@@ -1466,8 +1527,12 @@ int cmd_update(const std::vector<std::string>& args, bool refresh) {
 int run_pkg_command(const std::vector<std::string>& args) {
   // Global flags are lifted out first so every subcommand accepts them in any
   // position; what is left is the subcommand and its own arguments.
+  //
+  // `--help` is the exception: with no subcommand it prints the overview, and
+  // with one it is passed through, so `ovc pkg install --help` describes the
+  // install command rather than the whole manager.
   std::vector<std::string> rest;
-  bool refresh = false, want_help = false;
+  bool refresh = false, want_help = false, have_sub = false;
   for (const std::string& a : args) {
     if (a == "-h" || a == "--help" || a == "help") {
       want_help = true;
@@ -1480,11 +1545,12 @@ int run_pkg_command(const std::vector<std::string>& args) {
       ov::cli_error("unknown option '" + a + "' (see: ovc pkg --help)");
       return 2;
     } else {
+      if (!have_sub) have_sub = true;
       rest.push_back(a);
     }
   }
 
-  if (want_help) {
+  if (want_help && !have_sub) {
     pkg_usage();
     return 0;
   }
@@ -1494,10 +1560,7 @@ int run_pkg_command(const std::vector<std::string>& args) {
   }
 
   const std::string sub = rest[0];
-  if (sub == "help") {
-    pkg_usage();
-    return 0;
-  }
+  if (want_help) rest.push_back("--help");  // the subcommand answers for it
   std::vector<std::string> sub_args(rest.begin() + 1, rest.end());
 
   if (sub == "install") return cmd_install(sub_args, refresh);

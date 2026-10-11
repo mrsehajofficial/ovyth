@@ -5,6 +5,23 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### Install several packages in one command — 11 Oct 2026
+
+`ovc pkg install ai rag greet` now works. The index is fetched once for the
+whole run rather than once per package, every name is validated before
+anything is installed (so a bad name in the middle of a list cannot leave
+half of it applied), and the run ends with one summary and one `try it`
+panel covering everything installed. A local directory and a registry
+package can be mixed in the same command, and a repeated name is installed
+once rather than failing on its second copy.
+
+Piped output is unchanged in shape — one `installed <name> <version>` line
+per package, then the `tip:` line for each — so a single-package install in
+a script behaves exactly as it did before.
+
+`ovc pkg install --help` also describes the install command rather than the
+whole manager: `--help` after a subcommand belongs to that subcommand.
+
 ### Three packages, and the examples become applications — 11 Oct 2026
 
 `greet` (the canonical first package), `ai` (OpenAI-compatible chat

@@ -254,6 +254,105 @@ done
 [[ -e "$OVYTH_HOME/evil" || -e "$OVYTH_HOME/packages/evil" ]] && bad "nothing escaped the store" \
   || ok "nothing escaped the store"
 
+# ---------------------------------------------------------------------------
+# installing several packages in one command
+#
+# This block starts from an empty store so it can assert on what is there.
+# ---------------------------------------------------------------------------
+rm -rf "$OVYTH_HOME"
+# The index is fetched once for the whole run, every name is validated before
+# anything is installed, and a duplicate in the list is dropped rather than
+# failing on its second copy.
+REGISTRY2="file://$BIN/multi.json"
+mkdir -p "$BIN/src/mango" "$BIN/src/kiwi"
+printf 'function mango() { return "mango " }\n' > "$BIN/src/mango/mango.ov"
+printf 'function kiwi() { return "kiwi" }\n' > "$BIN/src/kiwi/kiwi.ov"
+printf '{\n "packages": {\n  "mango": {"description":"d","license":"MIT","versions":{"1.0.0":{"repo":"%s"}}},\n  "kiwi": {"description":"d","license":"MIT","versions":{"1.0.0":{"repo":"%s"}}}\n }\n}\n' \
+  "$BIN/src/mango" "$BIN/src/kiwi" > "$BIN/multi.json"
+for p in mango kiwi; do
+  (cd "$BIN/src/$p" && git init -q . && git add -A \
+    && git -c user.email=t@t -c user.name=t commit -qm "$p" && git tag v1.0.0)
+done
+
+if out="$("$OVC" pkg install mango kiwi --registry="$REGISTRY2" 2>&1)"; then
+  for p in mango kiwi; do
+    [[ -f "$OVYTH_HOME/packages/$p/$p.ov" ]] && ok "multi-install landed $p" \
+      || bad "multi-install landed $p" "missing"
+  done
+else
+  bad "multi-install" "$out"
+fi
+
+# Both are importable, from an unrelated directory, on both backends.
+cat > "$BIN/work/multi.ov" <<'EOF'
+import "mango"
+import "kiwi"
+print(mango() + kiwi())
+EOF
+iout="$("$OVC" run "$BIN/work/multi.ov" 2>&1)"
+check_eq "multi-install imports both" "mango kiwi" "$iout"
+
+# A failure in the middle does not roll back the ones that worked, and exits 1.
+if out="$("$OVC" pkg install mango nope --registry="$REGISTRY2" 2>&1)"; then
+  bad "multi-install with a bad name fails" "expected a non-zero exit"
+else
+  grep -qi "no package named" <<<"$out" && ok "multi-install with a bad name fails" \
+    || bad "multi-install with a bad name fails" "$out"
+fi
+[[ -f "$OVYTH_HOME/packages/mango/mango.ov" ]] && ok "the good package survived" \
+  || bad "the good package survived" "mango was rolled back"
+
+# Every name is validated before anything is installed, so a bad entry cannot
+# leave half a list applied. `../evil` is path-shaped -- the user's own local
+# directory -- so it is rejected for not existing, like any other bad path.
+if out="$("$OVC" pkg install ../evil kiwi --registry="$REGISTRY2" 2>&1)"; then
+  bad "a hostile name aborts the whole run" "expected a non-zero exit"
+else
+  grep -qi "not a directory\|not a valid package name" <<<"$out" \
+    && ok "a hostile name aborts the whole run" || bad "a hostile name aborts the whole run" "$out"
+fi
+# and the offending name never reaches the store, in either spelling
+if [[ -e "$OVYTH_HOME/evil" || -e "$OVYTH_HOME/packages/evil" ]]; then
+  bad "a path-shaped hostile name never lands" "it was installed"
+else
+  ok "a path-shaped hostile name never lands"
+fi
+[[ -e "$OVYTH_HOME/evil" ]] && bad "nothing was installed before the bad name" "evil exists" \
+  || ok "nothing was installed before the bad name"
+
+# A repeated name is one install, not two: the error (if any) is about the
+# package, never about the repetition.
+out="$("$OVC" pkg install kiwi kiwi --registry="$REGISTRY2" 2>&1)"
+if grep -qi "duplicate\|single package" <<<"$out"; then
+  bad "a repeated name is one install" "$out"
+else
+  ok "a repeated name is one install"
+fi
+# kiwi is already in the store, so this is the ordinary already-installed path
+grep -qi "already installed" <<<"$out" && ok "a repeat reports the ordinary outcome" \
+  || bad "a repeat reports the ordinary outcome" "$out"
+
+# Piped output is still one plain line per package, with the tip lines.
+pout="$("$OVC" pkg list 2>&1 | cat -v)"
+grep -q 'kiwi' <<<"$pout" && grep -q 'mango' <<<"$pout" \
+  && ok "pkg list shows both multi-installed packages" || bad "pkg list shows both" "$pout"
+
+# A pasted list far too large is refused rather than run.
+big="$(seq 1 40 | tr '\n' ' ')"
+if "$OVC" pkg install $big >/dev/null 2>&1; then
+  bad "an oversized list is refused" "expected a non-zero exit"
+else
+  ok "an oversized list is refused"
+fi
+
+# `ovc pkg install --help` describes install, not the whole manager.
+hout="$("$OVC" pkg install --help 2>&1)"
+grep -q "several at once" <<<"$hout" && ok "install --help is install-specific" \
+  || bad "install --help is install-specific" "$hout"
+gout="$("$OVC" pkg --help 2>&1)"
+grep -q "package manager" <<<"$gout" && ok "pkg --help still shows the overview" \
+  || bad "pkg --help still shows the overview" "$gout"
+
 echo
 echo "ovc pkg regression: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
