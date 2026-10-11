@@ -1,3 +1,34 @@
 {
-  "packages": {}
+  "packages": {
+    "greet": {
+      "description": "greeting helpers — the canonical first package",
+      "license": "MIT",
+      "homepage": "https://github.com/mrsehajofficial/ovyth",
+      "versions": {
+        "1.0.0": {
+          "repo": "https://github.com/mrsehajofficial/ovyth-greet.git"
+        }
+      }
+    },
+    "ai": {
+      "description": "Talk to an OpenAI-compatible chat endpoint (transport + conversation shaping)",
+      "license": "MIT",
+      "homepage": "https://github.com/mrsehajofficial/ovyth-ai",
+      "versions": {
+        "1.0.0": {
+          "repo": "https://github.com/mrsehajofficial/ovyth-ai.git"
+        }
+      }
+    },
+    "rag": {
+      "description": "Retrieval augmented generation: chunk, store, retrieve, and build the prompt",
+      "license": "MIT",
+      "homepage": "https://github.com/mrsehajofficial/ovyth-rag",
+      "versions": {
+        "1.0.0": {
+          "repo": "https://github.com/mrsehajofficial/ovyth-rag.git"
+        }
+      }
+    }
+  }
 }
