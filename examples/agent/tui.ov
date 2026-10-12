@@ -1,0 +1,420 @@
+// Ovyth :: examples/agent/tui.ov
+//
+// An interactive TUI agent with slash commands, first-run config, and nudges.
+//
+// Runs in a loop: reads from stdin, runs the agent step, prints result.
+// Slash commands control the session; config is persisted to ~/.ovyth/agent.json.
+// TTY-gated rendering keeps piped output clean.
+//
+//   ovc run examples/agent/tui.ov
+//   AI_API_KEY=... ovc run examples/agent/tui.ov
+//
+// Slash commands:
+//   /help      show this help
+//   /quit      exit the session
+//   /clear     clear the screen
+//   /config    show current configuration
+//   /goal <x>  set a new goal for the next turn
+//   /steps <n> set step budget for the next turn
+//   /model <x> set model for the next turn
+//   /history   show conversation history
+//   /guard     toggle guard on/off
+//   /nudge     show nudge status
+
+import "ai"
+import "agent/guard"
+import "agent/json"
+
+// ------------------------------------------------------------------ config
+
+config_path = "~/.ovyth/agent.json"
+config_path = config_path.replace("~", env_or("HOME", ""))
+
+default_config = {
+    "api_key": env_or("AI_API_KEY", ""),
+    "api_url": env_or("AI_API_URL", "https://api.example.com/v1/chat"),
+    "model": env_or("AI_MODEL", "gpt-4o-mini"),
+    "max_steps": int(env_or("AGENT_STEPS", "12")),
+    "work_dir": env_or("AGENT_DIR", ""),
+    "guard_enabled": true,
+    "show_nudges": true,
+    "first_run": true
+}
+
+function config_load() {
+    result = os.run("cat " + config_path + " 2>/dev/null")
+    if result["code"] == 0 and result["stdout"] != "" {
+        content = result["stdout"]
+        try {
+            c = json.parse(content)
+            for k in default_config {
+                if c[k] == null { c[k] = default_config[k] }
+            }
+            return c
+        } catch e {
+            // corrupted config, fall through
+        }
+    }
+    return default_config
+}
+
+function config_save(cfg) {
+    json_str = json.stringify(cfg, true)
+    cmd = "cat > " + config_path + " << 'EOF'\n" + json_str + "\nEOF"
+    os.run(cmd)
+}
+
+// ------------------------------------------------------------------ state
+
+cfg = config_load()
+history = ai_conversation("")
+goal = env_or("AGENT_GOAL", "How can I help you today?")
+
+steps_taken = 0
+turn = 0
+last_nudge_turn = 0
+nudge_interval = 5  // show nudge every 5 turns
+
+// ------------------------------------------------------------------ UI helpers
+
+// TTY check - decoration only when stdout is a terminal
+function is_tty() {
+    return os.tty()
+}
+
+// Clear screen (TTY only)
+function clear_screen() {
+    if is_tty() { print("\033[2J\033[H") }
+}
+
+// Print a panel (TTY only)
+function panel(title, lines) {
+    if !is_tty() { return }
+    width = 60
+    print("┌─ " + title + " " + "─".repeat(width - 4 - len(title)) + "┐")
+    for line in lines {
+        print("│ " + line + " ".repeat(width - 4 - len(line)) + "│")
+    }
+    print("└" + "─".repeat(width - 2) + "┘")
+}
+
+// Print a step line (TTY only)
+function step(label, done) {
+    if !is_tty() { return }
+    if done {
+        print("  ✓ " + label)
+    } else {
+        print("  ⬡ " + label + " " + ".".repeat(50 - len(label)) + " ")
+    }
+}
+
+// Print a divider (TTY only)
+function divider() {
+    if is_tty() { print("─".repeat(60)) }
+}
+
+// Wordmark (TTY only)
+function wordmark() {
+    if !is_tty() { return }
+    print("")
+    print("   ✦")
+    print("       /\\      /\\          ✦ O v y t h ✦")
+    print("      /  \\____/  \\         a tiny compiled")
+    print("     |  *      *  |         language")
+    print("     |      w      |")
+    print("     |   '----'   |")
+    print("      \\          /")
+    print("       '.______.'")
+    print("         |  |        ♥")
+    print("        (_)(_)")
+    print("")
+}
+
+// ------------------------------------------------------------------ demo mode
+
+function demo_model(goal_text, step) {
+    if goal_text.contains("/etc") {
+        if step == 1 {
+            return "{\"cmd\": \"du -sh /etc 2>/dev/null | head -3\"}"
+        }
+        if step == 2 {
+            return "{\"cmd\": \"du -sh /etc/* 2>/dev/null | sort -rh | head -3\"}"
+        }
+        if step == 3 {
+            return "{\"done\": \"The largest directories under /etc are the top three by du, as listed above; their sizes are in the du output.\"}"
+        }
+    }
+    if step == 1 {
+        return "{\"cmd\": \"echo no goal matched; here is the working directory:\"}"
+    }
+    if step == 2 {
+        return "{\"cmd\": \"pwd\"}"
+    }
+    return "{\"done\": \"demonstrated the loop: two commands, then this answer.\"}"
+}
+
+// ------------------------------------------------------------------ slash commands
+
+function show_help() {
+    panel("slash commands", [
+        "/help           show this help",
+        "/quit           exit the session",
+        "/clear          clear the screen",
+        "/config         show current configuration",
+        "/goal <text>    set a new goal for the next turn",
+        "/steps <n>      set step budget for the next turn",
+        "/model <name>   set model for the next turn",
+        "/history        show conversation history",
+        "/guard on|off   toggle guard",
+        "/nudge on|off   toggle nudges",
+        "",
+        "Type anything else to send it as a goal to the agent."
+    ])
+}
+
+function show_config() {
+    panel("configuration", [
+        "api_url:     " + cfg["api_url"],
+        "model:       " + cfg["model"],
+        "max_steps:   " + str(cfg["max_steps"]),
+        "work_dir:    " + (cfg["work_dir"] == "" ? "(temp)" : cfg["work_dir"]),
+        "guard:       " + (cfg["guard_enabled"] ? "on" : "off"),
+        "nudges:      " + (cfg["show_nudges"] ? "on" : "off"),
+        "api_key:     " + (cfg["api_key"] == "" ? "(demo mode)" : "***set***")
+    ])
+}
+
+function show_history() {
+    lines = []
+    for msg in history {
+        role = msg["role"]
+        content = msg["content"]
+        if len(content) > 50 { content = content.slice(0, 50) + "..." }
+        lines.append(role + ": " + content)
+    }
+    if len(lines) == 0 { lines = ["(empty)"] }
+    panel("history (" + str(len(lines)) + " messages)", lines)
+}
+
+function toggle_guard(arg) {
+    if arg == "on" { cfg["guard_enabled"] = true; config_save(cfg); print("guard enabled") }
+    else if arg == "off" { cfg["guard_enabled"] = false; config_save(cfg); print("guard disabled") }
+    else { print("usage: /guard on|off") }
+}
+
+function toggle_nudge(arg) {
+    if arg == "on" { cfg["show_nudges"] = true; config_save(cfg); print("nudges enabled") }
+    else if arg == "off" { cfg["show_nudges"] = false; config_save(cfg); print("nudges disabled") }
+    else { print("usage: /nudge on|off") }
+}
+
+function set_goal(arg) {
+    if arg == "" { print("usage: /goal <text>"); return }
+    print("goal set: " + arg)
+}
+
+function set_steps(arg) {
+    if arg == "" { print("usage: /steps <n>"); return }
+    cfg["max_steps"] = int(arg)
+    config_save(cfg)
+    print("max_steps set: " + arg)
+}
+
+function set_model(arg) {
+    if arg == "" { print("usage: /model <name>"); return }
+    cfg["model"] = arg
+    config_save(cfg)
+    print("model set: " + arg)
+}
+
+function handle_slash(cmd) {
+    parts = cmd.slice(1).split(" ", 2)
+    name = parts[0]
+    arg = len(parts) > 1 ? parts[1].trim() : ""
+    
+    if name == "help" { show_help(); return true }
+    if name == "quit" { print("bye!"); return "quit" }
+    if name == "clear" { clear_screen(); return true }
+    if name == "config" { show_config(); return true }
+    if name == "goal" { set_goal(arg); return true }
+    if name == "steps" { set_steps(arg); return true }
+    if name == "model" { set_model(arg); return true }
+    if name == "history" { show_history(); return true }
+    if name == "guard" { toggle_guard(arg); return true }
+    if name == "nudge" { toggle_nudge(arg); return true }
+    
+    print("unknown command: /" + name + " (try /help)")
+    return true
+}
+
+// ------------------------------------------------------------------ nudge
+
+function maybe_nudge() {
+    if !cfg["show_nudges"] { return }
+    if turn - last_nudge_turn >= nudge_interval {
+        if is_tty() {
+            print("")
+            print("  ℹ  nudge: try /goal to set a new task, /history to see context, /config to adjust settings")
+            print("")
+        }
+        last_nudge_turn = turn
+    }
+}
+
+// ------------------------------------------------------------------ agent loop (single turn)
+
+function agent_turn(user_input) {
+    turn = turn + 1
+    steps_taken = 0
+    
+    // Add user input to history
+    ai_ask(history, user_input)
+    
+    while steps_taken < cfg["max_steps"] {
+        steps_taken = steps_taken + 1
+        
+        // --- think -------------------------------------------------------
+        reply = ""
+        if cfg["api_key"] == "" {
+            reply = demo_model(user_input, steps_taken)
+        } else {
+            r = ai_request(cfg["api_url"], cfg["api_key"], cfg["model"], ai_trim(history, 12), 60.0)
+            if !r["ok"] {
+                print("model error: " + r["error"])
+                return
+            }
+            reply = r["text"]
+        }
+        reply = reply.trim()
+        
+        // --- parse -------------------------------------------------------
+        start = reply.indexof("{")
+        end = start < 0 ? -1 : json_end(reply, start)
+        if start < 0 or end < 0 {
+            print("model said something unparseable:")
+            print("  " + reply.slice(0, 200))
+            ai_told(history, "That was not one JSON object. Reply with exactly one: {\"cmd\": \"...\"} or {\"done\": \"...\"}.")
+            continue
+        }
+        
+        call = {}
+        try {
+            call = json.parse(reply.slice(start, end + 1))
+        } catch e {
+            print("json error: " + str(e))
+            ai_told(history, "That was not valid JSON. Reply with exactly one object.")
+            continue
+        }
+        
+        // --- stop --------------------------------------------------------
+        if call["done"] != null {
+            answer = call["done"]
+            print("")
+            panel("answer", [answer])
+            return
+        }
+        
+        // --- act ---------------------------------------------------------
+        cmd = call["cmd"]
+        if cmd == null or cmd == "" {
+            print("model did not name a command")
+            return
+        }
+        
+        // --- guard -------------------------------------------------------
+        if cfg["guard_enabled"] {
+            g = guard(cmd)
+            if !g["ok"] {
+                print("  refused: " + g["why"])
+                ai_told(history, "refused: " + cmd)
+                ai_ask(history, "That command was refused by the guard: " + g["why"] + "\nIt cannot be run. Choose a different command.")
+                continue
+            }
+        }
+        
+        step("$ " + cmd, false)
+        t0 = time.clock()
+        result = os.run(cmd)
+        elapsed = (time.clock() - t0) * 1000.0
+        step("$ " + cmd, true)
+        
+        out = result["stdout"].trim()
+        err = result["stderr"].trim()
+        if is_tty() {
+            print("  exit " + str(result["code"]) + " in " + str(round(elapsed)) + "ms")
+            if out != "" {
+                i = 0
+                for line in out.split("\n") {
+                    if i >= 24 { print("  ... (truncated)"); break }
+                    print("  | " + line)
+                    i = i + 1
+                }
+            }
+            if err != "" { print("  ! " + err.slice(0, 200)) }
+        } else {
+            // piped: raw output
+            if out != "" { print(out) }
+            if err != "" { print(err) }
+        }
+        
+        // --- observe -----------------------------------------------------
+        obs = out.slice(0, 2000)
+        if len(out) > 2000 {
+            obs = obs + "\n... [" + str(len(out) - 2000) + " bytes omitted] ...\n" + out.slice(len(out) - 2000, len(out))
+        }
+        ai_told(history, "ran: " + cmd)
+        ai_ask(history, "exit " + str(result["code"]) + "\n" + "stdout:\n" + obs + "\n" + "stderr:\n" + err.slice(0, 500))
+    }
+    
+    print("")
+    panel("stopped", ["budget of " + str(cfg["max_steps"]) + " steps exhausted", "last step: " + str(steps_taken)])
+}
+
+// ------------------------------------------------------------------ main
+
+if cfg["first_run"] {
+    cfg["first_run"] = false
+    config_save(cfg)
+    clear_screen()
+    wordmark()
+    panel("first run", [
+        "Welcome! No AI_API_KEY is set, so demo mode is active.",
+        "Set AI_API_KEY, AI_API_URL, AI_MODEL to use a real model.",
+        "Config saved to " + config_path,
+        "",
+        "Type /help for commands, or just start chatting."
+    ])
+} else if is_tty() {
+    wordmark()
+    panel("ready", ["Type /help for commands, or enter a goal to begin."])
+}
+
+while true {
+    maybe_nudge()
+    
+    input_line = ""
+    if is_tty() {
+        print("")
+        print("  ┌" + "─".repeat(58) + "┐")
+        print("  │ " + "you".repeat(1) + " ".repeat(56) + "│")
+        print("  └" + "─".repeat(58) + "┘")
+        input_line = input()
+    } else {
+        input_line = input()
+    }
+    
+    if input_line == null { break }  // EOF
+    
+    input_line = input_line.trim()
+    if input_line == "" { continue }
+    
+    if input_line.startswith("/") {
+        result = handle_slash(input_line)
+        if result == "quit" { break }
+        continue
+    }
+    
+    // Treat as a new goal
+    goal = input_line
+    agent_turn(goal)
+}
