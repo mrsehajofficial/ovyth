@@ -37,6 +37,9 @@
       "versions": {
         "1.0.0": {
           "repo": "https://github.com/mrsehajofficial/ovyth-agent.git"
+        },
+        "1.0.1": {
+          "repo": "https://github.com/mrsehajofficial/ovyth-agent.git"
         }
       }
     }
