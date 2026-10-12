@@ -163,11 +163,11 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 
 install: all
-	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/lib $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/share/ovyth/agent
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/lib $(DESTDIR)$(PREFIX)/include
 	install -m 755 $(OVC) $(DESTDIR)$(PREFIX)/bin/ovc
 	install -m 644 $(RT_LIB) $(DESTDIR)$(PREFIX)/lib/libovrt.a
 	install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h $(DESTDIR)$(PREFIX)/include/
-	install -m 644 examples/agent/tui.ov $(DESTDIR)$(PREFIX)/share/ovyth/agent/tui.ov
+	install -m 644 examples/agent/tui.ov/tui.ov
 	@echo "installed ovc into $(DESTDIR)$(PREFIX)"
 
 # Delegated to uninstall.sh so `make uninstall` and `./uninstall.sh` do the

@@ -117,10 +117,6 @@ if [ "$PRETTY" = 1 ]; then
   install -m 755 build/ovc       "$bindir/ovc"
   install -m 644 build/libovrt.a "$libdir/libovrt.a"
   install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h "$incdir/"
-  # The agent TUI ships as source, like every other Ovyth program: `ovc agent`
-  # finds it next to the binary, so there is no second build of it.
-  install -d "$destdir$prefix/share/ovyth/agent"
-  install -m 644 examples/agent/tui.ov "$destdir$prefix/share/ovyth/agent/tui.ov"
   step_done
   bullet "$bindir/ovc" "the compiler"
   bullet "$libdir/libovrt.a" "linked into every compiled program"
@@ -133,8 +129,6 @@ else
   install -m 755 build/ovc       "$bindir/ovc"
   install -m 644 build/libovrt.a "$libdir/libovrt.a"
   install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h "$incdir/"
-  install -d "$destdir$prefix/share/ovyth/agent"
-  install -m 644 examples/agent/tui.ov "$destdir$prefix/share/ovyth/agent/tui.ov"
 fi
 
 if [ "$PRETTY" = 1 ]; then
@@ -154,7 +148,6 @@ else
   echo "  $bindir/ovc"
   echo "  $libdir/libovrt.a"
   echo "  $incdir/ovrt.h"
-  echo "  $prefix/share/ovyth/agent/tui.ov     the agent TUI, run with: ovc agent"
 
   case ":$PATH:" in
     *":$prefix/bin:"*) ;;

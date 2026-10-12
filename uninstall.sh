@@ -157,7 +157,6 @@ targets=(
   "$libdir/libovrt.a"
   "$incdir/ovrt.h"
   "$incdir/ovrt_helpers.h"
-  "$prefix/share/ovyth/agent/tui.ov"
 )
 
 present=()
@@ -205,8 +204,6 @@ else
   rmdir_if_empty "$incdir"
   rmdir_if_empty "$libdir"
   rmdir_if_empty "$bindir"
-  rmdir_if_empty "$prefix/share/ovyth/agent"
-  rmdir_if_empty "$prefix/share/ovyth"
 
   if [ "$PRETTY" = 1 ]; then
     printf '\n   %s Ovyth is uninstalled — %s freed\n' "$G$OK$N" "$(human "$bytes")"
