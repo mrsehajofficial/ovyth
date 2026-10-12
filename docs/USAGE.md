@@ -403,6 +403,27 @@ new dependencies — an arithmetic binary's `ldd` is still libc and libm — so 
 agent's step budget goes to the model call and the command's own work, not the
 runtime.
 
+#### The guard
+
+A guard, not a sandbox. Writing, installing, cloning and building are the point
+of an agent and they are all writes, so the question is not "does this change
+anything" but "does this destroy something that cannot be built again" — the
+system roots, the block devices, and the machine's power state. Everything else
+is allowed: `rm -rf build`, `rm -rf /tmp/x`, `rm -rf ~/.cache`, `sudo apt
+install` all run.
+
+A refusal is fed back to the model as an observation, with the reason, so it
+adapts rather than retrying. Two settings:
+
+- `AGENT_PROTECT=path:path` — extra paths to protect, for the things a program
+  cannot guess. Subdirectories of `$HOME` are deliberately **not** protected by
+  default: which ones matter is the user's call.
+- `AGENT_UNSAFE=1` — disable the guard entirely.
+
+Deletion is decided by *parsing* the target, not substring-matching the command.
+Matching `"rm -rf /usr"` looks sufficient until it is tested: `rm -rf /`
+contains no such substring and sailed straight through, as did `rm -rf $HOME`.
+
 With `AI_API_KEY` / `AI_API_URL` / `AI_MODEL` set it runs against a live
 OpenAI-compatible endpoint. Without them it uses a scripted stand-in, so the
 whole loop — parsing, executing, logging, the step budget — is readable and
