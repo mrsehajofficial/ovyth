@@ -191,6 +191,11 @@ class Gen {
   std::string out;
   std::string err;
 
+  // Set by the driver from `--stats`: emit the heap-telemetry call in main()'s
+  // epilogue. Off by default, so a program never prints counters it was not
+  // asked for -- a benchmark that instruments itself measures the wrong thing.
+  bool stats_ = false;
+
   Gen(const ast::Program& p, Sema& s) : prog_(p), sema_(s) {}
 
   std::string run();
@@ -1149,9 +1154,19 @@ std::string Gen::emit_assign(const Expr* target, const std::string& val) {
     case ExprKind::Index: {
       std::string b = fresh(), i = fresh();
       const std::string B = b, I = i, V = val;
+      // An index-assign into a specialized array stores through that array's
+      // own setter, which range-checks. Without these arms a specialized
+      // literal ([1, 2, 3]) fell through to "cannot index-assign" -- a
+      // misleading error for a perfectly good list.
       return "({ OvValue " + b + " = " + ex(target->a) + "; OvValue " + i +
              " = " + ex(target->b) + "; if (ov_tagof(" + B + ") == OV_LIST) "
              "ov_list_set(" + B + ".list, " + I + ".i, " + V + "); else "
+             "if (ov_tagof(" + B + ") == OV_I64A) "
+             "ov_i64a_set(" + B + ".i64a, (" + I + ").i, (" + V + ").i); else "
+             "if (ov_tagof(" + B + ") == OV_F64A) "
+             "ov_f64a_set(" + B + ".f64a, (" + I + ").i, (" + V + ").f); else "
+             "if (ov_tagof(" + B + ") == OV_STRA) "
+             "ov_stra_set(" + B + ".stra, (" + I + ").i, (" + V + ").str); else "
              "if (ov_tagof(" + B + ") == OV_MAP) ov_map_set(" + B + ".map, " + I +
              ", " + V + "); else ov_throw_str(ov_str_new(\"cannot index-assign\", "
              "17)); })";
@@ -2748,6 +2763,9 @@ std::string Gen::run() {
   line("  }");
   line("  ov_try_pop();");
   line("  ov_runtime_shutdown();");
+  // `--stats`: what the heap actually did. Emitted only when asked for, so a
+  // benchmark never prints its own instrumentation into its own timing.
+  if (stats_) line("  ov_heap_print_stats();");
   line("  return _code;");
   line("}");
 
@@ -2757,9 +2775,11 @@ std::string Gen::run() {
 }  // namespace
 
 std::string emit_c_source(const ast::Program& program, Sema& sema,
-                          const std::string& source, std::string& err) {
+                          const std::string& source, std::string& err,
+                          bool stats) {
   (void)source;
   Gen g(program, sema);
+  g.stats_ = stats;
   std::string out = g.run();
   if (!g.err.empty()) { err = g.err; return ""; }
   err.clear();

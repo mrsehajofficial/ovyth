@@ -251,17 +251,22 @@ extern OvValue ov_i64a_val(OvInt64Array* a);
 extern OvValue ov_f64a_val(OvFloat64Array* a);
 extern OvValue ov_stra_val(OvStringArray* a);
 
-/* Forward declarations for slow paths */
+/* Forward declarations for slow paths. The get/set slow paths raise an index
+ * error for an out-of-range index, exactly as ov_list_get/ov_list_set do: a
+ * specialized array is a storage detail, never a different set of rules. */
 void ov_i64a_push_slow(OvInt64Array* a, int64_t v);
 int64_t ov_i64a_get_slow(OvInt64Array* a, int64_t i);
+void ov_i64a_set_slow(OvInt64Array* a, int64_t i, int64_t v);
 void ov_i64a_free(OvInt64Array* a);
 
 void ov_f64a_push_slow(OvFloat64Array* a, double v);
 double ov_f64a_get_slow(OvFloat64Array* a, int64_t i);
+void ov_f64a_set_slow(OvFloat64Array* a, int64_t i, double v);
 void ov_f64a_free(OvFloat64Array* a);
 
 void ov_stra_push_slow(OvStringArray* a, OvStr* v);
 OvStr* ov_stra_get_slow(OvStringArray* a, int64_t i);
+void ov_stra_set_slow(OvStringArray* a, int64_t i, OvStr* v);
 void ov_stra_free(OvStringArray* a);
 
 /* Int64Array operations */
@@ -280,7 +285,8 @@ static inline int64_t ov_i64a_pop(OvInt64Array* a) {
   return a->data[--a->len];
 }
 static inline void ov_i64a_set(OvInt64Array* a, int64_t i, int64_t v) {
-  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) a->data[i] = v;
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) { a->data[i] = v; return; }
+  ov_i64a_set_slow(a, i, v);
 }
 
 /* Float64Array operations */
@@ -299,7 +305,8 @@ static inline double ov_f64a_pop(OvFloat64Array* a) {
   return a->data[--a->len];
 }
 static inline void ov_f64a_set(OvFloat64Array* a, int64_t i, double v) {
-  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) a->data[i] = v;
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) { a->data[i] = v; return; }
+  ov_f64a_set_slow(a, i, v);
 }
 
 /* StringArray operations */
@@ -318,7 +325,8 @@ static inline OvStr* ov_stra_pop(OvStringArray* a) {
   return a->data[--a->len];
 }
 static inline void ov_stra_set(OvStringArray* a, int64_t i, OvStr* v) {
-  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) a->data[i] = v;
+  if (a && i >= 0 && (uint64_t)i < (uint64_t)a->len) { a->data[i] = v; return; }
+  ov_stra_set_slow(a, i, v);
 }
 
 /* `hdr` first -- see the OvList note above: the GC tracks &m->hdr as the
@@ -619,6 +627,13 @@ struct OvFunc {
  * value slots (the backends' shadow stacks) plus whatever the backend passes
  * explicitly to ov_gc_collect_ex(). */
 void  ov_gc_collect(void);
+/* Telemetry: what the heap actually did, for "why is this slow?" */
+size_t ov_gc_cycles(void);
+size_t ov_gc_collected_bytes(void);
+size_t ov_heap_peak_bytes(void);
+size_t ov_heap_resize_count(void);
+void   ov_heap_count_resize(void);
+void   ov_heap_print_stats(void);   /* the --stats block; silent by default */
 void  ov_gc_register_root(OvValue* slot);
 void  ov_gc_unregister_root(OvValue* slot);
 size_t ov_gc_roots_mark(void);

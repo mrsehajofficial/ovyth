@@ -1,0 +1,48 @@
+// Specialized arrays are a storage detail, not a different set of rules.
+//
+// The native backend emits an Int64Array for [1, 2, 3] where the interpreter
+// builds a plain List. Both used to answer differently for an index past the
+// end: the array returned 0 on a read and rejected a write outright, while
+// the list raised an index error for both. A silent 0 is the worst of the
+// three -- it is an answer, and it is wrong.
+
+a = [1, 2, 3]
+
+// An in-range write stores and leaves the length alone.
+a[1] = 20
+print("write:", a[0], a[1], a[2], len(a))
+
+// A negative index counts from the end, and stays negative-aware.
+print("negative:", a[-1])
+
+// Out of range raises on a read, for ints, floats and strings alike.
+try { x = a[99] } catch e { print("int read oob: raised") }
+f = [1.5, 2.5]
+try { x = f[99] } catch e { print("float read oob: raised") }
+s = ["a", "b"]
+try { x = s[99] } catch e { print("string read oob: raised") }
+try { x = a[-99] } catch e { print("negative oob: raised") }
+
+// Out of range raises on a write.
+try { a[99] = 1 } catch e { print("int write oob: raised") }
+try { s[99] = "z" } catch e { print("string write oob: raised") }
+
+// Growth far past the initial capacity, checking both ends of the run.
+b = []
+i = 0
+while i < 200 {
+    b.push(i)
+    i = i + 1
+}
+print("grown:", len(b), b[0], b[199], b[-1])
+
+// An empty collection: pop is nil, not a crash, and push starts working.
+c = []
+print("empty pop:", c.pop())
+print("empty len:", len(c))
+c.push(7)
+print("after push:", len(c), c[0])
+
+// A heterogeneous literal keeps working through the index path.
+books = [{"title": "left"}, {"title": "right"}]
+print("map in list:", books[0]["title"], books[1]["title"])

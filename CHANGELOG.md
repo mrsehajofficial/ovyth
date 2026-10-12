@@ -5,6 +5,50 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### Performance milestone: measurement, and two correctness fixes — 12 Oct 2026
+
+The P0 checklist item "measure, do not guess" is done, and it changed what
+the next optimization should be.
+
+`benchmarks/profile.sh` measures four dimensions per case instead of one:
+wall clock (median of 5 reps, whole process, startup included), peak RSS
+(measured by a `fork`+`getrusage` wrapper *outside* the process, so the
+measurement cannot be fooled), and from new `--stats` telemetry the
+allocations, GC cycles, collection growths and peak heap. It refuses to
+report a case whose output is not stable across three runs.
+
+`--stats` is now implemented (it was documented in `usage()` but did
+nothing) and works on both backends: `ovc run --stats x.ov` and
+`ovc x.ov --release --stats` print the same counters, because they come from
+the runtime either way. Telemetry is emitted only when asked for, so a
+benchmark never instruments its own timing.
+
+Two correctness bugs were found by testing the specialized-array paths the
+audit had flagged, both of which made the two backends disagree:
+
+- **an out-of-range read on a specialized array returned 0** where a plain
+  list raised an index error. A silent, plausible, wrong answer — the worst
+  kind. `ov_i64a_get_slow`, `ov_f64a_get_slow` and `ov_stra_get_slow` now
+  raise, matching `ov_list_get_slow`.
+- **an index-assign into a specialized array always threw
+  "cannot index-assign"**, because the codegen handled only `OV_LIST` and
+  `OV_MAP`. `d[99] = 7` on `[1, 2, 3]` now stores (in range) or raises an
+  index error (out of range), and writes through range-checked setters.
+
+`tests/interp/024_array_boundaries.ov` pins all of it on both backends:
+in-range writes, negative indices, out-of-range reads for int/float/string
+arrays, out-of-range writes, growth past the initial capacity, and an empty
+collection.
+
+Findings, in `benchmarks/BASELINE.md`: arithmetic is already 1.6x of C and
+maps 2.5x, while `mapops`' 400k allocations turned out to be the benchmark's
+own string building rather than the map. The largest measured gap is the
+list-append path at 184x of C, and the evidence for the cause is that
+`for x in range(500000)` — specialised into a native C loop, no collection
+built — does the same work in 21ms with 2 allocations where `push` takes 45ms
+with 3 GC cycles. The recommendation is type propagation into collections
+(P1), not a new GC, JIT or LLVM backend.
+
 ### Install several packages in one command — 11 Oct 2026
 
 `ovc pkg install ai rag greet` now works. The index is fetched once for the

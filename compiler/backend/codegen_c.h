@@ -13,7 +13,9 @@
 namespace ov {
 
 // Emits C source implementing `program`.  err receives a message on failure.
+// `stats` asks for the heap-telemetry call in the generated epilogue.
 std::string emit_c_source(const ast::Program& program, Sema& sema,
-                          const std::string& source, std::string& err);
+                          const std::string& source, std::string& err,
+                          bool stats = false);
 
 }  // namespace ov

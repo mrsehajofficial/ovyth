@@ -1,0 +1,13 @@
+write: 1 20 3 3
+negative: 3
+int read oob: raised
+float read oob: raised
+string read oob: raised
+negative oob: raised
+int write oob: raised
+string write oob: raised
+grown: 200 0 199 199
+empty pop: nil
+empty len: 0
+after push: 1 7
+map in list: left right

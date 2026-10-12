@@ -51,6 +51,7 @@ int64_t ov_list_len(OvList* l) { return l ? (int64_t)l->len : 0; }
  * growth; benchmark numbers, not taste, should decide that later.) */
 static void list_grow(OvList* l, uint32_t need) {
   if (need <= l->cap) return;
+  ov_heap_count_resize();
   /* Bracket the swap: see map_rehash. l->items is replaced before the new
    * array is fully in place, so a collection here would size the heap from a
    * list that is mid-move. */
@@ -163,6 +164,7 @@ void ov_i64a_push_slow(OvInt64Array* a, int64_t v) {
   if (!a) return;
   uint32_t cap = a->cap ? a->cap : 4;
   while (cap < a->len + 1) cap *= 2;
+  ov_heap_count_resize();
   int64_t* items = (int64_t*)realloc(a->data, cap * sizeof(int64_t));
   if (!items) oom((size_t)cap * sizeof(int64_t));
   a->data = items;
@@ -173,7 +175,7 @@ void ov_i64a_push_slow(OvInt64Array* a, int64_t v) {
 int64_t ov_i64a_get_slow(OvInt64Array* a, int64_t i) {
   if (!a) return 0;
   if (i < 0) i += a->len;
-  if (i < 0 || i >= (int64_t)a->len) return 0;
+  if (i < 0 || i >= (int64_t)a->len) ov_index_error("list", i, (int64_t)a->len);
   return a->data[i];
 }
 
@@ -181,6 +183,27 @@ void ov_i64a_free(OvInt64Array* a) {
   if (!a) return;
   free(a->data);
   free(a);
+}
+
+void ov_i64a_set_slow(OvInt64Array* a, int64_t i, int64_t v) {
+  if (!a) return;
+  if (i < 0) i += a->len;
+  if (i < 0 || i >= (int64_t)a->len) ov_index_error("list", i, (int64_t)a->len);
+  a->data[i] = v;
+}
+
+void ov_f64a_set_slow(OvFloat64Array* a, int64_t i, double v) {
+  if (!a) return;
+  if (i < 0) i += a->len;
+  if (i < 0 || i >= (int64_t)a->len) ov_index_error("list", i, (int64_t)a->len);
+  a->data[i] = v;
+}
+
+void ov_stra_set_slow(OvStringArray* a, int64_t i, OvStr* v) {
+  if (!a) return;
+  if (i < 0) i += a->len;
+  if (i < 0 || i >= (int64_t)a->len) ov_index_error("list", i, (int64_t)a->len);
+  a->data[i] = v;
 }
 
 /* Float64Array */
@@ -199,6 +222,7 @@ void ov_f64a_push_slow(OvFloat64Array* a, double v) {
   if (!a) return;
   uint32_t cap = a->cap ? a->cap : 4;
   while (cap < a->len + 1) cap *= 2;
+  ov_heap_count_resize();
   double* items = (double*)realloc(a->data, cap * sizeof(double));
   if (!items) oom((size_t)cap * sizeof(double));
   a->data = items;
@@ -209,7 +233,7 @@ void ov_f64a_push_slow(OvFloat64Array* a, double v) {
 double ov_f64a_get_slow(OvFloat64Array* a, int64_t i) {
   if (!a) return 0.0;
   if (i < 0) i += a->len;
-  if (i < 0 || i >= (int64_t)a->len) return 0.0;
+  if (i < 0 || i >= (int64_t)a->len) ov_index_error("list", i, (int64_t)a->len);
   return a->data[i];
 }
 
@@ -245,7 +269,7 @@ void ov_stra_push_slow(OvStringArray* a, OvStr* v) {
 OvStr* ov_stra_get_slow(OvStringArray* a, int64_t i) {
   if (!a) return NULL;
   if (i < 0) i += a->len;
-  if (i < 0 || i >= (int64_t)a->len) return NULL;
+  if (i < 0 || i >= (int64_t)a->len) ov_index_error("list", i, (int64_t)a->len);
   return a->data[i];
 }
 

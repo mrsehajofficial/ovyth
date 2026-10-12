@@ -490,7 +490,11 @@ int main(int argc, char** argv) {
   // ---- backend ----------------------------------------------------------
   if (cmd == "run") {
     ov::Interp interp(program, input);
-    return interp.run();
+    int code = interp.run();
+    // `--stats` for the tree-walking backend, matching what a compiled program
+    // prints: the counters live in the runtime either way.
+    if (opt.stats) ov_heap_print_stats();
+    return code;
   }
 
   // native compilation

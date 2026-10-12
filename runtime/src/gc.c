@@ -22,7 +22,11 @@ typedef struct {
   OvHeader* heap;
   size_t    heap_bytes;
   size_t    live_bytes;
+  size_t    peak_heap;       /* high-water mark of heap_bytes            */
   size_t    alloc_count;
+  size_t    gc_cycles;       /* completed collections                    */
+  size_t    collected_bytes; /* bytes freed across those collections     */
+  size_t    resizes;         /* list/array growths, i.e. reallocs        */
   double    next_gc;
   int       disabled;
 
@@ -43,11 +47,49 @@ size_t ov_gc_heap_bytes(void)    { return g.heap_bytes; }
 size_t ov_gc_live_bytes(void)    { return g.live_bytes; }
 size_t ov_heap_alloc_count(void) { return g.alloc_count; }
 
+/* --- telemetry ------------------------------------------------------------
+ * Counters for "why is this slow": how many objects, how many collections,
+ * how much the heap ever reached, and how often a collection had to be
+ * reallocated. Without these, a slowdown is a guess -- with them, an
+ * allocation-heavy loop is visibly different from a GC-bound one.
+ *
+ * All of it is off the fast path: a counter is bumped where the work already
+ * happens, and nothing here is consulted by the allocator. */
+
+size_t ov_gc_cycles(void)        { return g.gc_cycles; }
+size_t ov_gc_collected_bytes(void){ return g.collected_bytes; }
+size_t ov_heap_peak_bytes(void)  { return g.peak_heap; }
+size_t ov_heap_resize_count(void){ return g.resizes; }
+
+void ov_heap_count_resize(void) { g.resizes++; }
+
 void ov_heap_reset_stats(void) {
   g.alloc_count = 0;
   g.heap_bytes = 0;
   g.live_bytes = 0;
+  g.peak_heap = 0;
+  g.gc_cycles = 0;
+  g.collected_bytes = 0;
+  g.resizes = 0;
   g.next_gc = 8 * 1024 * 1024;
+}
+
+/* The block `--stats` prints. Human-readable on a terminal, plain when piped,
+ * and silent altogether unless asked for -- a benchmark that prints by
+ * default is a benchmark that changes what it measures. */
+void ov_heap_print_stats(void) {
+  size_t allocs = g.alloc_count;
+  size_t cycles = g.gc_cycles;
+  size_t peak = g.peak_heap;
+  size_t resizes = g.resizes;
+  if (!allocs && !cycles && !peak && !resizes) return;  /* nothing ran */
+  fprintf(stderr,
+          "  allocations   %zu\n"
+          "  gc cycles     %zu\n"
+          "  peak heap     %zu bytes (%.1f KB)\n"
+          "  list resizes  %zu\n",
+          allocs, cycles, peak, peak / 1024.0, resizes);
+  fflush(stderr);
 }
 
 void ov_gc_disable(int on) { g.disabled = on; }
@@ -107,6 +149,7 @@ static void track(OvHeader* h, size_t bytes) {
   h->next = g.heap;
   g.heap = h;
   g.heap_bytes += bytes;
+  if (g.heap_bytes > g.peak_heap) g.peak_heap = g.heap_bytes;
   g.live_bytes += bytes;
   g.alloc_count++;
   maybe_collect();
@@ -293,6 +336,7 @@ void ov_gc_mark_value(OvValue v) {
 void ov_gc_collect_ex(OvValue* extra, int n) {
   if (t_in_gc) return;
   t_in_gc = 1;
+  g.gc_cycles++;
   g.mark_len = 0;
   g.live_bytes = 0;
   for (size_t i = 0; i < g.roots_len; i++)
@@ -302,6 +346,8 @@ void ov_gc_collect_ex(OvValue* extra, int n) {
   if (g_scanner) g_scanner();
   mark_loop();
   sweep();
+  if (g.heap_bytes > g.live_bytes)
+    g.collected_bytes += g.heap_bytes - g.live_bytes;
   /* trigger next time the heap roughly doubles past the live set, so a
    * steady-state program collects rarely instead of on every append */
   g.next_gc = g.live_bytes * 2 + (8 * 1024 * 1024);

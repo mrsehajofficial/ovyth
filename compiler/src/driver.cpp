@@ -127,7 +127,7 @@ bool Driver::run(const std::vector<std::string>& argv, std::string& err) {
 
 bool Driver::emit_ir(const ast::Program& program, Sema& sema, std::string& ir_path,
                      std::string& err) {
-  std::string ir = emit_c_source(program, sema, "", err);
+  std::string ir = emit_c_source(program, sema, "", err, opt_.stats);
   if (!err.empty()) return false;
   std::ofstream out(ir_path);
   if (!out) {
@@ -156,7 +156,7 @@ int Driver::compile(const ast::Program& program, Sema& sema, const std::string& 
   }
 
   std::string err;
-  std::string ir = emit_c_source(program, sema, source, err);
+  std::string ir = emit_c_source(program, sema, source, err, opt_.stats);
   if (!err.empty()) {
     ov::cli_error(err);
     return 1;
