@@ -1,0 +1,84 @@
+// A list built only from ints becomes an Int64Array on the native backend,
+// where the interpreter builds a plain list. Both must answer identically, and
+// the representation must not leak anywhere a program can see -- including the
+// case where the array escapes its function.
+//
+// Every line below is a place where a leak used to show up or a wrong answer
+// was produced: `type()` printed "?", `sum()` returned 0, `json.stringify`
+// fell through its switch, and `pop()` on an empty array printed 0 where the
+// interpreter prints nil.
+
+xs = []
+i = 0
+while i < 6 {
+    xs.push(i * 2)
+    i = i + 1
+}
+print("len:", len(xs))
+print("values:", xs)
+print("index:", xs[0], xs[2], xs[-1])
+print("sum:", sum(xs))
+print("type:", type(xs))
+print("json:", json.stringify(xs))
+print("join:", join("-", xs))
+
+// An empty collection: pop is nil, not 0 -- a runtime shortcut that would
+// otherwise make the two backends disagree about an empty list.
+e = []
+print("empty pop:", e.pop())
+print("empty len:", len(e))
+e.push(7)
+print("after push:", len(e), e[0])
+
+xs.pop()
+print("after pop:", xs)
+
+// A single non-int push retires the collection, and the value is preserved.
+mixed = []
+mixed.push(1)
+mixed.push(2.5)
+print("mixed:", mixed, "type:", type(mixed))
+
+s = []
+s.push("a")
+s.push("b")
+print("strings:", s, "type:", type(s))
+
+f = []
+f.push(1.5)
+print("float:", f[0], "type:", type(f))
+
+// An array that escapes its function must stay valid: the collector owns it
+// now, so returning it is safe rather than a use-after-free.
+function build() {
+    xs = []
+    i = 0
+    while i < 3 {
+        xs.push(i)
+        i = i + 1
+    }
+    return xs
+}
+
+function sum_lengths() {
+    out = []
+    n = 0
+    while n < 3 {
+        out.push(len(build()))
+        n = n + 1
+    }
+    return out
+}
+print("escaped:", sum_lengths())
+
+// A loop whose back edge assigns a float must not specialize: the push saw an
+// int, but the pre-pass must still retire the collection.
+i2 = 0
+n2 = 0
+acc = []
+while n2 < 2 {
+    acc.push(i2)
+    i2 = 2.5
+    n2 = n2 + 1
+}
+print("retired:", acc)

@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { H_STRING = 0, H_LIST = 1, H_MAP = 2 };
+enum { H_STRING = 0, H_LIST = 1, H_MAP = 2, H_I64A = 3, H_F64A = 4, H_STRA = 5 };
 
 typedef struct {
   OvHeader* heap;
@@ -204,11 +204,29 @@ void ov_heap_track_map(OvMap* m, size_t bytes) {
   track(&m->hdr, bytes);
 }
 
+void ov_heap_track_i64a(OvInt64Array* a, size_t bytes) {
+  a->hdr.kind = H_I64A;
+  track(&a->hdr, bytes);
+}
+
+void ov_heap_track_f64a(OvFloat64Array* a, size_t bytes) {
+  a->hdr.kind = H_F64A;
+  track(&a->hdr, bytes);
+}
+
+void ov_heap_track_stra(OvStringArray* a, size_t bytes) {
+  a->hdr.kind = H_STRA;
+  track(&a->hdr, bytes);
+}
+
 static OvHeader* header_of(OvValue v) {
   switch (ov_tagof(v)) {
     case OV_STRING: return &((OvHeader*)v.str)[-1];
     case OV_LIST:   return &v.list->hdr;
     case OV_MAP:    return &v.map->hdr;
+    case OV_I64A:   return &v.i64a->hdr;
+    case OV_F64A:   return &v.f64a->hdr;
+    case OV_STRA:   return &v.stra->hdr;
     default:        return NULL;
   }
 }
@@ -229,6 +247,9 @@ static size_t object_bytes(OvHeader* h) {
     case H_STRING: return sizeof(OvHeader) + sizeof(OvStr) + h->len;
     case H_LIST:   return sizeof(OvList) + (size_t)((OvList*)h)->cap * sizeof(OvValue);
     case H_MAP:    return sizeof(OvMap) + (size_t)((OvMap*)h)->cap * sizeof(OvPair);
+    case H_I64A:   return sizeof(OvInt64Array) + (size_t)((OvInt64Array*)h)->cap * sizeof(int64_t);
+    case H_F64A:   return sizeof(OvFloat64Array) + (size_t)((OvFloat64Array*)h)->cap * sizeof(double);
+    case H_STRA:   return sizeof(OvStringArray) + (size_t)((OvStringArray*)h)->cap * sizeof(OvStr*);
     default:       return 0;
   }
 }
@@ -312,6 +333,27 @@ static void sweep(void) {
         bytes = sizeof(OvMap) + (size_t)m->cap * sizeof(OvPair);
         free(m->entries);
         free(m);
+        break;
+      }
+      case H_I64A: {
+        OvInt64Array* a = (OvInt64Array*)h;
+        bytes = object_bytes(h);
+        free(a->data);
+        free(a);
+        break;
+      }
+      case H_F64A: {
+        OvFloat64Array* a = (OvFloat64Array*)h;
+        bytes = object_bytes(h);
+        free(a->data);
+        free(a);
+        break;
+      }
+      case H_STRA: {
+        OvStringArray* a = (OvStringArray*)h;
+        bytes = object_bytes(h);
+        free(a->data);
+        free(a);
         break;
       }
       default:

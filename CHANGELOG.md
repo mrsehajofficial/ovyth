@@ -5,6 +5,44 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### P1: int collections, half the distance to C — 12 Oct 2026
+
+`xs = []` followed only by `xs.push(<int>)` now becomes an `Int64Array`
+instead of a boxed list: a raw int64 store per push, 8 bytes per element
+instead of 16, and nothing for the collector to mark.
+
+```
+case        before                    after
+--------------------------------------------------------------------
+listappend  41ms / 15076 KB RSS      24ms /  9316 KB RSS
+vs C        184x                      82x
+```
+
+`sema` marks a name as an int collection when it starts from an empty list
+literal and retires it on the first push whose argument is not provably an
+int, so the value's type is never lost. Retirement is flow-insensitive by
+design: a float assignment *after* the push in source but *before* it on a
+loop's back edge still retires it, which is what a pre-pass over the whole
+body provides.
+
+Specialized arrays were documented as "NOT GC-tracked; must be freed
+explicitly", which meant `return xs` handed back a freed array. They now
+carry an `OvHeader` like every other object and are collected, so an array
+is reachable exactly as long as something points at it.
+
+Leaks the change would have exposed, all fixed: `type()` printed `?` for a
+specialized array; `json.stringify()` fell through its switch; `sum()`
+returned 0 because it only handled `OV_LIST`; `pop()` on an empty array
+returned `0` where the interpreter returns `nil`.
+
+Also fixed along the way, and not specific to this change: **a variable
+assigned an int and then a float was emitted as a raw `int64_t`**, so
+`i = 0` … `i = 2.5` printed `2` on the native backend where the interpreter
+printed `2.5`. The unboxed claim is now retired when a name is given a
+non-int value — the same flow-insensitivity, applied to locals.
+`tests/interp/024_array_boundaries.ov` and `025_int_collections.ov` cover
+both, on both backends (50 language tests now).
+
 ### Performance milestone: measurement, and two correctness fixes — 12 Oct 2026
 
 The P0 checklist item "measure, do not guess" is done, and it changed what

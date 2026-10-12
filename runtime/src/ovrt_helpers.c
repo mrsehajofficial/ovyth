@@ -576,6 +576,25 @@ OvValue ov_h_pad(OvValue s, OvValue width, OvValue fill, OvValue side, int* thre
 
 OvValue ov_h_sum(OvValue list, int* threw) {
   *threw = 0;
+  /* A specialized array is summed straight from its contiguous buffer: no
+   * boxing per element, and the answer cannot depend on which representation
+   * the caller happens to hold. */
+  if (ov_tagof(list) == OV_I64A) {
+    OvInt64Array* a = list.i64a;
+    int64_t total = 0;
+    for (uint32_t k = 0; k < a->len; k++) total += a->data[k];
+    return ov_int(total);
+  }
+  if (ov_tagof(list) == OV_F64A) {
+    OvFloat64Array* a = list.f64a;
+    double total = 0;
+    for (uint32_t k = 0; k < a->len; k++) total += a->data[k];
+    return ov_float(total);
+  }
+  if (ov_tagof(list) == OV_STRA) {
+    *threw = 1;
+    return ov_str_val("sum() needs a list of numbers");
+  }
   if (ov_tagof(list) != OV_LIST) return ov_int(0);
   int all_int = 1;
   double d = 0;

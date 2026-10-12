@@ -157,6 +157,7 @@ OvInt64Array* ov_i64a_new_cap(uint32_t cap) {
   a->len = 0;
   a->data = (int64_t*)calloc(cap, sizeof(int64_t));
   if (!a->data) oom((size_t)cap * sizeof(int64_t));
+  ov_heap_track_i64a(a, sizeof(*a) + (size_t)cap * sizeof(int64_t));
   return a;
 }
 
@@ -215,6 +216,7 @@ OvFloat64Array* ov_f64a_new_cap(uint32_t cap) {
   a->len = 0;
   a->data = (double*)calloc(cap, sizeof(double));
   if (!a->data) oom((size_t)cap * sizeof(double));
+  ov_heap_track_f64a(a, sizeof(*a) + (size_t)cap * sizeof(double));
   return a;
 }
 
@@ -252,6 +254,7 @@ OvStringArray* ov_stra_new_cap(uint32_t cap) {
   a->len = 0;
   a->data = (OvStr**)calloc(cap, sizeof(OvStr*));
   if (!a->data) oom((size_t)cap * sizeof(OvStr*));
+  ov_heap_track_stra(a, sizeof(*a) + (size_t)cap * sizeof(OvStr*));
   return a;
 }
 

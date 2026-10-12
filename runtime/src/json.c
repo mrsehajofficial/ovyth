@@ -354,6 +354,44 @@ static void s_value(S* s, OvValue v) {
       s_ch(s, ']');
       break;
     }
+    /* Specialized arrays serialize exactly as the equivalent list does: the
+     * storage is an implementation detail, so `json.stringify` must not be
+     * able to tell them apart. Without these the switch fell through and
+     * produced garbage for any array produced by codegen. */
+    case OV_I64A: {
+      OvInt64Array* a = v.i64a;
+      s_ch(s, '[');
+      for (uint32_t i = 0; i < a->len; i++) {
+        if (i) s_ch(s, ',');
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%lld", (long long)a->data[i]);
+        s_raw(s, buf, strlen(buf));
+      }
+      s_ch(s, ']');
+      break;
+    }
+    case OV_F64A: {
+      OvFloat64Array* a = v.f64a;
+      s_ch(s, '[');
+      for (uint32_t i = 0; i < a->len; i++) {
+        if (i) s_ch(s, ',');
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.17g", a->data[i]);
+        s_raw(s, buf, strlen(buf));
+      }
+      s_ch(s, ']');
+      break;
+    }
+    case OV_STRA: {
+      OvStringArray* a = v.stra;
+      s_ch(s, '[');
+      for (uint32_t i = 0; i < a->len; i++) {
+        if (i) s_ch(s, ',');
+        s_json_string(s, a->data[i]->bytes, a->data[i]->len);
+      }
+      s_ch(s, ']');
+      break;
+    }
     case OV_MAP: {
       OvMap* m = v.map;
       s_ch(s, '{');

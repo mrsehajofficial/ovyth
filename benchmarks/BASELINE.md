@@ -101,17 +101,61 @@ boxed representation, not the loop.
 200k concatenations (one allocation each, which is the semantics of immutable
 strings, not waste) and `json` is 16ms with 90 allocations.
 
-## 4. Where the next change should go
+## 4. P1: int collections — done, and measured
+
+`xs = []` followed only by `xs.push(<int>)` now becomes an `Int64Array`
+instead of a boxed list. The evidence that motivated it: `range`-based
+iteration is 2x faster with zero allocations because it skips the boxed
+representation, while `xs.push(i)` materialises 500k boxed values.
+
+```
+case        before                    after
+--------------------------------------------------------------------
+listappend  41ms / 15076 KB RSS      24ms /  9316 KB RSS
+            17 list resizes          17 i64a resizes
+vs C        184x                      82x
+```
+
+41% faster, 37% less memory, half the distance to C — from removing the box
+per element and the collector's scan of the elements, not from touching the
+loop. `allocs` stayed at 3 and GC cycles dropped 3 -> 2.
+
+### The representation must not leak
+
+Specialized arrays were "NOT GC-tracked; must be freed explicitly" — which
+made them unsafe for a collection that escapes its function (`return xs`
+returned a freed array). They now carry an `OvHeader` like every other
+object and are collected, so an array stays reachable as long as anything
+points at it.
+
+Leaks found and fixed on the way, each one a place the representation could
+be observed:
+
+- `type()` printed `?` for a specialized array (the native backend emits a
+  different tag than the interpreter's list).
+- `json.stringify()` fell through its switch and produced garbage.
+- `sum()` returned 0, because it only handled `OV_LIST`.
+- `pop()` on an empty array returned `0` where the interpreter returns `nil`.
+- A `push` with a non-int argument was truncated into the array; sema now
+  retires the collection on the first such push, so it stays an ordinary
+  boxed list with the value's type intact.
+
+Flow-insensitivity was the load-bearing part: a `i = 2.5` *after* a `push(i)`
+in source but *before* it on a loop's back edge must still retire the
+collection, so a pre-pass scans the whole body before checking it.
+
+## 5. Where the next change should go
 
 By the measurements, in order:
 
-1. **Type propagation into collections (P1).** The evidence: `range`-based
-   iteration is 2x faster with zero allocations because it skips the boxed
-   representation, while `xs.push(i)` materialises 500k boxed values. The
-   compiler already proves locals int/float; extending that to a collection
-   built entirely from proven-int values (an `Int64Array` instead of a list)
-   would remove both the 16-byte-per-element cost and the GC's need to scan
-   them. That is a codegen change with a clear before/after to measure.
+1. **P1, function boundaries (not done).** An int local is unboxed inside one
+   function, but crossing a call boxes again. `fib` at 18x of C is where that
+   shows up — ~4ns per call is already good, but the argument and return are
+   boxed on every hop.
+2. **String-heavy loops (P3).** Only once a benchmark whose bottleneck is
+   *confirmed* to be the runtime rather than the algorithm exists.
+3. **The `sum()` walk.** It costs 13ms over 500k elements even with the array
+   in hand, because it boxes each element to test its type.
 2. **GC scan cost for large collections (P2).** Three collections over a
    growing 8MB set is O(live) per cycle. Measured next, only if (1) does not
    already remove most of it — a specialized int array has no pointers to
@@ -124,7 +168,7 @@ Not on the list yet: a new GC, a JIT, an LLVM backend, or assembly. `fib` at
 ~4ns per call through a boxed dynamic call, and `intloop` at 1.6x of C, do
 not justify them.
 
-## 5. Reproducing a change
+## 6. Reproducing a change
 
 Per the change-one-thing rule: edit, then
 

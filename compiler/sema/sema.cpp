@@ -57,6 +57,16 @@ void Sema::define(const std::string& name, Ty t) {
 
 void Sema::define(const std::string& name, Ty t, bool proven_int, bool proven_float) {
   define(name, t);
+  /* No unboxed claim for a name the pre-pass saw assigned something else.
+   *
+   * `i = 0` looks like a proven int, and codegen declares it int64_t. `i = 2.5`
+   * later stores a double into that slot, which C truncates -- native prints 2
+   * where the interpreter prints 2.5. The pre-pass already knows the name is
+   * given both kinds, so the claim is simply not made, and the local stays
+   * boxed. This is the same flow-insensitivity the collections rely on. */
+  if (proven_int || proven_float) {
+    if (non_int_assigned_.count(name)) { proven_int = proven_float = false; }
+  }
   if (proven_int || proven_float) {
     TyInfo info;
     info.ty = t;
@@ -119,6 +129,11 @@ bool Sema::run(Program& program) {
   push_scope(true);
   for (const char* b : kBuiltins) define(b, Ty::Func);
 
+  // The pre-pass runs over the top level too, not only over function bodies:
+  // a top-level `xs = []` followed by `xs.push(i)` is the common case, and the
+  // same loop hazard exists there.
+  scan_int_assignments(program.statements);
+
   for (auto* s : program.statements) check_stmt(s);
 
   for (const auto& d : diags_) program.diags.push_back(d);
@@ -165,6 +180,18 @@ Ty Sema::check_stmt(Stmt* s) {
           proven_float = !proven_int && s->values[i]->kind == ExprKind::FloatLit;
         }
         define(s->names[i], t, proven_int, proven_float);
+
+        // An empty list literal starting fresh is the only thing that may
+        // become a specialized int collection. Reassigning the name to
+        // anything else retires it, rather than leaving a stale claim behind.
+        const std::string key = proven_key(s->names[i]);
+        Expr* init = (!unpack && i < s->values.size()) ? s->values[i] : nullptr;
+        if (init && init->kind == ExprKind::ListLit && init->items.empty()) {
+          int_coll[key] = true;
+        } else {
+          int_coll.erase(key);
+        }
+
         vt.push_back(t);
         if (scopes_.size() == 1) globals[s->names[i]] = t;
       }
@@ -179,6 +206,17 @@ Ty Sema::check_stmt(Stmt* s) {
     case StmtKind::Assign: {
       Ty target = check_expr(s->expr);
       Ty value = check_expr(s->expr2);
+      // `xs = <anything other than a fresh []>` retires an int collection, the
+      // same way a VarDecl does. A plain `xs = []` restarts it.
+      if (s->expr && s->expr->kind == ExprKind::Identifier) {
+        const std::string key = proven_key(s->expr->name);
+        if (s->expr2 && s->expr2->kind == ExprKind::ListLit &&
+            s->expr2->items.empty()) {
+          int_coll[key] = true;
+        } else {
+          int_coll.erase(key);
+        }
+      }
       if (s->op != Tok::ASSIGN) {
         if (!is_numeric(target) && target != Ty::Str && target != Ty::List)
           error(s->pos, std::string("cannot apply '") + tok_name(s->op) +
@@ -193,6 +231,43 @@ Ty Sema::check_stmt(Stmt* s) {
             !(declared == Ty::Float && value == Ty::Int)) {
           note(s->pos, std::string("'") + s->expr->name + "' was inferred as " +
                           ty_name(declared) + ", now assigned " + ty_name(value));
+        }
+        // Keep the name's type current. The pre-pass treats an ambiguous
+        // value as "maybe int"; this is what turns that into a definite
+        // "not int" when the value's type is known and is not one.
+        if (value != Ty::Unknown && value != Ty::Any) define(s->expr->name, value);
+        if (scopes_.size() == 1 && value != Ty::Unknown && value != Ty::Any)
+          globals[s->expr->name] = value;
+
+        /* Retire the unboxed claim when the new value is not an int.
+         *
+         * `i = 0` records i as a proven int and codegen emits it as a raw
+         * int64_t local. Assigning `i = 2.5` then stores a double into that
+         * slot, and the native backend prints 2 where the interpreter prints
+         * 2.5 -- a wrong answer that has nothing to do with any other
+         * optimization. Erasing the claim makes the local boxed again. */
+        {
+          const std::string pkey = proven_key(s->expr->name);
+          if (value == Ty::Int) proven_types[pkey] = TyInfo{Ty::Int, true, false};
+          else if (value != Ty::Any) proven_types.erase(pkey);
+          if (value != Ty::Int && value != Ty::Any && value != Ty::Unknown)
+            non_int_assigned_.insert(s->expr->name);
+        }
+
+        // Retire the unboxed claim when the new value is not an int.
+        //
+        // `i = 0` records i as a proven int, and codegen then emits it as a raw
+        // int64_t local. Assigning `i = 2.5` stores a double into that slot,
+        // and the program prints 2 where the interpreter prints 2.5 -- a wrong
+        // answer on the native backend that has nothing to do with any other
+        // optimization. Erasing the claim makes the local boxed again.
+        const std::string pkey = proven_key(s->expr->name);
+        if (value == Ty::Unknown || value == Ty::Any || value == Ty::Int) {
+          if (value == Ty::Int) proven_types[pkey] = TyInfo{Ty::Int, true, false};
+          else proven_types.erase(pkey);
+        } else {
+          proven_types.erase(pkey);
+          non_int_assigned_.insert(s->expr->name);
         }
       }
       return Ty::Nil;
@@ -211,6 +286,11 @@ Ty Sema::check_stmt(Stmt* s) {
       Ty saved_ret = current_return_;
       std::string saved_fn = cur_fn_;
       cur_fn_ = s->name;
+      // The pre-pass fills a per-function set; the one run over the top level
+      // has to survive checking this function, or its names lose their
+      // retired status the moment a function appears above them.
+      std::unordered_set<std::string> saved_non_int = non_int_assigned_;
+      scan_int_assignments(s->body);
       current_return_ = sig.ret;
       for (size_t i = 0; i < s->params.size(); i++) {
         Ty t = s->params[i].type ? type_from(s->params[i].type) : Ty::Unknown;
@@ -228,6 +308,7 @@ Ty Sema::check_stmt(Stmt* s) {
       }
       current_return_ = saved_ret;
       cur_fn_ = saved_fn;
+      non_int_assigned_ = saved_non_int;
       pop_scope();
       return Ty::Nil;
     }
@@ -415,6 +496,19 @@ Ty Sema::check_call(Expr* e) {
     qualified = callee->a->name + "." + callee->name;
   }
 
+  // `xs.push(v)` on a collection we were still hoping to specialize: the
+  // argument decides it. One non-int push retires the name, and the codegen
+  // then emits an ordinary boxed list for the whole variable.
+  if (callee->kind == ExprKind::Member && callee->a &&
+      callee->a->kind == ExprKind::Identifier &&
+      (callee->name == "push" || callee->name == "append")) {
+    auto it = int_coll.find(proven_key(callee->a->name));
+    if (it != int_coll.end() && it->second) {
+      Expr* arg = e->args.empty() ? nullptr : e->args[0];
+      if (!arg || !is_proven_int_expr(arg)) it->second = false;
+    }
+  }
+
   for (auto* a : e->args) check_expr(a);
   for (auto& na : e->named_args) check_expr(na.value);
 
@@ -499,6 +593,74 @@ Ty Sema::check_call(Expr* e) {
 
 // Check if an expression is a pure integer literal or combination thereof
 // (no side effects, no float promotion) - enables raw int64_t lowering
+// Flow-insensitive pre-pass: every name assigned something that is not
+// provably an int is recorded, so a later check can treat the name as
+// maybe-float. Statement order cannot answer this, because the interesting
+// case is a loop whose back edge assigns a float the push has already been
+// checked against.
+// Does this value *definitely* not produce an int?
+//
+// Purely syntactic, because the pre-pass runs before scopes exist and so
+// cannot ask lookup(). Everything ambiguous -- an identifier, a call, an
+// index -- is treated as "maybe int" here and settled by the type check
+// instead, which does see the scopes. That split is what keeps the pre-pass
+// from being merely conservative: it catches `i = 2.5`, and the type check
+// catches `i = something_float()`.
+static bool not_int_syntactically(Expr* e) {
+  if (!e) return true;  // no initializer: nil
+  switch (e->kind) {
+    case ExprKind::IntLit: return false;
+    case ExprKind::FloatLit:
+    case ExprKind::StringLit:
+    case ExprKind::ListLit:
+    case ExprKind::MapLit:
+    case ExprKind::Interp:
+    case ExprKind::NullLit:
+    case ExprKind::BoolLit:
+      return true;
+    case ExprKind::Unary:
+      if (e->op == Tok::MINUS) return not_int_syntactically(e->a);
+      return true;
+    case ExprKind::Binary:
+      switch (e->op) {
+        case Tok::PLUS: case Tok::MINUS: case Tok::STAR: case Tok::PERCENT:
+        case Tok::AMP: case Tok::PIPE: case Tok::CARET:
+        case Tok::SHL: case Tok::SHR:
+          return not_int_syntactically(e->a) || not_int_syntactically(e->b);
+        default:
+          return true;  // a comparison, `and`, `or`: not an int
+      }
+    default:
+      return false;  // identifier, call, member, index: ambiguous, assume int
+  }
+}
+
+void Sema::scan_int_assignments(const StmtList& body) {
+  for (auto* s : body) {
+    if (!s) continue;
+    switch (s->kind) {
+      case StmtKind::VarDecl:
+        for (size_t i = 0; i < s->names.size(); i++)
+          if (i >= s->values.size() || not_int_syntactically(s->values[i]))
+            non_int_assigned_.insert(s->names[i]);
+        break;
+      case StmtKind::Assign:
+        if (s->expr && s->expr->kind == ExprKind::Identifier &&
+            not_int_syntactically(s->expr2))
+          non_int_assigned_.insert(s->expr->name);
+        break;
+      case StmtKind::If:
+      case StmtKind::While:
+      case StmtKind::For:
+        scan_int_assignments(s->body);
+        if (s->kind == StmtKind::If) scan_int_assignments(s->else_body);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
 bool Sema::is_proven_int_expr(Expr* e) {
   if (!e) return false;
   switch (e->kind) {
@@ -517,6 +679,16 @@ bool Sema::is_proven_int_expr(Expr* e) {
         default:
           return false;
       }
+    }
+    case ExprKind::Identifier: {
+      // Two conditions, both needed. The inferred type says the name *looks*
+      // like an int; the pre-pass says it is never given anything else. The
+      // second is what keeps a float out of an Int64Array across a loop.
+      if (non_int_assigned_.count(e->name)) return false;
+      Ty t;
+      if (lookup(e->name, &t) && t == Ty::Int) return true;
+      auto g = globals.find(e->name);
+      return g != globals.end() && g->second == Ty::Int;
     }
     default:
       return false;
@@ -640,6 +812,13 @@ Ty Sema::check_expr(Expr* e) {
 
     case ExprKind::Closure: {
       push_scope(true);
+      { std::unordered_set<std::string> saved_ni = non_int_assigned_;
+        scan_int_assignments(e->body);
+        for (auto& p : e->params) define(p.name, p.type ? type_from(p.type) : Ty::Unknown);
+        check_block(e->body);
+        pop_scope();
+        non_int_assigned_ = saved_ni;
+        return Ty::Func; }
       for (auto& p : e->params) define(p.name, p.type ? type_from(p.type) : Ty::Unknown);
       check_block(e->body);
       pop_scope();

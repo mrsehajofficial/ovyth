@@ -227,20 +227,25 @@ typedef struct OvPair {
 
 /* Specialized homogeneous arrays - contiguous native buffers for
  * known element types. These avoid boxing and provide cache-friendly
- * access patterns. NOT GC-tracked; must be freed explicitly. */
+ * access patterns. The header comes first, exactly as in OvList: the
+ * collector owns them like any other object, so an array that escapes its
+ * function stays reachable instead of being freed under its caller. */
 typedef struct OvInt64Array {
+  OvHeader hdr;
   int64_t* data;
   uint32_t len;
   uint32_t cap;
 } OvInt64Array;
 
 typedef struct OvFloat64Array {
+  OvHeader hdr;
   double* data;
   uint32_t len;
   uint32_t cap;
 } OvFloat64Array;
 
 typedef struct OvStringArray {
+  OvHeader hdr;
   OvStr** data;
   uint32_t len;
   uint32_t cap;
@@ -649,6 +654,9 @@ void  ov_heap_reset_stats(void);
 void ov_heap_note_realloc(size_t old_bytes, size_t new_bytes);
 void ov_heap_track_str(OvStr* s, size_t len);
 void ov_heap_track_list(OvList* l, size_t bytes);
+void ov_heap_track_i64a(OvInt64Array* a, size_t bytes);
+void ov_heap_track_f64a(OvFloat64Array* a, size_t bytes);
+void ov_heap_track_stra(OvStringArray* a, size_t bytes);
 void ov_heap_track_map(OvMap* m, size_t bytes);
 uint32_t ov_str_hash_n(const char* p, size_t n);
 

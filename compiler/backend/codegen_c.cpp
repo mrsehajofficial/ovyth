@@ -216,6 +216,14 @@ class Gen {
   std::vector<std::string> anon_names_;  // their C names, in creation order
   std::vector<std::string> pending_fns_; // user function bodies
   std::vector<std::string> cur_roots_;  // live local slots in the current function
+
+  // Locals holding an Int64Array because sema proved the list is built only
+  // from ints. A push into one is a raw int64 store: no box, 8 bytes per
+  // element instead of 16, and nothing for the collector to mark. They are
+  // ordinary GC objects, so one that escapes its function (it is returned, or
+  // stored into a structure) stays reachable -- the collector owns them now,
+  // which is why nothing here frees them.
+  std::unordered_set<std::string> int_coll_;
   BuilderInfo sb_;                     // active string-builder accumulation
   std::string last_empty_str_;         // last `x = ""` emitted (builder hint)
   std::set<std::string> inline_roots_; // roots already declared at their use site
@@ -415,6 +423,19 @@ class Gen {
   // is_int_expr() is true.
   bool is_int_expr(const Expr* e) const;
   std::string ex_int(const Expr* e);  // raw int64_t C expression
+
+  // A raw int64 expression for a value that is not provably an int: coerces
+  // through the runtime's cast, which throws for a non-number. Only a guard --
+  // sema retires any collection whose push is not provably int, so a reachable
+  // non-int push would be a bug in the analysis, not in this expression.
+  std::string ex_int_of(const Expr* e) {
+    if (is_int_expr(e)) return ex_int(e);
+    std::string v = fresh();
+    return "({ OvValue " + v + " = " + ex(e) + "; int _threw" + v +
+           " = 0; OvValue _n" + v + " = ov_h_to_int(" + v + ", &_threw" + v +
+           "); if (_threw" + v + ") ov_throw_value(ov_h_err_value()); _n" + v +
+           ".i; })";
+  }
 
   // Proven-float fast path: same for double expressions.
   bool is_float_expr(const Expr* e) const;
@@ -1523,6 +1544,8 @@ std::string Gen::emit_closure(const Expr* e) {
   // the locals, then declare and root them at entry.
   std::vector<std::string> outer_roots;
   outer_roots.swap(cur_roots_);
+  std::unordered_set<std::string> outer_int_coll;
+  outer_int_coll.swap(int_coll_);
   inline_roots_.clear();
 
   std::string body_buf;
@@ -1547,6 +1570,7 @@ std::string Gen::emit_closure(const Expr* e) {
   line("size_t _roots_mark = ov_gc_roots_mark();");
   emit_root_prologue();
   cur_roots_.swap(outer_roots);
+  int_coll_.swap(outer_int_coll);
   out += body_buf;
   pop_scope();
 
@@ -1623,22 +1647,18 @@ std::string Gen::call_value_method(const Expr* e, const std::string& base) {
   for (const Expr* a : e->args) args.push_back(ex(a));
   std::string a0 = args.size() > 0 ? args[0] : "ov_nil()";
   std::string a1 = args.size() > 1 ? args[1] : "ov_nil()";
-  std::string b = fresh(), o = fresh();
+  std::string b = fresh(), o = fresh(), av = fresh();
 
-  // Hot-path for push/append on known specialized arrays
+  // Hot-path for push/append on an int collection: the value goes in as a raw
+  // int64, never boxed. sema has already retired any collection with a
+  // non-int push, so the coercion here is belt and braces rather than a
+  // fallback anyone is expected to reach.
   if ((m->name == "push" || m->name == "append") && args.size() <= 1) {
-    std::string av = fresh();
-    // Check if base is a proven int/float array
-    if (e->a && e->a->kind == ExprKind::Identifier) {
-      const std::string& base_name = e->a->name;
-      if (std::string* c = lookup(base_name)) {
-        if (proven_ints_.count(*c)) {
-          // Fast path for int64_t array push
-          return "({ OvInt64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
-        }
-        if (proven_floats_.count(*c)) {
-          // Fast path for double array push
-          return "({ OvFloat64Array* " + *c + "_arr = (" + *c + "); " + *c + "_arr->data[" + *c + "_arr->len++] = " + a0 + "; " + base + "; })";
+    if (m->a && m->a->kind == ExprKind::Identifier) {
+      if (std::string* c = lookup(m->a->name)) {
+        if (int_coll_.count(*c)) {
+          std::string v = ex_int_of(e->args.empty() ? nullptr : e->args[0]);
+          return "(ov_i64a_push(" + *c + ".i64a, " + v + "), " + base + ")";
         }
       }
     }
@@ -1650,17 +1670,17 @@ std::string Gen::call_value_method(const Expr* e, const std::string& base) {
            ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
   }
 
-  // Hot-path for pop on known specialized arrays
+  // pop on an int collection: the raw store back, boxed once on the way out.
   if (m->name == "pop" && args.empty()) {
-    if (e->a && e->a->kind == ExprKind::Identifier) {
-      const std::string& base_name = e->a->name;
-      if (std::string* c = lookup(base_name)) {
-        if (proven_ints_.count(*c)) {
-          return "ov_int(" + *c + "->data[--" + *c + "->len])";
-        }
-        if (proven_floats_.count(*c)) {
-          return "ov_float(" + *c + "->data[--" + *c + "->len])";
-        }
+    if (m->a && m->a->kind == ExprKind::Identifier) {
+      if (std::string* c = lookup(m->a->name)) {
+        // Pop is nil when the collection is empty, exactly as ov_list_pop is.
+        // The runtime's array pop returns a raw 0 for an empty array, which
+        // would print as 0 where the interpreter prints nil -- a divergence
+        // built into a runtime shortcut, not into the language.
+        if (int_coll_.count(*c))
+          return "((" + *c + ".i64a->len ? ov_int(ov_i64a_pop(" + *c +
+                 ".i64a)) : ov_nil()))";
       }
     }
   }
@@ -2162,7 +2182,23 @@ case StmtKind::VarDecl: {
             s->values[i] && s->values[i]->kind == ExprKind::StringLit &&
             s->values[i]->sval.empty();
         if (!is_acc_init) {
+          // `xs = []` where sema proved the collection is built only from
+          // ints: allocate an Int64Array instead of a boxed list. Everything
+          // else about the variable is unchanged -- it is still one OvValue,
+          // so len/index/iteration/passing it on all keep working, and only
+          // push/pop take the raw-int path.
+          const bool is_int_coll =
+              i < s->values.size() && s->values[i] &&
+              s->values[i]->kind == ExprKind::ListLit &&
+              s->values[i]->items.empty() && !pi && !pf &&
+              sema_.is_int_collection(cur_fn_, name);
+          if (is_int_coll) rhs = "ov_i64a_val(ov_i64a_new())";
           line(bind(name, rhs, pi, pf) + ";");
+          // After the bind, so the C name is known: the push and pop paths
+          // look these up by C name, never by the Ovyth name.
+          if (is_int_coll) {
+            if (std::string* c = lookup(name)) int_coll_.insert(*c);
+          }
         }
       }
       // Handle tuple unpacking: `a, b = [x, y]` - each name gets the list element at that index.
@@ -2603,6 +2639,8 @@ void Gen::emit_function(const Stmt* s) {
   // live local must be rooted before the first instruction that can allocate.
   std::vector<std::string> outer_roots;
   outer_roots.swap(cur_roots_);
+  std::unordered_set<std::string> outer_int_coll;
+  outer_int_coll.swap(int_coll_);
   inline_roots_.clear();
 
   std::string body_buf;
@@ -2622,7 +2660,8 @@ void Gen::emit_function(const Stmt* s) {
   line("OvValue _ret = ov_nil();");
   line("size_t _roots_mark = ov_gc_roots_mark();");
   emit_root_prologue();
-  cur_roots_.swap(outer_roots);   // done: locals are rooted by the prologue
+  cur_roots_.swap(outer_roots);
+  int_coll_.swap(outer_int_coll);   // done: locals are rooted by the prologue
   out += body_buf;
   pop_scope();
 

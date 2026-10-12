@@ -1,0 +1,16 @@
+len: 6
+values: [0, 2, 4, 6, 8, 10]
+index: 0 4 10
+sum: 30
+type: List
+json: [0,2,4,6,8,10]
+join: 0-2-4-6-8-10
+empty pop: nil
+empty len: 0
+after push: 1 7
+after pop: [0, 2, 4, 6, 8]
+mixed: [1, 2.5] type: List
+strings: ["a", "b"] type: List
+float: 1.5 type: List
+escaped: [3, 3, 3]
+retired: [0, 2.5]
