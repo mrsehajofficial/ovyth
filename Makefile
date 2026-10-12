@@ -40,7 +40,7 @@ CC_OBJ   := $(patsubst %.cpp,$(BUILD)/%.o,$(CC_CPP))
 -include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d)
 OVC      := $(BUILD)/ovc
 
-.PHONY: all test clean runtime examples chatbot chatbot-rag install uninstall
+.PHONY: all test clean runtime examples chatbot chatbot-rag agent install uninstall
 
 all: $(OVC) $(RT_LIB)
 
@@ -116,6 +116,11 @@ chatbot: $(OVC)
 	 printf 'hello from make\nexit\n' | \
 	   AI_API_KEY=test AI_API_URL=http://127.0.0.1:$(MOCK_PORT)/v1/chat/completions AI_MODEL=mock-model \
 	   $(OVC) run examples/chatbot/chatbot.ov
+
+# The autonomous agent, in demo mode: scripted model, real commands, real
+# observation. With AI_API_KEY set it runs against a live endpoint instead.
+agent: $(OVC)
+	@AI_API_KEY= AGENT_STEPS=6 $(OVC) run examples/agent/agent.ov < /dev/null
 
 # The integrated chatbot: RAG retrieval + persistent memory, fully offline.
 # Persistence goes to examples/chatbot/chatbot_rag_memory.json, so a second run

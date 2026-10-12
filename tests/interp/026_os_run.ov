@@ -1,0 +1,30 @@
+// os.run(): the language can now act on the machine and observe the result.
+// fork/exec with both streams captured, and the same runtime call on both
+// backends, so the two agree exactly -- including the exit code and the
+// separation of stdout from stderr.
+r = os.run("echo hello from the shell")
+print("code:", r["code"])
+print("ok:", r["ok"])
+print("stdout:", r["stdout"])
+print("stderr:", r["stderr"])
+
+// A command that fails reports its status, and its complaint, without throwing.
+f = os.run("ls /nonexistent-path-ovyth-test")
+print("failed code:", f["code"])
+print("failed ok:", f["ok"])
+print("has stderr:", len(f["stderr"]) > 0)
+
+// A pipeline, so the shell's own composition is available to the agent.
+p = os.run("printf 'a\\nb\\nc\\n' | wc -l")
+print("pipe:", p["stdout"].trim())
+
+// Output larger than the pipe buffer, so the drain loop is exercised.
+big = os.run("seq 1 20000 | tail -n 1")
+print("lines survive:", big["stdout"].trim())
+
+// A command that reads stdin and gets nothing.
+n = os.run("cat")
+print("empty stdin:", n["code"], n["stdout"])
+
+// The command is recorded, for logging what an agent did.
+print("cmd recorded:", r["cmd"].contains("echo"))

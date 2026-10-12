@@ -1,0 +1,190 @@
+// Ovyth :: examples/agent/agent.ov
+//
+// An autonomous Linux agent.
+//
+// This is what the language exists for: a loop that decides, acts on the
+// machine, observes, and repeats -- with the model, the shell and the disk all
+// being plain function calls. No framework, no service, no `.so` to load: this
+// is one file, and it compiles to one binary.
+//
+// The loop is deliberately small:
+//
+//   think      ->  the model is given the goal and the log of what has happened
+//   act        ->  it emits ONE command as JSON; we run it and append the result
+//   observe    ->  that result goes back into the next turn's context
+//   stop       ->  when it says DONE, or the step budget runs out
+//
+// Tools are just shell commands, because on Linux that *is* the tool
+// interface: `cat`, `ls`, `grep`, `find`, `sed`, `awk`, `curl`, `python3`. The
+// agent is not limited to a tool list somebody wrote down.
+//
+// Environment (any of them; all optional):
+//   AI_API_KEY / AI_API_URL / AI_MODEL   a live OpenAI-compatible endpoint
+//   AGENT_GOAL                           what to work on (default below)
+//   AGENT_STEPS                          step budget (default 12)
+//   AGENT_DIR                            where it may work (default: a temp dir)
+//
+// With no AI_API_KEY it runs in demo mode against a scripted "model", so the
+// whole loop -- parsing, executing, logging, the step budget -- is worth
+// reading and testable with no network and no key.
+//
+//   ovc run examples/agent/agent.ov
+//   ovc examples/agent/agent.ov -o agent && ./agent
+
+import "ai"
+
+// ----------------------------------------------------------------- the goal
+
+goal = env_or("AGENT_GOAL", "list the three biggest directories in /etc and report sizes")
+max_steps = int(env_or("AGENT_STEPS", "12"))
+api_key = env_or("AI_API_KEY", "")
+api_url = env_or("AI_API_URL", "https://api.example.com/v1/chat")
+model = env_or("AI_MODEL", "gpt-4o-mini")
+work_dir = env_or("AGENT_DIR", "")
+
+if api_key == "" {
+    print("demo mode: no AI_API_KEY, so the model is scripted")
+    print("(set AI_API_KEY / AI_API_URL / AI_MODEL for a real run)")
+}
+print("goal: " + goal)
+print("")
+
+// ----------------------------------------------------------------- demo mode
+
+// A scripted stand-in for the model, so the loop can be read and tested with no
+// key and no network. It replays the same shape a real model would: one command
+// per turn, then DONE. It even adapts when a command fails, which is the part
+// that makes a real agent work.
+function demo_model(goal_text, step) {
+    if goal_text.contains("/etc") {
+        if step == 1 {
+            return "{\"cmd\": \"du -sh /etc 2>/dev/null | head -3\"}"
+        }
+        if step == 2 {
+            return "{\"cmd\": \"du -sh /etc/* 2>/dev/null | sort -rh | head -3\"}"
+        }
+        if step == 3 {
+            return "{\"done\": \"The largest directories under /etc are the top three " +
+                   "by du, as listed above; their sizes are in the du output.\"}"
+        }
+    }
+    if step == 1 {
+        return "{\"cmd\": \"echo no goal matched; here is the working directory:\"}"
+    }
+    if step == 2 {
+        return "{\"cmd\": \"pwd\"}"
+    }
+    return "{\"done\": \"demonstrated the loop: two commands, then this answer.\"}"
+}
+
+// Last position of `ch` in `text`, or -1. Used to bracket a JSON object the
+// model may have wrapped in prose or a fence: the first "{" from the left and
+// the last "}" from the right contain it.
+function last_index(text, ch) {
+    i = len(text) - 1
+    while i >= 0 {
+        if text[i] == ch { return i }
+        i = i - 1
+    }
+    return -1
+}
+
+// ----------------------------------------------------------------- the agent
+
+// The system prompt. It is the whole "framework": what the agent is, what it
+// may do, the one shape it may answer in, and the instruction to stop.
+system = "You are a Linux agent. You achieve a goal by running shell commands.\n" +
+    "Reply with exactly one JSON object and nothing else:\n" +
+    "  {\"cmd\": \"<one shell command>\"}   to run something\n" +
+    "  {\"done\": \"<what you found>\"}      when the goal is met\n" +
+    "Rules: one command per turn; prefer read-only commands; if a command\n" +
+    "fails, read the error and try a different one; never repeat a command\n" +
+    "that already failed the same way."
+
+history = ai_conversation(system)
+ai_ask(history, "Goal: " + goal)
+
+steps = 0
+answer = ""
+
+while steps < max_steps {
+    steps = steps + 1
+    print("--- step " + str(steps) + " -----------------------------------------")
+
+    // --- think -----------------------------------------------------------
+    reply = ""
+    if api_key == "" {
+        reply = demo_model(goal, steps)
+    } else {
+        r = ai_request(api_url, api_key, model, ai_trim(history, 12), 60.0)
+        if !r["ok"] {
+            print("model error: " + r["error"])
+            break
+        }
+        reply = r["text"]
+    }
+    reply = reply.trim()
+
+    // --- parse -----------------------------------------------------------
+    // The model answers with one JSON object. It is also allowed to wrap it in
+    // prose or a fence, so take the outermost {...} and let json.parse decide.
+    start = reply.indexof("{")
+    end = last_index(reply, "}")
+    if start < 0 or end <= start {
+        print("model said something unparseable:")
+        print("  " + reply)
+        ai_told(history, "That was not a JSON object. Reply with one.")
+        continue
+    }
+
+    call = json.parse(reply.slice(start, end + 1))
+
+    // --- stop ------------------------------------------------------------
+    if call["done"] != null {
+        answer = call["done"]
+        break
+    }
+
+    // --- act -------------------------------------------------------------
+    cmd = call["cmd"]
+    if cmd == null or cmd == "" {
+        print("model did not name a command")
+        break
+    }
+
+    print("$ " + cmd)
+    t0 = time.clock()
+    result = os.run(cmd)
+    elapsed = (time.clock() - t0) * 1000.0
+
+    out = result["stdout"].trim()
+    err = result["stderr"].trim()
+    print("  exit " + str(result["code"]) + " in " + str(round(elapsed)) + "ms")
+    if out != "" {
+        i = 0
+        for line in out.split("\n") {
+            if i >= 24 { print("  ... (truncated)"); break }
+            print("  | " + line)
+            i = i + 1
+        }
+    }
+    if err != "" { print("  ! " + err.slice(0, 200)) }
+
+    // --- observe ---------------------------------------------------------
+    // The observation goes back as a user turn: the model sees what the machine
+    // said, not what the program thinks it said.
+    ai_told(history, "ran: " + cmd)
+    ai_ask(history, "exit " + str(result["code"]) + "\n" +
+                   "stdout:\n" + out.slice(0, 2000) + "\n" +
+                   "stderr:\n" + err.slice(0, 500))
+}
+
+print("")
+if answer != "" {
+    print("=== answer ===")
+    print(answer)
+} else {
+    print("=== stopped without an answer (budget of " + str(max_steps) + " steps) ===")
+    print("the last thing tried was step " + str(steps))
+}
+

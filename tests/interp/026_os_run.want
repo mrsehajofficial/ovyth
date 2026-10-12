@@ -1,0 +1,12 @@
+code: 0
+ok: true
+stdout: hello from the shell
+
+stderr: 
+failed code: 2
+failed ok: false
+has stderr: true
+pipe: 3
+lines survive: 20000
+empty stdin: 0 
+cmd recorded: true

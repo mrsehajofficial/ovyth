@@ -560,6 +560,18 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
     return ov_int((int64_t)ts.tv_sec);
   }
   
+  // ------------------------------------------------------------------- os
+  // Running a command. Same runtime call the native backend emits, so the two
+  // agree byte for byte: `r = os.run("echo hi")` gives r["stdout"] == "hi\n"
+  // and r["code"] == 0 on either backend.
+  if (q == "os.run") {
+    std::string cmd = str_arg(ARG(0));
+    int threw = 0;
+    OvValue out = ov_nil();
+    if (ov_os_run(cmd.c_str(), &threw, &out)) ov_throw_value(ov_h_err_value());
+    return out;
+  }
+
   // ------------------------------------------------------------ file I/O
   if (q == "file.read") {
     std::string path = str_arg(ARG(0));

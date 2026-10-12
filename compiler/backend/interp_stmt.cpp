@@ -85,7 +85,7 @@ int Interp::run() {
       globals_->vars[s->name] = ov_nil();  // reserve the name
     }
   }
-  // `http`, `json`, `str`, `math`, `time` and `file` are namespaces: maps holding their
+  // `http`, `json`, `str`, `math`, `time`, `file` and `os` are namespaces: maps holding their
   // methods as closures. `time` needs no entries -- `time.clock` / `time.now`
   // are recognised by name -- but the entry must exist, or a dotted call would
   // try to evaluate the bare identifier `time` and fail.
@@ -95,12 +95,14 @@ int Interp::run() {
   OvMap* math_ns = ov_map_new();
   OvMap* time_ns = ov_map_new();
   OvMap* file_ns = ov_map_new();
+  OvMap* os_ns = ov_map_new();
   globals_->vars["http"] = ov_map(http_ns);
   globals_->vars["json"] = ov_map(json_ns);
   globals_->vars["str"] = ov_map(str_ns);
   globals_->vars["math"] = ov_map(math_ns);
   globals_->vars["time"] = ov_map(time_ns);
   globals_->vars["file"] = ov_map(file_ns);
+  globals_->vars["os"] = ov_map(os_ns);
 
   try {
     exec_block(prog_.statements, globals_);

@@ -26,6 +26,11 @@ int ov_h_value_method(OvValue base, const char* name, OvValue a0, OvValue a1,
 int ov_h_fail(const char* msg, size_t n);
 int ov_h_fail_with(OvValue v);
 
+/* os.run(): run a command through /bin/sh, and report what it produced.
+ * out receives {cmd, code, ok, stdout, stderr}. Returns 0 when the command
+ * ran, 1 when it could not be started at all. */
+int ov_os_run(const char* cmd, int* threw, OvValue* out);
+
 int ov_h_http(const char* method, OvValue url, OvValue headers, OvValue json_body,
               OvValue params, OvValue named_params, OvValue body, OvValue ctype,
               OvValue timeout, OvValue* out);

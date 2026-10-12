@@ -380,6 +380,34 @@ unchanged.
 
 ---
 
+### The autonomous agent
+
+`examples/agent/agent.ov` is the language doing what it exists for: a loop that
+decides, acts on the machine, observes, and repeats. One file, one binary.
+
+```bash
+ovc run examples/agent/agent.ov          # demo mode: scripted model, real commands
+make agent                               # the same, from the Makefile
+```
+
+The loop is deliberately small. The model is given the goal and a log, replies
+with **one** JSON object — `{"cmd": "..."}` or `{"done": "..."}` — the command
+runs through `os.run()`, and its exit code, stdout and stderr go back as the
+next turn. Tools are shell commands, because on Linux that *is* the tool
+interface, so the agent is not limited to a list somebody wrote down.
+
+`os.run(cmd)` returns `{cmd, code, ok, stdout, stderr}`: the exit status, and
+both streams kept apart so an agent can tell a command's output from its
+complaint. It costs about **2ms per call** (spawn, drain, wait) and pulls in no
+new dependencies — an arithmetic binary's `ldd` is still libc and libm — so an
+agent's step budget goes to the model call and the command's own work, not the
+runtime.
+
+With `AI_API_KEY` / `AI_API_URL` / `AI_MODEL` set it runs against a live
+OpenAI-compatible endpoint. Without them it uses a scripted stand-in, so the
+whole loop — parsing, executing, logging, the step budget — is readable and
+testable offline.
+
 ## 6. The `ovc` command
 
 | command | what it does |
@@ -463,6 +491,7 @@ question "why did it see that?".
 | conversion | `len` `str` `int` `float` `bool` `type` `range` |
 | json | `json.parse` `json.stringify` `json.valid` `json.extract` `json.get_int` `json.get_float` `json.get_str` |
 | files | `file.read` `file.write` `file.append` `file.exists` `file.size` `file.delete` |
+| system | `os.run` |
 | math | `abs` `sqrt` `floor` `ceil` `round` `min` `max` `sum` `pow` |
 | misc | `time.clock` `time.now` `gc` `exit` `throw` `assert` |
 

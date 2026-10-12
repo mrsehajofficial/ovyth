@@ -1791,6 +1791,18 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
     if (name == "clock") return "ov_float(ov_h_now())";
     if (name == "now")   return "ov_int(ov_h_now_realtime())";
   }
+  if (ns == "os") {
+    // The agent's hands. One method, on purpose: everything an agent needs to
+    // do to a machine is a command, and the answer is a map with the exit code
+    // and both streams kept apart.
+    if (name == "run") {
+      std::string cmd = args.empty() ? "ov_nil()" : args[0];
+      std::string c = fresh(), o = fresh();
+      return "({ int " + c + " = 0; OvValue " + o + "; if (ov_os_run(" +
+             "ov_tagof(" + cmd + ") == OV_STRING ? (" + cmd + ").str->bytes : \"\", &" +
+             c + ", &" + o + ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
+    }
+  }
   if (ns == "file") {
     // Persistence builtins. Each takes a path string; ov_file_read/write are
     // plain C in the runtime (io.c). `write`/`append` return Bool.
@@ -2043,7 +2055,7 @@ std::string Gen::emit_call(const Expr* e) {
     if (base && base->kind == ExprKind::Identifier) {
       const std::string& ns = base->name;
       if (ns == "http" || ns == "json" || ns == "math" || ns == "time" || ns == "str" ||
-          ns == "file")
+          ns == "file" || ns == "os")
         return call_namespace(ns, callee->name, e);
     }
     return call_value_method(e, ex(base));

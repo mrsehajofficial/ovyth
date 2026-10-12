@@ -5,6 +5,31 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### `os.run`, and the autonomous agent — 12 Oct 2026
+
+The language could read and write files and call an API, but it could not do
+anything to the machine it runs on. `os.run(cmd)` closes that: it runs a command
+through `/bin/sh` and returns `{cmd, code, ok, stdout, stderr}` — exit status,
+and both streams kept apart so a caller can tell a command's output from its
+complaint. fork/exec rather than popen, because popen gives one stream and no
+exit status; both pipes are drained with poll() so neither can deadlock the
+child while the other is read.
+
+`examples/agent/agent.ov` is what that makes possible: an autonomous agent in
+one file, compiling to one binary. It is a loop that thinks, acts, observes and
+stops — the model replies with one JSON object (`{"cmd": ...}` or
+`{"done": ...}`), the command runs, and its result goes back as the next turn.
+Tools are shell commands, because on Linux that *is* the tool interface, so the
+agent is not limited to a list somebody wrote down. `make agent` runs it in demo
+mode against a scripted model, so the loop is readable and testable with no key.
+
+Measured cost per agent step: **2ms** for `os.run` (spawn, drain, wait) and
+**3us** for `json.parse`. A `du -sh /etc` step took 96ms in the interpreter and
+23ms compiled — the rest is the model call. The runtime is not the bottleneck
+for an agent.
+
+`os` adds no dependencies: an arithmetic binary's `ldd` is still libc and libm.
+
 ### The biggest win measured was not in the runtime — 12 Oct 2026
 
 Every Ovyth program paid ~12ms of TLS initialisation it never used. An
