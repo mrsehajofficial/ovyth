@@ -408,6 +408,23 @@ class Gen {
     return false;
   }
 
+  // Is this C variable a *scalar* raw int/float rather than a raw array?
+  //
+  // bind() records two different things under the same proven_ints_ set: a raw
+  // int64_t scalar (a loop variable over a specialized array) and -- through
+  // sema's proven types -- a raw int64 *array*. The len() and sum() fast paths
+  // want the second and used to take the first: a loop variable over
+  // `for word in words_of(x)` bound as `int64_t v_word` then had `len(word)`
+  // emitted as `v_word->len`, a pointer dereference on a long. The sentinel
+  // bind() leaves in cur_roots_ distinguishes them, and scoping is free because
+  // cur_roots_ is per-function and C names carry a unique suffix.
+  bool is_raw_scalar(const std::string& c) const {
+    for (const std::string& slot : cur_roots_) {
+      if (slot == "@int:" + c || slot == "@float:" + c) return true;
+    }
+    return false;
+  }
+
   // ----------------------------------------------------------- expressions
   std::string ex(const Expr* e);
   std::string emit_interp(const Expr* e);
@@ -1894,8 +1911,11 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
     if (args.size() == 1 && e->args[0] && e->args[0]->kind == ExprKind::Identifier) {
       const std::string& arg_name = e->args[0]->name;
       if (std::string* c = lookup(arg_name)) {
-        // Check if it's a proven int/float array
-        if (proven_ints_.count(*c) || proven_floats_.count(*c)) {
+        // Check if it's a proven int/float array. A raw *scalar* int is in the
+        // same set and has no ->len: routing len() over one produced `v->len`
+        // on an `int64_t`, which clang rejects and the interpreter answers.
+        if ((proven_ints_.count(*c) || proven_floats_.count(*c)) &&
+            !is_raw_scalar(*c)) {
           // It's a raw array, not a OvList
           return "(" + *c + "->len)";
         }
@@ -2017,12 +2037,13 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
     if (args.size() == 1 && e->args[0] && e->args[0]->kind == ExprKind::Identifier) {
       const std::string& arg_name = e->args[0]->name;
       if (std::string* c = lookup(arg_name)) {
-        if (proven_ints_.count(*c)) {
+        // A raw scalar int shares this set and is not summable as an array.
+        if (proven_ints_.count(*c) && !is_raw_scalar(*c)) {
           // Raw int64_t array - inline sum loop
           std::string idx = fresh();
           return "({ int64_t " + idx + " = 0; int64_t " + *c + "_sum = 0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; ov_int(" + *c + "_sum); })";
         }
-        if (proven_floats_.count(*c)) {
+        if (proven_floats_.count(*c) && !is_raw_scalar(*c)) {
           // Raw double array - inline sum loop
           std::string idx = fresh();
           return "({ int64_t " + idx + " = 0; double " + *c + "_sum = 0.0; for (; " + idx + " < " + *c + "->len; " + idx + "++) " + *c + "_sum += " + *c + "->data[" + idx + "]; ov_float(" + *c + "_sum); })";

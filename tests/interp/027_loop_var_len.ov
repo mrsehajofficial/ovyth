@@ -1,0 +1,49 @@
+// A loop variable over a specialized array is a raw int64_t in the native
+// backend, and len() over it was emitted as a pointer dereference on a long:
+// clang rejected the program, so the interpreter and the native backend
+// disagreed about whether it compiled at all. This is the smallest shape that
+// shows it -- iterate a list and take len() of an element.
+
+function words_of(s) {
+    out = []
+    for w in s.split(" ") {
+        if w != "" { out.push(w) }
+    }
+    return out
+}
+
+function is_stop(w) {
+    if len(w) < 2 { return true }
+    return false
+}
+
+// The first word long enough to be a name, not "the" or "a".
+function first_name(phrase) {
+    for word in words_of(phrase) {
+        if is_stop(word) { continue }
+        return word
+    }
+    return ""
+}
+
+print(first_name("the chrome"))
+print(first_name("a file manager"))
+print(first_name("big"))
+
+// len() over a real int collection still works, and sum() over one too.
+nums = []
+for n in [3, 1, 4, 1, 5] {
+    nums.push(n)
+}
+print(len(nums))
+print(sum(nums))
+
+// A float loop variable: the same shape with a double behind it.
+function first_float(xs) {
+    for v in xs {
+        if v > 2.5 { return v }
+    }
+    return 0.0
+}
+print(first_float([1.0, 9.5, 3.0]))
+print(len([1.5, 2.5, 3.5]))
