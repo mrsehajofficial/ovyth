@@ -127,7 +127,15 @@ print("")
 
 // What the model is told about itself and its tools. Four JSON commands, one
 // per turn, and the loop below is the interpreter of that protocol.
-system = "You are Ovyth, an agent running in a Linux terminal. You have four tools.\n" +
+// The system prompt is what makes this an agent rather than a chatbot, and the
+// load-bearing sentences are the first two. A model's strong prior is that it is
+// an assistant with no environment -- asked to "reinstall the compiler" it will
+// otherwise reply that it has no terminal, having used {"say": ...} to do it.
+// Saying the tools exist is not enough; saying that commands are *executed and
+// their output returns* is what makes it act.
+system = "You are Ovyth. You are a real process running on a Linux machine and " +
+    "you have a terminal right now. Every command you send is executed for real " +
+    "and its output comes back to you. You have four tools.\n" +
     "Each turn, reply with exactly one JSON object and nothing else:\n" +
     "  {\"cmd\": \"<shell command>\"}   run a command\n" +
     "  {\"read\": \"<path>\"}           read a file\n" +
@@ -135,9 +143,30 @@ system = "You are Ovyth, an agent running in a Linux terminal. You have four too
     "  {\"say\": \"<text>\"}            answer the user in words\n" +
     "Prefer fewer commands. Read before you write. If a command fails, read the\n" +
     "error and try something else. Never invent output you did not observe.\n" +
+    "Never answer from memory about this machine, its files, or anything\n" +
+    "installed on it -- run a command and report what it said.\n" +
     "You are talking to a person, so answers should be short and concrete."
 
 history = ai_conversation(system)
+
+// Few-shot priming, and it is not decoration.
+//
+// Instructions saying "you have tools and they are really executed" do not
+// reliably beat a model's prior that it is an assistant with no environment:
+// gemini-3.5-flash answers "I cannot execute terminal commands" while correctly
+// forming a {"say": ...} object to say it. One demonstrated exchange does what
+// paragraphs of instruction do not -- the model has a pattern to continue.
+//
+// The exchange is real: pwd, a tool call, its result, then an answer.
+function prime_conversation() {
+    ai_ask(history, "Where are we? Run pwd and tell me.")
+    ai_told(history, "{\"cmd\": \"pwd\"}")
+    r = os.run("pwd")
+    ai_ask(history, "exit " + str(r["code"]) + "\nstdout:\n" + r["stdout"].trim())
+    ai_told(history, "{\"say\": \"You are in " + r["stdout"].trim() + ".\"}")
+}
+
+prime_conversation()
 
 // ------------------------------------------------------- the json bracketing
 
@@ -309,6 +338,7 @@ function commands(text) {
     }
     if text == ":reset" {
         history = ai_conversation(system)
+        prime_conversation()
         print("  conversation cleared")
         return true
     }
