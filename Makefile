@@ -40,7 +40,7 @@ CC_OBJ   := $(patsubst %.cpp,$(BUILD)/%.o,$(CC_CPP))
 -include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d)
 OVC      := $(BUILD)/ovc
 
-.PHONY: all test clean runtime examples chatbot chatbot-rag agent agent-tui install uninstall
+.PHONY: all test clean runtime examples chatbot chatbot-rag agent agent-chat install uninstall
 
 all: $(OVC) $(RT_LIB)
 
@@ -86,7 +86,7 @@ EXAMPLES := $(filter-out examples/chatbot/chatbot.ov, \
 # "Already installed" is the goal met, not a failure, so it is not reported as
 # one -- only a real failure (no network, say) gets a note.
 modules:
-	@set -e; for p in ai rag; do \
+	@set -e; for p in ai rag agent; do \
 	  out="$$($(OVC) pkg install $$p 2>&1)" || { \
 	    case "$$out" in \
 	      *"already installed"*) ;; \
@@ -117,13 +117,15 @@ chatbot: $(OVC)
 	   AI_API_KEY=test AI_API_URL=http://127.0.0.1:$(MOCK_PORT)/v1/chat/completions AI_MODEL=mock-model \
 	   $(OVC) run examples/chatbot/chatbot.ov
 
-# The autonomous agent, in demo mode: scripted model, real commands, real
-# observation. With AI_API_KEY set it runs against a live endpoint instead.
-agent-tui: $(OVC)
-	@$(OVC) agent < /dev/null
-
-agent: $(OVC)
+# The autonomous agent's loop, in demo mode: scripted model, real commands, real
+# observation. It imports the guard from the published `agent` package, which is
+# the point -- an example is an application on a package, not a copy of it.
+agent: $(OVC) modules
 	@AI_API_KEY= AGENT_STEPS=6 $(OVC) run examples/agent/agent.ov < /dev/null
+
+# The agent as a chat: a subcommand that runs the installed package.
+agent-chat: $(OVC)
+	@$(OVC) agent < /dev/null
 
 # The integrated chatbot: RAG retrieval + persistent memory, fully offline.
 # Persistence goes to examples/chatbot/chatbot_rag_memory.json, so a second run
