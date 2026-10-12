@@ -29,3 +29,7 @@ tests/gemini_ask
 
 # ---- scratch --------------------------------------------------------------
 *.tmp
+# compiled test binaries (an `ovc x.ov` with no -o writes ./x)
+/0*
+/1*
+/2*
