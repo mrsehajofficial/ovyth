@@ -324,19 +324,28 @@ int run_init(const std::vector<std::string>& args, size_t i) {
 
 }  // namespace
 
-// Where the agent lives: an installed package, like any other.
-//
-// It is deliberately *not* shipped with the compiler. The compiler knows how to
-// run an Ovyth program and nothing about the agent itself, so installing ovc
-// does not install the agent and the two version independently -- the same
-// arrangement as every other package.
-std::string agent_package_path() {
-  const char* env = ::getenv("OVYTH_HOME");
-  std::string home = env && *env ? env : (::getenv("HOME") ? ::getenv("HOME") : "");
-  if (home.empty()) return std::string();
-  while (home.size() > 1 && home.back() == '/') home.pop_back();
-  home += "/.ovyth/packages/agent/agent.ov";
-  return ::access(home.c_str(), R_OK) == 0 ? home : std::string();
+// Where the agent TUI lives. It is shipped as source, like every other Ovyth
+// program, so `ovc agent` has to find it in three places: beside an installed
+// binary, beside a build tree's binary, and in a source checkout.
+std::string agent_tui_path() {
+  char buf[4096];
+  std::vector<std::string> roots;
+  ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n > 0) {
+    buf[n] = '\0';
+    std::string exe(buf);
+    size_t slash = exe.find_last_of('/');
+    if (slash != std::string::npos) {
+      std::string dir = exe.substr(0, slash);
+      roots.push_back(dir + "/../share/ovyth/agent/tui.ov");
+      roots.push_back(dir + "/share/ovyth/agent/tui.ov");
+      roots.push_back(dir + "/../../share/ovyth/agent/tui.ov");
+    }
+  }
+  roots.push_back("examples/agent/tui.ov");
+  for (const std::string& r : roots)
+    if (::access(r.c_str(), R_OK) == 0) return r;
+  return std::string();
 }
 
 // Parse, flatten and type-check one file, for a command that brings its own
@@ -385,10 +394,10 @@ int main(int argc, char** argv) {
   // source is resolved and run through the interpreter -- the same code path as
   // `ovc run`, so there is exactly one implementation of the agent.
   if (args[0] == "agent") {
-    std::string tui = agent_package_path();
+    std::string tui = agent_tui_path();
     if (tui.empty()) {
-      ov::cli_info("the agent is a package: install it once with");
-      std::printf("  ovc pkg install agent\n");
+      ov::cli_error("cannot find the agent TUI (expected share/ovyth/agent/tui.ov "
+                    "next to the binary, or examples/agent/tui.ov in a checkout)");
       return 1;
     }
     ov::ast::Program program;

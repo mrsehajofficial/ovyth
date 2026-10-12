@@ -121,7 +121,6 @@ The full tour — lists, comprehensions, slices, tuples, the stdlib — is in [d
 | `ovc tokens <file.ov>` | dump the token stream |
 | `ovc fmt <file.ov>` | canonical formatting (stdout) |
 | `ovc pkg install <name>` | install a package globally |
-| `ovc agent` | run the installed `agent` package (`ovc pkg install agent`) |
 | `ovc pkg list` | show installed packages |
 | `ovc pkg search <term>` | search the registry |
 | `ovc version` | print version |
@@ -176,9 +175,8 @@ AI_API_URL=http://localhost:8765/v1/chat/completions AI_API_KEY=dummy \
 # The autonomous agent (demo mode, no key needed)
 ./build/ovc run examples/agent/agent.ov
 
-# Or talk to it directly -- it's a package, like everything else
-./build/ovc pkg install agent    # once
-./build/ovc agent                # then: just type
+# Or talk to it directly: it asks for your endpoint once, then it's a chat
+./build/ovc agent
 
 # Tool agent
 ./build/ovc run examples/tool_agent/tool_agent.ov

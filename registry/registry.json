@@ -1,7 +1,7 @@
 {
   "packages": {
     "greet": {
-      "description": "greeting helpers \u2014 the canonical first package",
+      "description": "greeting helpers — the canonical first package",
       "license": "MIT",
       "homepage": "https://github.com/mrsehajofficial/ovyth",
       "versions": {
@@ -27,22 +27,6 @@
       "versions": {
         "1.0.0": {
           "repo": "https://github.com/mrsehajofficial/ovyth-rag.git"
-        }
-      }
-    },
-    "agent": {
-      "description": "Autonomous Linux agent, as a chat or a loop, with a guard for the unrebuildable",
-      "license": "MIT",
-      "homepage": "https://github.com/mrsehajofficial/ovyth-agent",
-      "versions": {
-        "1.0.0": {
-          "repo": "https://github.com/mrsehajofficial/ovyth-agent.git"
-        },
-        "1.0.1": {
-          "repo": "https://github.com/mrsehajofficial/ovyth-agent.git"
-        },
-        "1.1.0": {
-          "repo": "https://github.com/mrsehajofficial/ovyth-agent.git"
         }
       }
     }

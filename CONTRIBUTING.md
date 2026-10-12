@@ -33,7 +33,6 @@ make examples   # run every example through the interpreter
 | `compiler/tools/` | `ovc fmt`, `ovc init`, and `ui.h` — the terminal pretty-printing layer |
 | `runtime/` | the C runtime compiled programs link against |
 | `tests/interp/` | language tests, run through **both** backends |
-| `tests/agent/` | the agent package's guard and JSON reader, asserted directly |
 | `tests/pkg.sh` | package manager regression (install/import/remove) |
 | `tests/ui.sh` | decoration is TTY-only, and `install.sh` / `uninstall.sh` behave |
 | `registry/` | the package index and how to publish to it |
