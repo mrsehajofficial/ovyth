@@ -5,6 +5,48 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### The biggest win measured was not in the runtime — 12 Oct 2026
+
+Every Ovyth program paid ~12ms of TLS initialisation it never used. An
+arithmetic program loaded libcurl, libssl, libcrypto and libnghttp3, because
+`ovrt_helpers.o` — linked into every program for `len()`, `sum()` and
+`join()` — contained the `http` caller, and the linker pulled the whole
+crypto stack from there. An empty C program linked with those libraries takes
+15-18ms to start against 5ms without.
+
+`ov_h_http` now lives in `runtime/src/http_builtin.c`, its own translation
+unit, so the linker only pulls it when the generated C actually calls it;
+`--as-needed` — which the driver already passed — then drops the libraries for
+everything else. An arithmetic binary's `ldd` is libc and libm.
+
+```
+case        before     after      ratio vs C, before -> after
+-------------------------------------------------------------
+intloop       25ms      5ms        1.6x -> 1.4x
+fib            9ms      1ms        16x  -> 9x
+strconcat     20ms      2ms        25x  -> 10x
+listappend    23ms      2ms        82x  -> 40x
+mapops       239ms     65ms       2.5x  -> 3.0x
+startup        6ms      1ms
+```
+
+The path to that finding is worth recording, because the obvious suspects were
+all wrong. `benchmarks/micro_append.c` times the runtime's own push in a plain
+C loop, with the codegen out of the picture:
+
+```
+push, growing      17.8 ns/elem   runtime, exactly what codegen emits
+push, pre-sized    11.6 ns/elem   the same store, growth removed
+raw C               6.0 ns/elem   the floor
+raw C, growing     12.3 ns/elem   growth itself, in raw C
+codegen shape      14.7 ns/elem   the emitted loop, hand-written in C
+```
+
+The runtime's append is 1.45x an equivalent C loop — so the runtime was never
+the problem, and neither was the loop condition, the root registration, or the
+zeroing of a buffer about to be filled. All measured, all ruled out, all in the
+commit that follows this entry.
+
 ### P1: int collections, half the distance to C — 12 Oct 2026
 
 `xs = []` followed only by `xs.push(<int>)` now becomes an `Int64Array`

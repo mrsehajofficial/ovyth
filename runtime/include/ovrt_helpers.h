@@ -21,6 +21,11 @@ int ov_h_value_method(OvValue base, const char* name, OvValue a0, OvValue a1,
  * content_type=..., timeout=...). out receives the response map
  * {status, ok, body, headers, elapsed_ms}. Returns 0 on success, 1 on
  * failure. */
+/* The builtin error channel: record a message, return 1, and the caller reads
+ * it back through ov_h_err_value(). Shared with http_builtin.c. */
+int ov_h_fail(const char* msg, size_t n);
+int ov_h_fail_with(OvValue v);
+
 int ov_h_http(const char* method, OvValue url, OvValue headers, OvValue json_body,
               OvValue params, OvValue named_params, OvValue body, OvValue ctype,
               OvValue timeout, OvValue* out);

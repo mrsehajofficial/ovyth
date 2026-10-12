@@ -32,32 +32,68 @@ refuses to print a timing at all unless Ovyth's answer equals C's.
 ```
 case           median     best    rss KB   allocs     gc resize    binary
 --------------------------------------------------------------------------------------------
-startup            6ms       6ms      2276        1      2      0     22912
-intloop            32ms      32ms      2184        1      2      0     22912
-fib                10ms      10ms      2084        1      2      0     22912
-strconcat          20ms      20ms      6988        4      2      0     27016
-listappend         45ms      44ms     14448        3      3     17     43488
-mapops            238ms     236ms     36256  400005      4      0     35232
-json               32ms      21ms      6060       90      2      0     43440
-chatbot            16ms      16ms      6032       12      2      0     31120
+startup            1ms       1ms      2208        1      2      0     22912
+intloop            6ms       5ms      2264        1      2      0     22912
+fib                2ms       1ms      2084        1      2      0     22912
+strconcat          2ms       2ms      2968        4      2      0     27016
+listappend         3ms       3ms      6040        3      2     17     31128
+mapops            65ms      63ms     32868  400005      4      0     35232
+json               1ms       1ms      2212       90      2      0     43440
+chatbot            1ms       1ms      2436       12      2      0     31128
 ```
 
-Process floor: an empty program is **5ms** and one allocation. Everything
-above is therefore case work plus ~5ms of start.
+Process floor: an empty program is **1ms** and one allocation.
 
 ## 2. Against C, for the same algorithms
 
 | case | Ovyth | C -O3 | ratio |
 |---|---|---|---|
-| intloop | 27ms | 16.45ms | **1.6x** |
-| mapops | 234ms | 94.09ms | **2.5x** |
-| fib | 9ms | 0.50ms | 18x |
-| strconcat | 20ms | 0.80ms | 25x |
-| listappend | 46ms | 0.25ms | 184x |
+| intloop | 5ms | 3.46ms | **1.4x** |
+| mapops | 65ms | 22.02ms | **3.0x** |
+| fib | 1ms | 0.11ms | 9x |
+| strconcat | 2ms | 0.20ms | 10x |
+| listappend | 2ms | 0.05ms | 40x |
 
-C and Python time their cases internally; Ovyth's number is the whole
-process, so it additionally carries ~5ms of start. That explains part of the
-small cases and none of the large ratios.
+## 2b. The finding that changed everything
+
+Every number above was **4-10x worse before this section existed**, and the
+cause was not the runtime: it was the binary's dependencies. An arithmetic
+program loaded libcurl, libssl, libcrypto and libnghttp3 because
+`ovrt_helpers.o` — linked into every program for `len()`, `sum()` and
+`join()` — contained the `http` caller. An *empty* C program linked with those
+takes **15-18ms to start against 5ms without**: ~12ms of TLS initialisation
+paid by arithmetic, and by every tool invocation an agent spawns.
+
+`ov_h_http` now lives in `runtime/src/http_builtin.c`, its own translation
+unit, so the linker only pulls it — and so the crypto stack — when the
+generated C actually calls it. `--as-needed`, which the driver already passed,
+then drops the libraries for everything else. `ldd` on an arithmetic Ovyth
+binary is now libc and libm.
+
+```
+before:  libcurl libssl libcrypto libnghttp3 libngtcp2 ... (12 libraries)
+after:   libm, libc
+```
+
+## 2c. What that ruled out
+
+Each of these was measured and found not to be the cause, which is why the
+library split was the change made rather than any of them. The method is in
+`benchmarks/micro_append.c`, which times the runtime's own push in a plain C
+loop with the codegen out of the picture:
+
+```
+push, growing      17.8 ns/elem   runtime, exactly what codegen emits
+push, pre-sized    11.6 ns/elem   the same store, growth removed
+raw C               6.0 ns/elem   the floor
+raw C, growing     12.3 ns/elem   growth itself, in raw C
+codegen shape      14.7 ns/elem   the emitted loop, hand-written in C
+```
+
+The runtime's append is **1.45x** an equivalent C loop with the same growth
+policy — it was never the problem. Neither was the loop condition (a boxed
+`ov_bool` folds away), the root registration, or the zeroing of a buffer about
+to be filled (measured, reverted).
 
 ## 3. What the measurements say, before changing anything
 
