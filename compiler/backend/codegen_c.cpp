@@ -1795,6 +1795,7 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
     // The agent's hands. One method, on purpose: everything an agent needs to
     // do to a machine is a command, and the answer is a map with the exit code
     // and both streams kept apart.
+    if (name == "tty") return "ov_bool(ov_os_tty())";
     if (name == "run") {
       std::string cmd = args.empty() ? "ov_nil()" : args[0];
       std::string c = fresh(), o = fresh();

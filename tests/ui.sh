@@ -88,6 +88,17 @@ lines="$(./build/ovc version | wc -l)"
 [[ "$lines" == "1" ]] && ok "ovc version prints exactly one line" \
   || bad "ovc version prints exactly one line" "$lines lines"
 
+# --- no camelCase string methods (startswith, not StartsWith) --------------
+# The language's methods are all lower-case. A camelCase call parses and fails at
+# runtime, which is the worst place to find it -- three separate times while
+# writing the agent, so it is now checked here rather than discovered.
+bad_ov="$(grep -rn '\.startsWith(\|\.indexOf(\|\.lastIndexOf(' --include='*.ov' . 2>/dev/null)"
+if [[ -n "$bad_ov" ]]; then
+  bad "no camelCase string methods in .ov sources" "$bad_ov"
+else
+  ok "no camelCase string methods in .ov sources"
+fi
+
 # --- the installer stays plain when piped ---------------------------------
 inst="$(bash install.sh "$BIN/prefix" 2>&1 | cat -v)"
 if grep -q '\^\[' <<<"$inst"; then

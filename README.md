@@ -175,6 +175,9 @@ AI_API_URL=http://localhost:8765/v1/chat/completions AI_API_KEY=dummy \
 # The autonomous agent (demo mode, no key needed)
 ./build/ovc run examples/agent/agent.ov
 
+# Or talk to it directly: it asks for your endpoint once, then it's a chat
+./build/ovc agent
+
 # Tool agent
 ./build/ovc run examples/tool_agent/tool_agent.ov
 ```

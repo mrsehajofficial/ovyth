@@ -30,6 +30,7 @@ int ov_h_fail_with(OvValue v);
  * out receives {cmd, code, ok, stdout, stderr}. Returns 0 when the command
  * ran, 1 when it could not be started at all. */
 int ov_os_run(const char* cmd, int* threw, OvValue* out);
+int ov_os_tty(void);   /* is standard output a terminal? */
 
 int ov_h_http(const char* method, OvValue url, OvValue headers, OvValue json_body,
               OvValue params, OvValue named_params, OvValue body, OvValue ctype,

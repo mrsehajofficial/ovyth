@@ -429,6 +429,44 @@ OpenAI-compatible endpoint. Without them it uses a scripted stand-in, so the
 whole loop — parsing, executing, logging, the step budget — is readable and
 testable offline.
 
+### Talking to it: `ovc agent`
+
+`ovc agent` is the same agent as a chat. No goal to phrase in advance and no
+environment variables: on the first run it asks for the endpoint once, stores it
+in `~/.ovyth/agent.json`, and from then on you just type.
+
+```
+$ ovc agent
+   ✦
+       /\      /\          O v y t h ✦  agent
+      /  \____/  \         a tiny compiled language
+     |  *      *  |
+     |      w      |
+     |   '----'   |
+      \          /
+       '.______.'
+         |  |
+        (_)(_)
+
+model:  gemini-3.5-flash  at  http://localhost:8081/v1/chat/completions
+guard:  on  (refuses the unrebuildable)
+type :help for commands, :quit to leave
+
+you> how many .ov files are in tests?
+  ⬡ find tests -name '*.ov' | wc -l
+  ⬡ exit 0 in 12ms
+Ovyth: There are 29 .ov files in tests.
+```
+
+The model has four tools — a shell command, reading a file, writing a file, and
+saying something back — and takes as many as it needs before answering, so one
+line from you can be three commands on the machine. `:help` lists the slash
+commands; `:readonly on|off` toggles the guard, `:config model <name>` switches
+model without editing a file. The TUI ships as source next to the binary and
+runs through the interpreter, so there is exactly one implementation of the
+agent. Decoration is emitted only when `os.tty()`, so piping it into a file stays
+clean.
+
 ## 6. The `ovc` command
 
 | command | what it does |

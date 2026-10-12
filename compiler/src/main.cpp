@@ -49,6 +49,7 @@ void usage() {
       "  ovc ast <file.ov>          dump the AST\n"
       "  ovc tokens <file.ov>       dump the token stream\n"
       "  ovc fmt <file.ov>          canonical formatting (stdout)\n"
+      "  ovc agent                  the interactive agent, straight into a chat\n"
       "  ovc pkg ...                the package manager (install/search/...)\n"
       "  ovc version\n"
       "\n"
@@ -323,6 +324,53 @@ int run_init(const std::vector<std::string>& args, size_t i) {
 
 }  // namespace
 
+// Where the agent TUI lives. It is shipped as source, like every other Ovyth
+// program, so `ovc agent` has to find it in three places: beside an installed
+// binary, beside a build tree's binary, and in a source checkout.
+std::string agent_tui_path() {
+  char buf[4096];
+  std::vector<std::string> roots;
+  ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n > 0) {
+    buf[n] = '\0';
+    std::string exe(buf);
+    size_t slash = exe.find_last_of('/');
+    if (slash != std::string::npos) {
+      std::string dir = exe.substr(0, slash);
+      roots.push_back(dir + "/../share/ovyth/agent/tui.ov");
+      roots.push_back(dir + "/share/ovyth/agent/tui.ov");
+      roots.push_back(dir + "/../../share/ovyth/agent/tui.ov");
+    }
+  }
+  roots.push_back("examples/agent/tui.ov");
+  for (const std::string& r : roots)
+    if (::access(r.c_str(), R_OK) == 0) return r;
+  return std::string();
+}
+
+// Parse, flatten and type-check one file, for a command that brings its own
+// source (`ovc agent`). Exits on a load or type error, having printed the
+// diagnostics the same way the ordinary path does.
+static void load_program(const std::string& path, ov::ast::Program& program,
+                         std::string& source) {
+  if (!read_file(path, source)) {
+    ov::cli_error("cannot read " + path);
+    std::exit(1);
+  }
+  ModuleLoader loader;
+  loader.load(path, program);
+  if (!loader.diags.empty()) {
+    print_diags(loader.diags);
+    std::exit(1);
+  }
+  ov::Sema sema;
+  bool ok = sema.run(program);
+  if (!program.diags.empty()) {
+    print_diags(program.diags);
+    if (!ok) std::exit(1);
+  }
+}
+
 int main(int argc, char** argv) {
   std::vector<std::string> args(argv + 1, argv + argc);
 
@@ -342,8 +390,25 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  // `pkg` owns its own argument grammar (subcommands, --registry=...), so it
-  // is answered before the compiler's option parser sees it.
+  // `agent` is the TUI: it takes no input file of its own, so the shipped
+  // source is resolved and run through the interpreter -- the same code path as
+  // `ovc run`, so there is exactly one implementation of the agent.
+  if (args[0] == "agent") {
+    std::string tui = agent_tui_path();
+    if (tui.empty()) {
+      ov::cli_error("cannot find the agent TUI (expected share/ovyth/agent/tui.ov "
+                    "next to the binary, or examples/agent/tui.ov in a checkout)");
+      return 1;
+    }
+    ov::ast::Program program;
+    std::string source;
+    load_program(tui, program, source);
+    ov::Interp interp(program, tui);
+    return interp.run();
+  }
+
+  // `pkg` owns its own argument grammar (subcommands, --registry=...), so it is
+  // answered before the compiler's option parser sees it.
   if (args[0] == "pkg" || args[0] == "package") {
     return ov::run_pkg_command(
         std::vector<std::string>(args.begin() + 1, args.end()));

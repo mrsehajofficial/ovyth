@@ -564,6 +564,8 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
   // Running a command. Same runtime call the native backend emits, so the two
   // agree byte for byte: `r = os.run("echo hi")` gives r["stdout"] == "hi\n"
   // and r["code"] == 0 on either backend.
+  if (q == "os.tty") return ov_bool(ov_os_tty());
+
   if (q == "os.run") {
     std::string cmd = str_arg(ARG(0));
     int threw = 0;

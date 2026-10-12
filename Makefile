@@ -40,7 +40,7 @@ CC_OBJ   := $(patsubst %.cpp,$(BUILD)/%.o,$(CC_CPP))
 -include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d)
 OVC      := $(BUILD)/ovc
 
-.PHONY: all test clean runtime examples chatbot chatbot-rag agent install uninstall
+.PHONY: all test clean runtime examples chatbot chatbot-rag agent agent-tui install uninstall
 
 all: $(OVC) $(RT_LIB)
 
@@ -119,6 +119,9 @@ chatbot: $(OVC)
 
 # The autonomous agent, in demo mode: scripted model, real commands, real
 # observation. With AI_API_KEY set it runs against a live endpoint instead.
+agent-tui: $(OVC)
+	@$(OVC) agent < /dev/null
+
 agent: $(OVC)
 	@AI_API_KEY= AGENT_STEPS=6 $(OVC) run examples/agent/agent.ov < /dev/null
 
@@ -160,10 +163,11 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 
 install: all
-	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/lib $(DESTDIR)$(PREFIX)/include
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/lib $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/share/ovyth/agent
 	install -m 755 $(OVC) $(DESTDIR)$(PREFIX)/bin/ovc
 	install -m 644 $(RT_LIB) $(DESTDIR)$(PREFIX)/lib/libovrt.a
 	install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h $(DESTDIR)$(PREFIX)/include/
+	install -m 644 examples/agent/tui.ov $(DESTDIR)$(PREFIX)/share/ovyth/agent/tui.ov
 	@echo "installed ovc into $(DESTDIR)$(PREFIX)"
 
 # Delegated to uninstall.sh so `make uninstall` and `./uninstall.sh` do the

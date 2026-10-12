@@ -46,6 +46,10 @@ static int drain_fd(int fd, char** buf, size_t* cap, size_t* len) {
   }
 }
 
+/* Is standard output a terminal? A program that decorates only when a human is
+ * watching needs to ask, and the language had no way to ask. */
+int ov_os_tty(void) { return isatty(STDOUT_FILENO) != 0; }
+
 // Run `cmd` through /bin/sh and report what happened.
 //
 // out receives {cmd, code, ok, stdout, stderr}: `code` is the child's exit
