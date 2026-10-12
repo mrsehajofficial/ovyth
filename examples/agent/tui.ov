@@ -27,6 +27,13 @@ import "ai"
 
 // ANSI, as string literals: the language has no colour API, and it does not
 // need one. Everything here is gated on os.tty(), so a pipe gets plain text.
+// What has been run, for the evidence a refusal is answered with. A one-element
+// list rather than a plain variable, because a function assigning to a bare
+// name creates a local of its own -- the reason :config model used to report
+// success while changing nothing.
+ran = [0]
+last_cmd = [""]
+
 pretty = os.tty()
 paint = ""
 dim = ""
@@ -34,10 +41,10 @@ bold = ""
 cyan = ""
 reset = ""
 if pretty {
-    dim = "\033[2m"
-    bold = "\033[1m"
-    cyan = "\033[36m"
-    reset = "\033[0m"
+    dim = "\e[2m"
+    bold = "\e[1m"
+    cyan = "\e[36m"
+    reset = "\e[0m"
 }
 
 function mark(what, text) {
@@ -105,9 +112,9 @@ if key == "" {
 // ------------------------------------------------------------------- sprite
 
 if pretty {
-    print("   \033[35m✦\033[0m")
-    print("       /\\      /\\          \033[1mO v y t h\033[0m \033[35m✦\033[0m  \033[2magent\033[0m")
-    print("      /  \\____/  \\         \033[2ma tiny compiled language\033[0m")
+    print("   \e[35m✦\e[0m")
+    print("       /\\      /\\          \e[1mO v y t h\e[0m \e[35m✦\e[0m  \e[2magent\e[0m")
+    print("      /  \\____/  \\         \e[2ma tiny compiled language\e[0m")
     print("     |  *      *  |")
     print("     |      w      |")
     print("     |   '----'   |")
@@ -263,6 +270,22 @@ function guard(cmd) {
     return {"ok": true}
 }
 
+// Does this answer decline to act?
+//
+// Matched on the phrases a model reaches for when it falls back on its training
+// instead of this session. Narrow on purpose: "i cannot" and friends also appear
+// in perfectly good answers ("I cannot find that file"), so this is only a hint
+// that a retry is worth one attempt -- the retry's own outcome decides.
+function refuses(text) {
+    t = text.lower()
+    for pat in ["i cannot", "i can't", "i don't have access", "i do not have access",
+                "not able to", "i'm an ai", "i am an ai", "no access to",
+                "cannot access", "no terminal", "don't have a terminal"] {
+        if t.contains(pat) { return true }
+    }
+    return false
+}
+
 // -------------------------------------------------------------------- tools
 
 // One tool call, run. Returns the text that goes back to the model -- always a
@@ -278,6 +301,8 @@ function run_tool(call) {
         t0 = time.clock()
         r = os.run(cmd)
         took = round((time.clock() - t0) * 1000.0)
+        ran[0] = ran[0] + 1
+        last_cmd[0] = cmd
         mark("⬡", cmd)
         mark(" ", "exit " + str(r["code"]) + " in " + str(took) + "ms")
         out = r["stdout"].trim()
@@ -333,7 +358,7 @@ function commands(text) {
         return true
     }
     if text == ":clear" {
-        if pretty { print("\033[2J\033[H") }
+        if pretty { print("\e[2J\e[H") }
         return true
     }
     if text == ":reset" {
@@ -356,6 +381,8 @@ function commands(text) {
 }
 
 // ---------------------------------------------------------------- main loop
+
+req_n = 0
 
 while true {
     line = input("you> ")
@@ -402,9 +429,26 @@ while true {
     // The model may take several tool turns before it answers.
     budget = 12
     nudges = 0
+    refusals = 0
+    req_n = req_n + 1
     while budget > 0 {
         budget = budget - 1
-        r = ai_request(url, key, model, ai_trim(history, 16), 60.0)
+        conv = ai_trim(history, 16)
+        // A dump of what is actually being sent, because "the model refused"
+        // has two very different causes: it never saw the system prompt, or it
+        // saw it and pushed back. Only one of those is a bug in the agent.
+        // What is actually being sent, because "the model refused" has two very
+        // different causes: it never saw the system prompt, or it saw it and
+        // pushed back. Only one of those is a bug in the agent. This trace is
+        // how a missing system prompt was ruled out -- first=system on every
+        // request, so the prompt was arriving.
+        if env_or("OVC_AGENT_DEBUG", "") != "" {
+            roles = ""
+            for m in conv { roles = roles + m["role"].slice(0, 1) }
+            eprint("[req " + str(req_n) + " msgs=" + str(len(conv)) +
+                   " first=" + conv[0]["role"] + " roles=" + roles + "]")
+        }
+        r = ai_request(url, key, model, conv, 60.0)
         if !r["ok"] {
             print("  ✖ model error: " + r["error"])
             break
@@ -451,6 +495,30 @@ while true {
         }
 
         if call["say"] != null {
+            // Answer a refusal with the session's own evidence. A model that says
+            // it has no terminal, having just run commands and seen their output,
+            // is remembering its training rather than this conversation -- and the
+            // cheapest correction is its own transcript. Bounded to two attempts,
+            // and only for the "no access" family of phrasing, so a genuine
+            // "I cannot find that file" after trying is left alone.
+            if refuses(call["say"]) and refusals < 1 {
+                refusals = refusals + 1
+                ai_told(history, call["say"])
+                ai_ask(history, "You do have a terminal. You have already run " +
+                                str(ran[0]) + " command(s) in this session and read " +
+                                "their output, most recently '" + last_cmd[0] +
+                                "'. Try again with a real command; if the command " +
+                                "itself fails, its output will say so.")
+                continue
+            }
+            if refuses(call["say"]) {
+                // The model declined, twice. Saying so plainly is the honest
+                // outcome: the agent has a terminal, this model does not believe
+                // it, and a longer loop only burns the user's time.
+                print(dim + "  (the model declined to act; it believes it has no " +
+                      "terminal. a stronger model at the same endpoint will not.)" +
+                      reset)
+            }
             side("Ovyth: " + call["say"])
             ai_told(history, call["say"])
             break

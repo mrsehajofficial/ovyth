@@ -1,0 +1,15 @@
+// String escapes: \e is the escape character, and it was missing.
+// Without it there is no way to write an ANSI sequence at all -- "\033[35m"
+// parsed as a NUL followed by the literal text "33[35m", so a program trying to
+// colour its output printed "33[35m" instead.
+s = "\e[35mred\e[0m"
+print("bytes:", len(s))
+print("starts with esc:", s[0] == "\e")
+print("no literal digits:", !s.contains("33["))
+
+// and the escapes that already worked, so they are pinned here too
+t = "a\tb\nc"
+print("tab and newline:", len(t))
+
+u = "quote\"back\\slash"
+print("escaped quote and backslash:", len(u))

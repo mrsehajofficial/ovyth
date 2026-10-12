@@ -125,6 +125,11 @@ void Lexer::scan_string(Token& t) {
       case 'b':  val.push_back('\b'); break;
       case 'f':  val.push_back('\f'); break;
       case 'v':  val.push_back('\v'); break;
+      // The escape character itself. Without this there is no way to write an
+      // ANSI sequence at all: "\033[35m" parses as NUL followed by the literal
+      // text "33[35m", which a terminal shows verbatim -- which is how the
+      // agent's banner ended up printing "33[35m" instead of colouring.
+      case 'e':  val.push_back('\033'); break;
       case 'u': {
         // \u{XXXX}
         if (peek() != '{') { error("expected '{' after \\u", pos_); break; }

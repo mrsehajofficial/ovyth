@@ -1,0 +1,5 @@
+bytes: 12
+starts with esc: true
+no literal digits: true
+tab and newline: 5
+escaped quote and backslash: 16
