@@ -1,6 +1,7 @@
 # Ovyth build
 #
 #   make            -> build compiler (ovc) + runtime (libovrt.a)
+#   make lsp        -> build the VS Code language server (editors/vscode/bin/ovyth-lsp)
 #   make test       -> build everything and run the test suite
 #   make clean
 
@@ -35,12 +36,22 @@ CC_CPP   := $(wildcard compiler/src/*.cpp) $(wildcard compiler/lexer/*.cpp) \
             $(wildcard compiler/tools/*.cpp)
 CC_OBJ   := $(patsubst %.cpp,$(BUILD)/%.o,$(CC_CPP))
 
+# --- language server (LSP) --------------------------------------------------
+# The editor server is the compiler's front end behind a JSON-RPC loop, so it
+# links only the lexer/parser/ast/sema objects -- no runtime archive, no
+# backend, no libcurl. Built on demand: `make lsp`.
+LSP_SRC  := compiler/lsp/lsp.cpp
+FE_SRC   := $(wildcard compiler/lexer/*.cpp) $(wildcard compiler/parser/*.cpp) \
+            $(wildcard compiler/ast/*.cpp)   $(wildcard compiler/sema/*.cpp) $(LSP_SRC)
+LSP_OBJ  := $(patsubst %.cpp,$(BUILD)/%.o,$(FE_SRC))
+LSP_BIN  := editors/vscode/bin/ovyth-lsp
+
 # Header dependency tracking: without this, editing runtime/include/*.h left
 # stale objects that still referenced the old symbols (undefined refs at link).
--include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d)
+-include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d) $(LSP_OBJ:.o=.d)
 OVC      := $(BUILD)/ovc
 
-.PHONY: all test clean runtime examples chatbot chatbot-rag agent agent-tui install uninstall
+.PHONY: all test clean runtime examples chatbot chatbot-rag agent agent-tui install uninstall lsp
 
 all: $(OVC) $(RT_LIB)
 
@@ -70,6 +81,13 @@ $(OVC): $(CC_OBJ) $(RT_LIB)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(CC_OBJ) $(RT_LIB) $(RT_LDLIBS) -o $@
 	@echo "  LINK  $@"
+
+$(LSP_BIN): $(LSP_OBJ)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -pthread $(LSP_OBJ) -o $@
+	@echo "  LINK  $@"
+
+lsp: $(LSP_BIN)
 
 # --- examples ---------------------------------------------------------------
 # Everything below runs offline with no configuration. The chatbot needs an API
@@ -149,6 +167,7 @@ test: $(OVC) $(RT_TEST)
 	@bash tests/interp.sh
 	@bash tests/pkg.sh
 	@bash tests/ui.sh
+	@bash tests/net.sh
 
 # --- install --------------------------------------------------------------
 # ovc resolves libovrt.a and the runtime headers relative to its own path (see

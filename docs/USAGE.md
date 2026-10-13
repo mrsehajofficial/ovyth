@@ -757,7 +757,81 @@ and your program compiles the package's source in exactly like a local
 
 ---
 
-## 12. Known limitations
+## 12. Driving the agent from another device
+
+The agent can be driven from anywhere: a phone, a laptop, another terminal.
+It listens, and every line it receives goes through exactly the same loop a
+keyboard goes through — the tool dispatch, the guard and the model call do
+not know the difference.
+
+```bash
+# On the PC — the port is chosen by the kernel, and announced:
+OVYTH_AGENT_SERVE=0 \
+OVYTH_AGENT_TOKEN=$(openssl rand -hex 16) \
+OVYTH_AGENT_HOST=0.0.0.0 \
+ovc agent
+```
+
+```
+listening on 0.0.0.0:41732  (token required)
+waiting for a connection...  (ctrl-c to stop)
+```
+
+Then, from the phone (Termux, or any machine that can reach the PC):
+
+```bash
+python3 examples/agent/phone.py <pc-ip> 41732 <token>
+```
+
+```
+token: ovyth agent -- model ... :help for commands, :quit to disconnect
+you> what is the biggest directory under /etc?
+  ⬡ du -sh /etc/*/ | sort -rh | head -5
+  ⬡ exit 0 in 104ms
+  │ 85M	/etc/skel/
+Ovyth: /etc/skel, at 85M.
+```
+
+The phone is I/O and nothing else — the model, the tools and the files all
+stay on the PC. The protocol is a line: whatever you type is sent, whatever
+the agent prints arrives.
+
+### Finding the agent without typing the port
+
+`OVYTH_AGENT_PORT_FILE=<path>` makes the agent write the port it bound to a
+file when it starts, so the client can discover it:
+
+```bash
+OVYTH_AGENT_PORT_FILE=~/.ovyth/agent.port ovc agent ...
+python3 examples/agent/phone.py <pc-ip>        # reads the port from that file
+```
+
+Port `0` means "any free port", which is why this works at all: a hard-coded
+port collides with whatever else on the machine is listening, and the failure
+looks like a broken agent rather than a busy port.
+
+### Security: this is a remote shell
+
+Read this before binding anything other than `127.0.0.1`. An agent that runs
+commands on your PC, reachable from the network, *is* a remote shell, and the
+model chooses the commands. Three things follow:
+
+- **Always set a token.** Without `OVYTH_AGENT_TOKEN` the first line sent
+  does not have to match anything — any port scan that finds the agent can
+  drive it. With one, the socket is closed before a single turn is served.
+  The comparison is constant-time, so the token cannot be recovered a
+  character at a time by timing the responses.
+- **Prefer `OVYTH_AGENT_HOST=127.0.0.1`** unless the phone is really on
+  another machine. Loopback is unreachable from the network; `0.0.0.0` is not.
+- **Guard on, not `AGENT_UNSAFE=1`.** The guard already refuses the
+  unrebuildable (system roots, disk writes, power state) whether the request
+  came from a keyboard or a socket. It is the same code path for both, which
+  is the point of routing the transport through `emit()` rather than around
+  it.
+
+---
+
+## 13. Known limitations
 
 Worth knowing before you rely on something:
 
@@ -783,7 +857,7 @@ semantics down.
 
 ---
 
-## 13. Project layout
+## 14. Project layout
 
 ```
 compiler/          the ovc compiler (C++17)
@@ -792,9 +866,10 @@ runtime/           the C runtime that compiled programs link against
   src/*.c            GC, strings, containers, JSON, HTTP, console, file I/O
 tests/interp/      language tests, run through BOTH backends
 tests/pkg.sh       package manager regression (install/import/remove)
+tests/net.sh       net.* primitives and the agent's remote mode
 registry/          the live package index served to `ovc pkg`
 benchmarks/        benchmark suite and comparison driver
-examples/          runnable examples, including chatbot/
+examples/          runnable examples, including chatbot/ and agent/
 docs/USAGE.md           this guide
 docs/PERFORMANCE.md     how fast Ovyth is, with measured numbers
 docs/PERFORMANCE-SPEC.md  the performance engineering specification
@@ -807,6 +882,7 @@ Run everything:
 make test                              # unit + both-backend regression
 bash tests/interp.sh                   # language tests only
 bash tests/pkg.sh                      # package manager only
+bash tests/net.sh                      # net primitives + agent remote mode
 bash tests/ui.sh                       # pipes stay plain (NO_COLOR, no escapes)
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server

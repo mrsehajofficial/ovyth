@@ -1804,6 +1804,79 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
              c + ", &" + o + ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
     }
   }
+  if (ns == "net") {
+    // The other end of the agent: a phone connects and its lines drive the
+    // same loop a terminal does. listen/accept/read/write are the four
+    // primitives, with IO left to the language so line buffering stays
+    // visible (and testable) rather than hidden in C.
+    auto A = [&](size_t i) { return i < args.size() ? args[i] : "ov_nil()"; };
+    if (name == "listen") {
+      // net.listen(port) -> fd. host defaults to 0.0.0.0 so a phone on the
+      // same network can reach it; pass "127.0.0.1" to keep it local.
+      std::string host = named("host");
+      std::string backlog = named("backlog");
+      std::string o = fresh(), e = fresh();
+      std::string h = host.empty()
+                          ? "ov_str(ov_str_new(\"0.0.0.0\", 7))"
+                          : "({ OvValue _h = " + host +
+                                "; ov_str(ov_str_new(ov_tagof(_h) == OV_STRING "
+                                "? _h.str->bytes : \"0.0.0.0\", ov_tagof(_h) == "
+                                "OV_STRING ? _h.str->len : 7)); })";
+      std::string b = backlog.empty()
+                          ? "8"
+                          : "({ OvValue _b = " + backlog +
+                                "; ov_tagof(_b) == OV_INT ? _b.i : 8; })";
+      return "({ int " + o + " = -1; char* " + e + " = NULL; " + o +
+             " = ov_net_listen((" + h + ").str->bytes, ({ OvValue _p = " + A(0) +
+             "; ov_tagof(_p) == OV_INT ? _p.i : 0; }), " + b + ", &" + e + "); "
+             "if (" + o + " < 0) ov_throw_value(ov_str(ov_str_new(" + e + " ? " +
+             e + " : \"listen failed\", " + e + " ? strlen(" + e + ") : 13))); "
+             "ov_int(" + o + "); })";
+    }
+    if (name == "accept") {
+      std::string fd = A(0);
+      std::string o = fresh();
+      return "({ int " + o + " = ov_net_accept(({ OvValue _f = " + fd +
+             "; ov_tagof(_f) == OV_INT ? _f.i : -1; })); "
+             "if (" + o + " < 0) ov_throw_value(ov_str(ov_str_new(\"accept failed\", "
+             "13))); ov_int(" + o + "); })";
+    }
+    if (name == "read") {
+      // net.read(fd, max) -> the bytes read, or "" on disconnect.
+      std::string fd = A(0), mx = A(1);
+      std::string b = fresh(), n = fresh();
+      return "({ char " + b + "[4097]; int " + n + " = ov_net_read(({ OvValue _f = " +
+             fd + "; ov_tagof(_f) == OV_INT ? _f.i : -1; }), " + b + ", 4096); "
+             "ov_str(ov_str_new(" + b + ", " + n + " > 0 ? " + n + " : 0)); })";
+    }
+    if (name == "write") {
+      // net.write(fd, text) -> Bool. All bytes or none.
+      std::string fd = A(0), d = A(1);
+      std::string s = fresh();
+      return "({ OvStr* " + s + " = ov_str_new(({ OvValue _d = " + d +
+             "; ov_tagof(_d) == OV_STRING ? _d.str->bytes : \"\"); }, "
+             "({ OvValue _d = " + d +
+             "; ov_tagof(_d) == OV_STRING ? _d.str->len : 0; })); "
+             "ov_bool(ov_net_write(({ OvValue _f = " + fd +
+             "; ov_tagof(_f) == OV_INT ? _f.i : -1; }), " + s + "->bytes, " + s +
+             "->len) == 0); })";
+    }
+    if (name == "port") {
+      std::string fd = A(0);
+      std::string o = fresh();
+      // ov_str_lit rather than the interpreter's ov_s: the generated C only
+      // declares what ovrt.h exports, and ov_s is a host-side helper.
+      return "({ int " + o + " = ov_net_port(({ OvValue _f = " + fd +
+             "; ov_tagof(_f) == OV_INT ? _f.i : -1; })); if (" + o +
+             " < 0) ov_throw_value(ov_str(ov_str_lit(\"not a listening socket\", "
+             "24))); ov_int(" + o + "); })";
+    }
+    if (name == "close") {
+      std::string fd = A(0);
+      return "({ int _f = ({ OvValue _g = " + fd +
+             "; ov_tagof(_g) == OV_INT ? _g.i : -1; }); ov_net_close(_f); ov_nil(); })";
+    }
+  }
   if (ns == "file") {
     // Persistence builtins. Each takes a path string; ov_file_read/write are
     // plain C in the runtime (io.c). `write`/`append` return Bool.
@@ -2056,7 +2129,7 @@ std::string Gen::emit_call(const Expr* e) {
     if (base && base->kind == ExprKind::Identifier) {
       const std::string& ns = base->name;
       if (ns == "http" || ns == "json" || ns == "math" || ns == "time" || ns == "str" ||
-          ns == "file" || ns == "os")
+          ns == "file" || ns == "os" || ns == "net")
         return call_namespace(ns, callee->name, e);
     }
     return call_value_method(e, ex(base));

@@ -34,6 +34,98 @@ import "ai"
 ran = [0]
 last_cmd = [""]
 
+// ---------------------------------------------------------------- transports
+
+// Where a line goes: stdout, or a connected client.
+//
+// The agent is one program that can be driven from two places, and it does not
+// have two code paths. Everything the agent says goes through emit(); when a
+// socket is serving, those lines are written to the phone, and the PC's own
+// terminal keeps its banner and its logs. Terminal mode is the same loop with
+// sink[0] == "print".
+//
+// A one-element list rather than a bare name because a function assigning to a
+// bare name creates a local of its own -- the same trap that made
+// ":config model x" report success while changing nothing.
+sink = ["print"]
+
+function emit(text) {
+    if sink[0] == "print" {
+        print(text)
+    } else {
+        net.write(sink[0], text + "\n")
+    }
+}
+
+// Where the next line comes from: the keyboard, or a connected client.
+reader = ["stdin"]
+
+// Read one line from a socket, assembling across reads.
+//
+// TCP delivers bytes, not lines: one read may carry half a line, or three. The
+// partial buffer lives on the connection map across calls. Returns null on
+// disconnect, which is the normal end of a session and the only way out.
+function socket_line(conn) {
+    if conn["buffer"] == null { conn["buffer"] = "" }
+    while true {
+        nl = conn["buffer"].indexof("\n")
+        if nl >= 0 {
+            line = conn["buffer"].slice(0, nl)
+            rest = conn["buffer"].slice(nl + 1, len(conn["buffer"]))
+            if rest.endswith("\r") { rest = rest.slice(0, len(rest) - 1) }
+            conn["buffer"] = rest
+            return line
+        }
+        chunk = net.read(conn["fd"], 4096)
+        if chunk == null or chunk == "" { return null }
+        conn["buffer"] = conn["buffer"] + chunk
+    }
+}
+
+function next_line(prompt) {
+    if reader[0] == "stdin" { return input(prompt) }
+    net.write(reader[0]["fd"], prompt)
+    return socket_line(reader[0])
+}
+
+// Constant-time compare of two strings.
+//
+// The token check compares against a secret on a network-facing path, where a
+// timing difference per character is enough to recover the token one character
+// at a time. The loop always runs to the end and only accumulates difference,
+// so the time taken says nothing about how much matched.
+function equal_secret(a, b) {
+    if a == null or b == null { return false }
+    if len(a) != len(b) { return false }
+    diff = 0
+    i = 0
+    while i < len(a) {
+        x = a[i]
+        y = b[i]
+        if x < y { diff = diff + 1 }
+        if x > y { diff = diff + 2 }
+        i = i + 1
+    }
+    return diff == 0
+}
+
+// Remote operation, from a phone or any other machine.
+//
+// `OVYTH_AGENT_SERVE=<port>` makes `ovc agent` wait for connections instead
+// of reading the keyboard; `OVYTH_AGENT_TOKEN=<secret>` requires the first
+// line to match it before any turn is served. A listening agent is a remote
+// shell on your PC, so the token is the difference between a private channel
+// and an open one -- pass it, or bind 127.0.0.1 so the port is unreachable
+// from anywhere else.
+serve_port = env_or("OVYTH_AGENT_SERVE", "")
+agent_token = env_or("OVYTH_AGENT_TOKEN", "")
+serve_host = env_or("OVYTH_AGENT_HOST", "0.0.0.0")
+
+// Where the agent writes the port it bound, so a client -- a phone, a script,
+// the regression suite -- can find it without scraping the banner, which sits
+// in the stdio buffer whenever stdout is a pipe. Empty means "don't write it".
+port_file = env_or("OVYTH_AGENT_PORT_FILE", "")
+
 pretty = os.tty()
 paint = ""
 dim = ""
@@ -49,17 +141,17 @@ if pretty {
 
 function mark(what, text) {
     if pretty {
-        print("  " + cyan + what + " " + reset + text)
+        emit("  " + cyan + what + " " + reset + text)
     } else {
-        print("  " + what + " " + text)
+        emit("  " + what + " " + text)
     }
 }
 
 function side(text) {   // the assistant's own voice
     if pretty {
-        print(bold + text + reset)
+        emit(bold + text + reset)
     } else {
-        print(text)
+        emit(text)
     }
 }
 
@@ -91,11 +183,11 @@ function save_config() {
     }))
 }
 
-if pretty { print("\n") }
+if pretty { emit("\n") }
 if key == "" {
-    print("first run: where should the agent talk to?")
-    print("(stored in " + config_path + "; set AI_API_KEY to skip this)")
-    print("")
+    emit("first run: where should the agent talk to?")
+    emit("(stored in " + config_path + "; set AI_API_KEY to skip this)")
+    emit("")
     // input() returns null at end-of-input, not "", so each answer is checked
     // against both -- comparing only against "" would store null over a default
     // and the model line would read "nil".
@@ -106,29 +198,29 @@ if key == "" {
     if u != null and u != "" { url = u }
     if m != null and m != "" { model = m }
     save_config()
-    print("")
+    emit("")
 }
 
 // ------------------------------------------------------------------- sprite
 
 if pretty {
-    print("   \e[35m✦\e[0m")
-    print("       /\\      /\\          \e[1mO v y t h\e[0m \e[35m✦\e[0m  \e[2magent\e[0m")
-    print("      /  \\____/  \\         \e[2ma tiny compiled language\e[0m")
-    print("     |  *      *  |")
-    print("     |      w      |")
-    print("     |   '----'   |")
-    print("      \\          /")
-    print("       '.______.'")
-    print("         |  |")
-    print("        (_)(_)")
-    print("")
+    emit("   \e[35m✦\e[0m")
+    emit("       /\\      /\\          \e[1mO v y t h\e[0m \e[35m✦\e[0m  \e[2magent\e[0m")
+    emit("      /  \\____/  \\         \e[2ma tiny compiled language\e[0m")
+    emit("     |  *      *  |")
+    emit("     |      w      |")
+    emit("     |   '----'   |")
+    emit("      \\          /")
+    emit("       '.______.'")
+    emit("         |  |")
+    emit("        (_)(_)")
+    emit("")
 }
 
-print("model:  " + model + "  at  " + url)
-print("guard:  " + (guard_on ? "on" : "off") + "  (refuses the unrebuildable)")
-print("type :help for commands, :quit to leave")
-print("")
+emit("model:  " + model + "  at  " + url)
+emit("guard:  " + (guard_on ? "on" : "off") + "  (refuses the unrebuildable)")
+emit("type :help for commands, :quit to leave")
+emit("")
 
 // -------------------------------------------------------------- the prompt
 
@@ -402,8 +494,8 @@ function sweep_not_found(cmd) {
     out = r["stdout"].trim()
     err = r["stderr"].trim()
     mark(" ", "exit " + str(r["code"]) + " via " + hit)
-    if out != "" { print(dim + "  │ " + out.slice(0, 400) + reset) }
-    if err != "" { print(dim + "  ! " + err.slice(0, 200) + reset) }
+    if out != "" { emit(dim + "  │ " + out.slice(0, 400) + reset) }
+    if err != "" { emit(dim + "  ! " + err.slice(0, 200) + reset) }
     if r["code"] == 127 or not_found(rewritten, r) {
         // The variant is missing too (or command -v lied). Report what was
         // tried, so the model can reason about the machine rather than about
@@ -448,8 +540,8 @@ function run_tool(call) {
             shown = shown + dim + "  │ " + line + reset + "\n"
             i = i + 1
         }
-        if shown != "" { print(shown) }
-        if err != "" { print(dim + "  ! " + err.slice(0, 200) + reset) }
+        if shown != "" { emit(shown) }
+        if err != "" { emit(dim + "  ! " + err.slice(0, 200) + reset) }
         return "exit " + str(r["code"]) + "\nstdout:\n" + out.slice(0, 3000) +
                (len(out) > 3000 ? "\n... " + str(len(out) - 3000) + " bytes omitted" : "") +
                "\nstderr:\n" + err.slice(0, 500)
@@ -474,132 +566,79 @@ function run_tool(call) {
 function commands(text) {
     if text == ":quit" or text == ":exit" or text == ":q" { return false }
     if text == ":help" {
-        print("  :help          this")
-        print("  :config        show the endpoint; :config key|url|model <value> to change")
-        print("  :readonly on|off   the guard that refuses the unrebuildable")
-        print("  :tools         what the model can do")
-        print("  :clear         clear the screen")
-        print("  :reset         forget the conversation")
-        print("  :quit          leave")
+        emit("  :help          this")
+        emit("  :config        show the endpoint; :config key|url|model <value> to change")
+        emit("  :readonly on|off   the guard that refuses the unrebuildable")
+        emit("  :tools         what the model can do")
+        emit("  :clear         clear the screen")
+        emit("  :reset         forget the conversation")
+        emit("  :quit          leave")
         return true
     }
     if text == ":tools" {
-        print("  the model may, one per turn:")
-        print("    {\"cmd\": \"...\"}                  run a shell command")
-        print("    {\"read\": \"path\"}               read a file")
-        print("    {\"write\": \"path\", \"text\": \"…\"} write a file")
-        print("    {\"say\": \"text\"}                answer you")
+        emit("  the model may, one per turn:")
+        emit("    {\"cmd\": \"...\"}                  run a shell command")
+        emit("    {\"read\": \"path\"}               read a file")
+        emit("    {\"write\": \"path\", \"text\": \"…\"} write a file")
+        emit("    {\"say\": \"text\"}                answer you")
         return true
     }
     if text == ":clear" {
-        if pretty { print("\e[2J\e[H") }
+        if pretty { emit("\e[2J\e[H") }
         return true
     }
     if text == ":reset" {
         history = ai_conversation(system)
         prime_conversation()
-        print("  conversation cleared")
+        emit("  conversation cleared")
         return true
     }
     if text == ":config" {
-        print("  key   " + (key == "" ? "(none)" : "set, " + str(len(key)) + " chars"))
-        print("  url   " + url)
-        print("  model " + model)
+        emit("  key   " + (key == "" ? "(none)" : "set, " + str(len(key)) + " chars"))
+        emit("  url   " + url)
+        emit("  model " + model)
         return true
     }
     if text.startswith(":") {
-        print("  unknown command: " + text + "  (:help)")
+        emit("  unknown command: " + text + "  (:help)")
         return true
     }
     return true
 }
 
-// ---------------------------------------------------------------- main loop
+// ------------------------------------------------------------------- turns
 
-req_n = 0
+// One user turn: ask the model, run whatever tool it names, repeat until it
+// answers. A function so the terminal and the phone share one implementation —
+// a copied loop would drift, and the copy that drifts is the phone's.
+//
+// Turn counter. A one-element list for the reason the rest of the shared state
+// is: a function assigning to a bare name creates a local of its own, so a
+// counter incremented inside this function would reset on every turn.
+req_n = [0]
 
-while true {
-    line = input("you> ")
-    if line == null { break }        // EOF: a pipe that ran out
-    line = line.trim()
-    if line == "" { continue }
-    if line.startswith(":") {
-        // The commands that *change* something are handled here, in ov_main's own
-        // scope. Done inside commands() they would assign to a local of that
-        // function and report success while changing nothing -- which is what
-        // :config model did before this moved.
-        if line.startswith(":readonly ") {
-            arg = line.slice(10, len(line)).trim()
-            if arg == "on" or arg == "off" {
-                guard_on = arg == "on"
-                print("  guard " + arg)
-            } else {
-                print("  guard is " + (guard_on ? "on" : "off") + "  (:readonly on|off)")
-            }
-            continue
-        }
-        if line != ":config " and line.startswith(":config ") {
-            what = line.slice(8, len(line))
-            sp = what.indexof(" ")
-            field = sp < 0 ? what : what.slice(0, sp)
-            value = sp < 0 ? "" : what.slice(sp + 1, len(what)).trim()
-            if field == "key" or field == "url" or field == "model" {
-                if field == "key" { key = value }
-                if field == "url" { url = value }
-                if field == "model" { model = value }
-                save_config()
-                print("  " + field + " updated")
-            } else {
-                print("  :config key|url|model <value>")
-            }
-            continue
-        }
-        if !commands(line) { break }
-        continue
-    }
-
+function handle_turn(line) {
     ai_ask(history, line)
 
-    // The model may take several tool turns before it answers.
     budget = 12
     nudges = 0
     refusals = 0
-    req_n = req_n + 1
+    req_n[0] = req_n[0] + 1
     while budget > 0 {
         budget = budget - 1
         conv = ai_trim(history, 16)
-        // A dump of what is actually being sent, because "the model refused"
-        // has two very different causes: it never saw the system prompt, or it
-        // saw it and pushed back. Only one of those is a bug in the agent.
         // What is actually being sent, because "the model refused" has two very
         // different causes: it never saw the system prompt, or it saw it and
-        // pushed back. Only one of those is a bug in the agent. This trace is
-        // how a missing system prompt was ruled out -- first=system on every
-        // request, so the prompt was arriving.
+        // pushed back. Only one of those is a bug in the agent.
         if env_or("OVC_AGENT_DEBUG", "") != "" {
-            roles = ""
-            for m in conv { roles = roles + m["role"].slice(0, 1) }
-            eprint("[req " + str(req_n) + " msgs=" + str(len(conv)) +
-                   " first=" + conv[0]["role"] + " roles=" + roles + "]")
-            if env_or("OVC_AGENT_DEBUG", "") == "body" {
-                eprint("--- body ---")
-                eprint(json.stringify(conv))
-                eprint("--- end body ---")
-            }
-            if env_or("OVC_AGENT_DEBUG", "") == "full" {
-                eprint("--- system as sent (" + str(len(conv[0]["content"])) + " chars) ---")
-                eprint(conv[0]["content"])
-                eprint("--- end ---")
-            }
+            eprint("[req " + str(req_n[0]) + " msgs=" + str(len(conv)) +
+                   " first=" + conv[0]["role"] + "]")
+            for m in conv { eprint("  [" + m["role"] + "] " + m["content"].slice(0, 90)) }
         }
         r = ai_request(url, key, model, conv, 60.0)
-        if env_or("OVC_AGENT_DEBUG", "") != "" {
-            eprint("--- history now (" + str(len(history)) + ") ---")
-            for m in history { eprint("  [" + m["role"] + "] " + m["content"].slice(0, 90)) }
-        }
         if !r["ok"] {
-            print("  ✖ model error: " + r["error"])
-            break
+            emit("  ✖ model error: " + r["error"])
+            return
         }
         reply = r["text"].trim()
 
@@ -612,7 +651,7 @@ while true {
             nudges = nudges + 1
             if nudges > 2 {
                 side(reply)
-                break
+                return
             }
             ai_told(history, reply)
             ai_ask(history, "That was not a tool call. Reply with exactly one JSON " +
@@ -623,15 +662,15 @@ while true {
         nudges = 0
         end = json_end(reply, start)
         if end < 0 {
-            print("  ✖ the model's reply was not a complete JSON object")
-            break
+            emit("  ✖ the model's reply was not a complete JSON object")
+            return
         }
 
         call = {}
         try {
             call = json.parse(reply.slice(start, end + 1))
         } catch e {
-            print("  ✖ json: " + str(e))
+            emit("  ✖ json: " + str(e))
             ai_told(history, "That was not valid JSON. Reply with exactly one object.")
             continue
         }
@@ -646,24 +685,17 @@ while true {
             // Answer a refusal with the session's own evidence. A model that says
             // it has no terminal, having just run commands and seen their output,
             // is remembering its training rather than this conversation -- and the
-            // cheapest correction is its own transcript. Bounded to two attempts,
-            // and only for the "no access" family of phrasing, so a genuine
-            // "I cannot find that file" after trying is left alone.
+            // cheapest correction is its own transcript. Bounded, and only for the
+            // denial-of-environment family, so a genuine "I cannot find that
+            // file" after trying is left alone.
             if refuses(call["say"]) and refusals < 1 {
                 refusals = refusals + 1
                 ai_told(history, call["say"])
-                // A correction, and the evidence in it has to be evidence *for*
-                // acting. The previous wording -- "you have run 0 command(s), the
-                // most recent was ``" -- is true on a fresh session and hands the
-                // model a reason to decline: it has no history of doing anything,
-                // so it decides it cannot. Reproduced against the live model: it
-                // turned "My name is Ovyth" into "I am Gemini, an AI built by
-                // Google", which is the persona break that started this.
-                //
-                // The evidence that is always true is the priming: every session
-                // has run pwd and read its output. Saying that -- and asking it to
-                // report a failure rather than decline -- made the same model
-                // answer with {"cmd": "whoami"} and act.
+                // The evidence must be evidence *for* acting. The previous wording
+                // -- "you have run 0 command(s), the most recent was ``" -- is true
+                // on a fresh session and hands the model a reason to decline:
+                // it has no history of doing anything, so it decides it cannot.
+                // The priming is what every session has actually done.
                 ai_ask(history, "Correction: you do have a shell. You can see it in " +
                                 "this very conversation -- you ran `pwd` above and " +
                                 "read its output. Use a command; if it fails, report " +
@@ -671,25 +703,122 @@ while true {
                 continue
             }
             if refuses(call["say"]) {
-                // The model declined, twice. Saying so plainly is the honest
-                // outcome: the agent has a terminal, this model does not believe
-                // it, and a longer loop only burns the user's time.
-                print(dim + "  (the model declined to act; it believes it has no " +
-                      "terminal. a stronger model at the same endpoint will not.)" +
-                      reset)
+                // Declined twice. Saying so plainly is the honest outcome: the
+                // agent has a terminal, this model does not believe it, and a
+                // longer loop only burns the user's time.
+                emit(dim + "  (the model declined to act; it believes it has no " +
+                     "terminal. a stronger model at the same endpoint will not.)" +
+                     reset)
             }
             side("Ovyth: " + call["say"])
             ai_told(history, call["say"])
-            break
+            return
         }
         if call["done"] != null {
             side("Ovyth: " + call["done"])
-            break
+            return
         }
-        print("  ✖ the model sent an object with no tool in it")
+        emit("  ✖ the model sent an object with no tool in it")
         ai_told(history, "That did not name a tool. Use cmd, read, write, or say.")
     }
 }
 
-print("")
-print("bye")
+// ----------------------------------------------------------------- turn loop
+
+// Drive turns from a transport until it returns null -- end of a pipe, or a
+// phone that disconnected. Slash commands are handled here rather than inside
+// handle_turn because several of them *change* state (`guard_on`, `key`,
+// `url`, `model`), and a function assigning to a bare name creates a local of
+// its own: that is how `:config model x` came to report success while
+// changing nothing.
+function turn_loop() {
+    while true {
+        line = next_line("you> ")
+        if line == null { return true }
+        line = line.trim()
+        if line == "" { continue }
+        if line == ":quit" or line == ":exit" or line == ":q" { return false }
+        if line.startswith(":") {
+            if !commands(line) { return false }
+            continue
+        }
+        handle_turn(line)
+    }
+}
+
+// -------------------------------------------------------------------- remote
+
+// `OVYTH_AGENT_SERVE=<port>` makes the agent wait for connections instead of
+// reading the keyboard, and every turn it serves is the same handle_turn the
+// terminal runs — the tools, the guard and the model call do not know the
+// difference.
+//
+// A listening agent is a remote shell on your PC. That is the point, and also
+// the risk, so:
+//   * `OVYTH_AGENT_TOKEN` makes the first line the client sends an
+//     authentication step; a wrong or missing token closes the socket before
+//     a single turn is served.
+//   * `OVYTH_AGENT_HOST` defaults to 0.0.0.0 (a phone on the same network can
+//     reach it); set it to 127.0.0.1 to keep the port private to this machine
+//     and treat the agent as local.
+if serve_port != "" {
+    port = -1
+    try { port = int(serve_port) } catch e { port = -1 }
+    // Port 0 asks the kernel for a free one, which is what a test (or a second
+    // agent on the same machine) wants: no hard-coded port to collide with. The
+    // port actually bound is reported below, because it is not what was asked
+    // for.
+    if port < 0 or port > 65535 {
+        emit("invalid OVYTH_AGENT_SERVE port: " + serve_port +
+             " (use a port number, or 0 for any free port)")
+    } else {
+        listen_fd = net.listen(port, host = serve_host)
+        if listen_fd >= 0 {
+            bound = net.port(listen_fd)
+            if port_file != "" {
+                file.write(port_file, str(bound))
+            }
+            emit("listening on " + serve_host + ":" + str(bound) +
+                 (agent_token == "" ? "  (no token: anyone who can reach this port can drive the agent)" : "  (token required)"))
+            emit("waiting for a connection...  (ctrl-c to stop)")
+
+            // One connection at a time, and the loop re-arms, so a phone that
+            // drops off and returns picks up where it left off.
+            while true {
+                conn = {"fd": net.accept(listen_fd)}
+                if conn["fd"] < 0 { break }
+
+                if agent_token != "" {
+                    net.write(conn["fd"], "token: ")
+                    provided = socket_line(conn)
+                    if provided == null or !equal_secret(provided.trim(), agent_token) {
+                        emit("refused a bad token")
+                        net.write(conn["fd"], "auth failed\n")
+                        net.close(conn["fd"])
+                        continue
+                    }
+                }
+
+                net.write(conn["fd"], "ovyth agent -- model " + model + " :help for commands, :quit to disconnect\n")
+                reader[0] = conn
+                sink[0] = conn["fd"]
+                emit("connected")
+                stopped = turn_loop()
+                net.write(conn["fd"], "bye\n")
+                net.close(conn["fd"])
+                reader[0] = "stdin"
+                sink[0] = "print"
+                emit("disconnected" + (stopped ? "" : " (:quit)"))
+            }
+        } else {
+            emit("could not listen on " + serve_host + ":" + str(port))
+        }
+    }
+    emit("")
+    emit("bye")
+} else {
+    // Terminal mode: the agent as it has always been.
+    turn_loop()
+    emit("")
+    emit("bye")
+}

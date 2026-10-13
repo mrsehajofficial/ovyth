@@ -5,6 +5,51 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### The agent is drivable from another device — 13 Oct 2026
+
+`OVYTH_AGENT_SERVE=<port> ovc agent` makes the agent wait for connections
+instead of reading a keyboard. Each line a client sends goes through the same
+`handle_turn` the terminal runs — tool dispatch, guard, history and the sweep
+for a missing binary's spellings all shared, none duplicated. The phone is I/O
+only: the model, the tools and the files stay on the PC.
+
+```
+you> what is the biggest directory under /etc?
+  ⬡ du -sh /etc/*/ | sort -rh | head -5
+  ⬡ exit 0 in 104ms
+  │ 85M	/etc/skel/
+Ovyth: /etc/skel, at 85M.
+```
+
+`examples/agent/phone.py` is a client that fits in a terminal on a phone —
+one socket, one line at a time, no protocol to get out of sync.
+
+Two runtime additions make it work: `net.listen/accept/read/write/close` for
+TCP, and `net.port(fd)` to read back the port the kernel chose (binding port
+0). Blocking throughout, because a server that must do something else
+meanwhile is a thread, and a thread in this runtime is a much bigger
+decision than the feature warrants.
+
+**Security, since this is a remote shell.** The first line the client sends
+must match `OVYTH_AGENT_TOKEN`, compared in constant time; a wrong or missing
+token closes the socket before a single turn is served. `OVYTH_AGENT_HOST`
+defaults to `0.0.0.0` — set `127.0.0.1` to keep the port private. The guard
+runs unchanged on the remote path, which is the point of routing the
+transport through `emit()` rather than around it.
+
+`OVYTH_AGENT_PORT_FILE` makes the agent publish the port it bound, so a
+client can discover it without being told.
+
+`tests/net.sh` (9 checks, run from `make test`) covers the primitives, line
+assembly across a split read, token rejection, a clean disconnect, and that
+the accept loop re-arms for a second connection. It learned two things the
+hard way and now documents them: ports come from the kernel rather than a
+hard-coded number (a collision presents as a broken server, not a busy port),
+and the port is reported through a *file* rather than stdout — stdout is
+block-buffered whenever it is a pipe, so a server blocked in `accept()` holds
+its port line in the buffer forever and a test polling the log waits on a
+line that has already been written.
+
 ### `os.run`, and the autonomous agent — 12 Oct 2026
 
 The language could read and write files and call an API, but it could not do

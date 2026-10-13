@@ -32,6 +32,20 @@ int ov_h_fail_with(OvValue v);
 int ov_os_run(const char* cmd, int* threw, OvValue* out);
 int ov_os_tty(void);   /* is standard output a terminal? */
 
+/* net.c -- a TCP server, so the agent can be driven from another device.
+ *
+ * The client side of any connection these can serve is plain TCP: a line sent
+ * is a line read back. host "0.0.0.0" listens on every interface (what a phone
+ * on the same network needs), "127.0.0.1" keeps the port private to this
+ * machine. err receives a static description on failure, never NULL.
+ */
+int  ov_net_listen(const char* host, int port, int backlog, char** err);
+int  ov_net_accept(int listen_fd);      /* blocking; -1 on error        */
+int  ov_net_read(int fd, char* buf, int len);   /* blocking; 0 = closed */
+int  ov_net_write(int fd, const char* data, int len); /* 0 = all written */
+void ov_net_close(int fd);
+int  ov_net_port(int fd);  /* port a listening socket actually bound (bind 0) */
+
 int ov_h_http(const char* method, OvValue url, OvValue headers, OvValue json_body,
               OvValue params, OvValue named_params, OvValue body, OvValue ctype,
               OvValue timeout, OvValue* out);

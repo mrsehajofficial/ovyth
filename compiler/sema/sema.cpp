@@ -124,7 +124,7 @@ bool Sema::run(Program& program) {
       "contains", "replace", "indexof", "sort", "reverse", "append", "extend",
       "json", "http", "time", "args", "exit", "throw", "assert", "parseInt", "number",
       "eprint", "env_or", "getenv", "getenv_or", "setenv", "gc", "pad", "clock", "now",
-      "file", "os",
+      "file", "os", "net",
   };
   push_scope(true);
   for (const char* b : kBuiltins) define(b, Ty::Func);

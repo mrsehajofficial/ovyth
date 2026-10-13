@@ -181,11 +181,11 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
       // namespaces, route it to the qualified builtin; otherwise evaluate the
       // base to a value and dispatch the method on that value (string / list /
       // map methods live on the values themselves, not on global names).
-      const bool base_is_ident = callee->a && callee->a->kind == ExprKind::Identifier;
-      const std::string ns = base_is_ident ? callee->a->name : std::string();
-      const bool is_ns = (ns == "http" || ns == "json" || ns == "math" ||
-                         ns == "str"  || ns == "os"   || ns == "time" ||
-                         ns == "file");
+       const bool base_is_ident = callee->a && callee->a->kind == ExprKind::Identifier;
+       const std::string ns = base_is_ident ? callee->a->name : std::string();
+       const bool is_ns = (ns == "http" || ns == "json" || ns == "math" ||
+                          ns == "str"  || ns == "os"   || ns == "time" ||
+                          ns == "file" || ns == "net");
       if (is_ns) {
         // `http.get(...)`: the namespace has no field of that name, so call the
         // qualified builtin `ns.method`; but a real field (e.g. a user variable
@@ -572,6 +572,65 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
     OvValue out = ov_nil();
     if (ov_os_run(cmd.c_str(), &threw, &out)) ov_throw_value(ov_h_err_value());
     return out;
+  }
+
+  // ------------------------------------------------------------------- net
+  // The server half of remote control. The same runtime calls the native
+  // backend emits, so a program serving the agent behaves identically either
+  // way. Line buffering is left to the language: a TCP stream hands over
+  // whatever arrived, and assembling lines from that is the caller's job
+  // because only the caller knows what a line means.
+  if (q == "net.listen") {
+    std::string host = str_arg(NAMED("host"));
+    OvValue port = ARG(0);
+    int64_t p = 0;
+    if (ov_tagof(port) == OV_INT) p = port.i;
+    int64_t backlog = 8;
+    OvValue bv = NAMED("backlog");
+    if (ov_tagof(bv) == OV_INT) backlog = bv.i;
+    char* err = nullptr;
+    int fd = ov_net_listen(host.empty() ? "0.0.0.0" : host.c_str(), (int)p,
+                           (int)backlog, &err);
+    if (fd < 0) {
+      std::string why = err ? err : "listen failed";
+      ov_throw_value(ov_s(why));
+    }
+    return ov_int(fd);
+  }
+
+  if (q == "net.accept") {
+    OvValue fd = ARG(0);
+    int client = ov_net_accept(ov_tagof(fd) == OV_INT ? (int)fd.i : -1);
+    if (client < 0) ov_throw_value(ov_s("accept failed"));
+    return ov_int(client);
+  }
+
+  if (q == "net.read") {
+    OvValue fd = ARG(0);
+    char buf[4097];
+    int n = ov_net_read(ov_tagof(fd) == OV_INT ? (int)fd.i : -1, buf, 4096);
+    if (n < 0) n = 0;
+    return ov_str(ov_str_new(buf, (uint32_t)n));
+  }
+
+  if (q == "net.write") {
+    OvValue fd = ARG(0);
+    std::string text = str_arg(ARG(1));
+    return ov_bool(ov_net_write(ov_tagof(fd) == OV_INT ? (int)fd.i : -1,
+                                text.data(), (int)text.size()) == 0);
+  }
+
+  if (q == "net.close") {
+    OvValue fd = ARG(0);
+    ov_net_close(ov_tagof(fd) == OV_INT ? (int)fd.i : -1);
+    return ov_nil();
+  }
+
+  if (q == "net.port") {
+    OvValue fd = ARG(0);
+    int p = ov_net_port(ov_tagof(fd) == OV_INT ? (int)fd.i : -1);
+    if (p < 0) ov_throw_value(ov_s("not a listening socket"));
+    return ov_int(p);
   }
 
   // ------------------------------------------------------------ file I/O

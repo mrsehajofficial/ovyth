@@ -96,6 +96,7 @@ int Interp::run() {
   OvMap* time_ns = ov_map_new();
   OvMap* file_ns = ov_map_new();
   OvMap* os_ns = ov_map_new();
+  OvMap* net_ns = ov_map_new();
   globals_->vars["http"] = ov_map(http_ns);
   globals_->vars["json"] = ov_map(json_ns);
   globals_->vars["str"] = ov_map(str_ns);
@@ -103,6 +104,7 @@ int Interp::run() {
   globals_->vars["time"] = ov_map(time_ns);
   globals_->vars["file"] = ov_map(file_ns);
   globals_->vars["os"] = ov_map(os_ns);
+  globals_->vars["net"] = ov_map(net_ns);
 
   try {
     exec_block(prog_.statements, globals_);
