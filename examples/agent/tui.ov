@@ -166,25 +166,31 @@ if file.exists(config_path) {
     if text != "" { config = json.parse(text) }
 }
 
-key = env_or("AI_API_KEY", "")
-url = env_or("AI_API_URL", "")
-model = env_or("AI_MODEL", "")
-if key == "" and config["key"] != null { key = config["key"] }
-if url == "" and config["url"] != null { url = config["url"] }
-if model == "" and config["model"] != null { model = config["model"] }
+// The settings a slash command can change are one-element lists, not bare
+// names. The reason is the project's substitution rule: a function assigning
+// to a bare name creates a local of its own, so `:config model x` inside
+// commands() would report success while changing nothing — which is exactly
+// what happened before these were lists. A list is a reference, so
+// commands() writing `model[0] = v` writes the one every reader sees.
+key = [env_or("AI_API_KEY", "")]
+url = [env_or("AI_API_URL", "")]
+model = [env_or("AI_MODEL", "")]
+if key[0] == "" and config["key"] != null { key[0] = config["key"] }
+if url[0] == "" and config["url"] != null { url[0] = config["url"] }
+if model[0] == "" and config["model"] != null { model[0] = config["model"] }
 
-if url == "" { url = "https://api.example.com/v1/chat" }
-if model == "" { model = "gpt-4o-mini" }
-guard_on = true
+if url[0] == "" { url[0] = "https://api.example.com/v1/chat" }
+if model[0] == "" { model[0] = "gpt-4o-mini" }
+guard_on = [true]
 
 function save_config() {
     file.write(config_path, json.stringify({
-        "key": key, "url": url, "model": model
+        "key": key[0], "url": url[0], "model": model[0]
     }))
 }
 
 if pretty { emit("\n") }
-if key == "" {
+if key[0] == "" {
     emit("first run: where should the agent talk to?")
     emit("(stored in " + config_path + "; set AI_API_KEY to skip this)")
     emit("")
@@ -194,9 +200,9 @@ if key == "" {
     k = input("  API key   > ")
     u = input("  base URL  > ")
     m = input("  model     > ")
-    if k != null and k != "" { key = k }
-    if u != null and u != "" { url = u }
-    if m != null and m != "" { model = m }
+    if k != null and k != "" { key[0] = k }
+    if u != null and u != "" { url[0] = u }
+    if m != null and m != "" { model[0] = m }
     save_config()
     emit("")
 }
@@ -217,7 +223,7 @@ if pretty {
     emit("")
 }
 
-emit("model:  " + model + "  at  " + url)
+emit("model:  " + model[0] + "  at  " + url[0])
 emit("guard:  " + (guard_on ? "on" : "off") + "  (refuses the unrebuildable)")
 emit("type :help for commands, :quit to leave")
 emit("")
@@ -352,7 +358,7 @@ function is_protected_path(t) {
 }
 
 function guard(cmd) {
-    if !guard_on { return {"ok": true} }
+    if !guard_on[0] { return {"ok": true} }
     c = cmd.trim()
     if c == "" { return {"ok": true} }
     for pat in ["mkfs", "of=/dev/", ">/dev/sd", "> /dev/sd", ">/dev/nvme",
@@ -593,10 +599,47 @@ function commands(text) {
         emit("  conversation cleared")
         return true
     }
+    // The setters. They live here, in a function, because the four settings
+    // they change are one-element lists -- a function assigning to a bare name
+    // would create a local of its own and report success while changing
+    // nothing (the same trap that made `:config model x` a no-op before).
+    if text == ":readonly" or text.startswith(":readonly ") {
+        arg = ""
+        if text.startswith(":readonly ") {
+            arg = text.slice(10, len(text)).trim()
+        }
+        if arg == "on" or arg == "off" {
+            guard_on[0] = arg == "on"
+            emit("  guard " + arg)
+        } else {
+            emit("  guard is " + (guard_on[0] ? "on" : "off") + "  (:readonly on|off)")
+        }
+        return true
+    }
     if text == ":config" {
-        emit("  key   " + (key == "" ? "(none)" : "set, " + str(len(key)) + " chars"))
-        emit("  url   " + url)
-        emit("  model " + model)
+        emit("  key   " + (key[0] == "" ? "(none)" : "set, " + str(len(key[0])) + " chars"))
+        emit("  url   " + url[0])
+        emit("  model " + model[0])
+        return true
+    }
+    if text != ":config " and text.startswith(":config ") {
+        what = text.slice(8, len(text))
+        sp = what.indexof(" ")
+        field = sp < 0 ? what : what.slice(0, sp)
+        value = sp < 0 ? "" : what.slice(sp + 1, len(what)).trim()
+        if field == "key" or field == "url" or field == "model" {
+            if value == "" {
+                emit("  :config " + field + " needs a value")
+                return true
+            }
+            if field == "key" { key[0] = value }
+            if field == "url" { url[0] = value }
+            if field == "model" { model[0] = value }
+            save_config()
+            emit("  " + field + " updated -> " + value)
+        } else {
+            emit("  :config key|url|model <value>")
+        }
         return true
     }
     if text.startswith(":") {
@@ -799,7 +842,7 @@ if serve_port != "" {
                     }
                 }
 
-                net.write(conn["fd"], "ovyth agent -- model " + model + " :help for commands, :quit to disconnect\n")
+                net.write(conn["fd"], "ovyth agent -- model " + model[0] + " :help for commands, :quit to disconnect\n")
                 reader[0] = conn
                 sink[0] = conn["fd"]
                 emit("connected")
