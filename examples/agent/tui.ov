@@ -468,6 +468,10 @@ while true {
             }
         }
         r = ai_request(url, key, model, conv, 60.0)
+        if env_or("OVC_AGENT_DEBUG", "") != "" {
+            eprint("--- history now (" + str(len(history)) + ") ---")
+            for m in history { eprint("  [" + m["role"] + "] " + m["content"].slice(0, 90)) }
+        }
         if !r["ok"] {
             print("  ✖ model error: " + r["error"])
             break
@@ -523,17 +527,22 @@ while true {
             if refuses(call["say"]) and refusals < 1 {
                 refusals = refusals + 1
                 ai_told(history, call["say"])
-                // Worded as a demonstration, not a contradiction. Telling a model
-                // "you DO have a terminal" reads as an attempt to make it
-                // role-play, and it answers "I cannot participate in that
-                // role-play scenario" -- which is what the assertive version
-                // produced. Showing it its own transcript does the same job
-                // without the fight.
-                ai_ask(history, "Context from this session: you are running inside " +
-                                "a process with a shell. You have run " +
-                                str(ran[0]) + " command(s) and read the output; the " +
-                                "most recent was `" + last_cmd[0] + "`. Use a " +
-                                "command, or if it fails, report what its output said.")
+                // A correction, and the evidence in it has to be evidence *for*
+                // acting. The previous wording -- "you have run 0 command(s), the
+                // most recent was ``" -- is true on a fresh session and hands the
+                // model a reason to decline: it has no history of doing anything,
+                // so it decides it cannot. Reproduced against the live model: it
+                // turned "My name is Ovyth" into "I am Gemini, an AI built by
+                // Google", which is the persona break that started this.
+                //
+                // The evidence that is always true is the priming: every session
+                // has run pwd and read its output. Saying that -- and asking it to
+                // report a failure rather than decline -- made the same model
+                // answer with {"cmd": "whoami"} and act.
+                ai_ask(history, "Correction: you do have a shell. You can see it in " +
+                                "this very conversation -- you ran `pwd` above and " +
+                                "read its output. Use a command; if it fails, report " +
+                                "what the output said rather than declining.")
                 continue
             }
             if refuses(call["say"]) {
