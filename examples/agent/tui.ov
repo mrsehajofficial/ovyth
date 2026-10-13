@@ -144,12 +144,17 @@ system = "You are Ovyth. You are a real process running on a Linux machine and "
     "you have a terminal right now. Every command you send is executed for real " +
     "and its output comes back to you. You have four tools.\n" +
     "Each turn, reply with exactly one JSON object and nothing else:\n" +
-    "  {\"cmd\": \"<shell command>\"}   run a command\n" +
-    "  {\"read\": \"<path>\"}           read a file\n" +
-    "  {\"write\": \"<path>\", \"text\": \"<content>\"}   write a file\n" +
-    "  {\"say\": \"<text>\"}            answer the user in words\n" +
+    "  {\"cmd\": \"sh -c ...\"}          run one shell command, in quotes\n" +
+    "  {\"read\": \"a/path.txt\"}        read a file\n" +
+    "  {\"write\": \"a/path.txt\", \"text\": \"the content\"}   write a file\n" +
+    "  {\"say\": \"the answer\"}         answer the user in words\n" +
     "Prefer fewer commands. Read before you write. If a command fails, read the\n" +
-    "error and try something else. Never invent output you did not observe.\n" +
+    "error and try something else. A missing binary is swept for its common\n" +
+    "spellings automatically, so do not spend a turn on that. When a command\n" +
+    "fails for a reason a different *class* of command would fix -- the tool is\n" +
+    "not installed, or needs one that is -- find the one that fits this machine\n" +
+    "and run that instead of reporting the failure.\n" +
+    "Never invent output you did not observe.\n" +
     "Never answer from memory about this machine, its files, or anything\n" +
     "installed on it -- run a command and report what it said.\n" +
     "You are talking to a person, so answers should be short and concrete."
@@ -297,6 +302,113 @@ function refuses(text) {
 
 // -------------------------------------------------------------------- tools
 
+// Was this a "the command does not exist here" failure?
+//
+// 127 is the shell's exit code for "not found", and bash writes
+// "<cmd>: command not found" to stderr. Both are checked because a bare 127
+// also happens for other reasons (a program exiting 127 on its own), and a
+// plain "No such file" from a *sub*process is not a missing binary.
+//
+// Every other failure mode — wrong flags, a bad config, permission denied,
+// a failed compile — is the command running and being wrong, and renaming the
+// binary would only make it harder to read. Only the not-found case is a
+// naming problem, so only it is swept.
+function not_found(cmd, r) {
+    if r["code"] != 127 { return false }
+    first = cmd.trim()
+    sp = first.indexof(" ")
+    if sp >= 0 { first = first.slice(0, sp) }
+    if first == "" { return false }
+    want = first + ": command not found"
+    if r["stderr"].contains(want) { return true }
+    if r["stderr"].contains(first + ": not found") { return true }
+    return false
+}
+
+// Everything a user might reasonably call a terminal program, generated from
+// the name the model used. The ordering matters: distro packages keep the
+// upstream name for the stable build, users add a suffix, and some are
+// spelled without the hyphen entirely.
+function name_variants(base) {
+    variants = [base]
+    for suffix in ["-stable", "-bin", "-c", "2", "3"] {
+        variants.push(base + suffix)
+    }
+    // google-chrome -> googlechrome, and the reverse spelling
+    flat = base.replace("-", "")
+    if flat != base { variants.push(flat) }
+    if !base.contains("-") and base.contains(" ") == false {
+        // not applicable for single words beyond flat, skip
+    }
+    return variants
+}
+
+// Replace the first token of `cmd` with `hit`. String concatenation rather
+// than a rebuild, so flags, quoting and the rest of the pipeline survive.
+function rewrite_first_token(cmd, hit) {
+    c = cmd.trim()
+    sp = c.indexof(" ")
+    if sp < 0 { return hit }
+    return hit + c.slice(sp, len(c))
+}
+
+// Ask the machine which of these names actually exist, in one shell call.
+// Returns the first one that is on PATH, or "".
+function which_first(variants) {
+    line = "command -v " + join(" ", variants)
+    r = os.run(line)
+    if r["code"] != 127 and r["code"] != 0 { return "" }
+    first = r["stdout"].trim()
+    if first == "" { return "" }
+    nl = first.indexof("\n")
+    if nl >= 0 { first = first.slice(0, nl) }
+    return first.trim()
+}
+
+// When a command was not found, try the names it could plausibly have had,
+// run the first one the machine actually has, and report that as the result.
+// Returns null when nothing matched, so the original failure stands.
+//
+// The point is not to be clever about binaries. It is that "command not
+// found" is the one failure whose *most likely* next attempt is knowable
+// without a model, and spending a 2ms shell call on it beats spending a model
+// round-trip on it — and beats reporting a dead end the agent could have
+// walked around.
+function sweep_not_found(cmd) {
+    // Only the first token: the rest of the line stays as written.
+    c = cmd.trim()
+    sp = c.indexof(" ")
+    first = sp < 0 ? c : c.slice(0, sp)
+    if first == "" { return null }
+    if first.contains("/") { return null }   // a path, not a name to sweep
+
+    variants = name_variants(first)
+    hit = which_first(variants)
+    if hit == "" or hit == first { return null }
+
+    rewritten = rewrite_first_token(cmd, hit)
+    mark(" ↳", first + " not found; trying " + hit)
+    r = os.run(rewritten)
+    ran[0] = ran[0] + 1
+    last_cmd[0] = rewritten
+    out = r["stdout"].trim()
+    err = r["stderr"].trim()
+    mark(" ", "exit " + str(r["code"]) + " via " + hit)
+    if out != "" { print(dim + "  │ " + out.slice(0, 400) + reset) }
+    if err != "" { print(dim + "  ! " + err.slice(0, 200) + reset) }
+    if r["code"] == 127 or not_found(rewritten, r) {
+        // The variant is missing too (or command -v lied). Report what was
+        // tried, so the model can reason about the machine rather than about
+        // an opaque exit code.
+        return "exit 127\nstdout:\n\nstderr:\nNo binary found. Tried: " + join(", ", variants) +
+               " — none are on PATH for the first token '" + first + "'. Choose a different command class."
+    }
+    return "exit " + str(r["code"]) + " (via " + hit + ", substituted for " + first +
+           ")\nstdout:\n" + out.slice(0, 3000) +
+           (len(out) > 3000 ? "\n... " + str(len(out) - 3000) + " bytes omitted" : "") +
+           "\nstderr:\n" + err.slice(0, 500)
+}
+
 // One tool call, run. Returns the text that goes back to the model -- always a
 // string, so the protocol never has to describe a shape.
 function run_tool(call) {
@@ -316,6 +428,11 @@ function run_tool(call) {
         mark(" ", "exit " + str(r["code"]) + " in " + str(took) + "ms")
         out = r["stdout"].trim()
         err = r["stderr"].trim()
+        // A missing binary is recoverable by renaming; try before giving up.
+        if not_found(cmd, r) {
+            swept = sweep_not_found(cmd)
+            if swept != null { return swept }
+        }
         shown = ""
         i = 0
         for line in out.split("\n") {
