@@ -157,8 +157,53 @@ wait $line_pid 2>/dev/null
 # clean disconnect. Deliberately no model turn: what is under test is the
 # transport, and a model call would make this suite depend on a network.
 AGENT_HOME="$BIN/home"
+# The agent needs the ai module to compile. It is written here rather than
+# copied out of ~/.ovyth because the suite has to be hermetic: CI starts on a
+# clean runner with no package store, and a test that reads the developer's
+# home directory passes locally and fails there.
+#
+# This is the message/history half of the ai module, which is all the agent
+# touches in this test — it never makes a model call, because what is under
+# test is the transport, and a model call would make the suite depend on a
+# network. ai_request answers as a failure instead, so a test that ever did
+# reach it would say so loudly rather than hang.
 mkdir -p "$AGENT_HOME/packages/ai"
-cp ~/.ovyth/packages/ai/ai.ov "$AGENT_HOME/packages/ai/ai.ov" 2>/dev/null
+cat > "$AGENT_HOME/packages/ai/ai.ov" <<'EOF'
+// Test fixture: the message/history half of the ai module.
+function ai_message(role, content) {
+    return {"role": role, "content": content}
+}
+function ai_conversation(system) {
+    return [ai_message("system", system)]
+}
+function ai_ask(messages, text) {
+    messages.push(ai_message("user", text))
+    return messages
+}
+function ai_told(messages, text) {
+    messages.push(ai_message("assistant", text))
+    return messages
+}
+function ai_trim(messages, keep) {
+    if len(messages) <= keep { return messages }
+    head = []
+    if len(messages) > 0 and messages[0]["role"] == "system" {
+        head.push(messages[0])
+    }
+    start = len(messages) - (keep - len(head))
+    if start < 0 { start = 0 }
+    i = start
+    while i < len(messages) {
+        head.push(messages[i])
+        i = i + 1
+    }
+    return head
+}
+function ai_request(url, key, model, messages, timeout_s) {
+    return {"ok": false, "text": "", "status": 0,
+            "error": "test fixture: no model call available", "elapsed_ms": 0.0}
+}
+EOF
 
 OVYTH_HOME="$AGENT_HOME" \
 OVYTH_AGENT_SERVE=0 \
