@@ -270,17 +270,26 @@ function guard(cmd) {
     return {"ok": true}
 }
 
-// Does this answer decline to act?
+// Does this answer decline the *role* rather than the task?
 //
-// Matched on the phrases a model reaches for when it falls back on its training
-// instead of this session. Narrow on purpose: "i cannot" and friends also appear
-// in perfectly good answers ("I cannot find that file"), so this is only a hint
-// that a retry is worth one attempt -- the retry's own outcome decides.
+// The distinction matters, and it was measured. The same model, the same prompt,
+// given "open chrome", replies {"cmd": "google-chrome &"} and acts. It only
+// declines when it has fallen back on its training and decided it is an
+// assistant with no machine -- "I cannot act as the local process Ovyth", "I
+// don't have access to a terminal", "I am an AI built by Google". Those are the
+// phrases worth one retry.
+//
+// "i cannot" is deliberately absent. It appears in perfectly good answers too
+// ("I cannot find that file"), and retrying those burned turns for nothing: the
+// model simply answered again. Matching only the denial-of-environment family
+// keeps the correction for the case where it helps.
 function refuses(text) {
     t = text.lower()
-    for pat in ["i cannot", "i can't", "i don't have access", "i do not have access",
-                "not able to", "i'm an ai", "i am an ai", "no access to",
-                "cannot access", "no terminal", "don't have a terminal"] {
+    for pat in ["no terminal", "don't have a terminal", "do not have a terminal",
+                "no access to", "don't have access", "do not have access",
+                "cannot access", "i'm an ai", "i am an ai",
+                "role-play", "roleplay", "pretend to be",
+                "local system process", "cannot act as"] {
         if t.contains(pat) { return true }
     }
     return false
@@ -447,6 +456,16 @@ while true {
             for m in conv { roles = roles + m["role"].slice(0, 1) }
             eprint("[req " + str(req_n) + " msgs=" + str(len(conv)) +
                    " first=" + conv[0]["role"] + " roles=" + roles + "]")
+            if env_or("OVC_AGENT_DEBUG", "") == "body" {
+                eprint("--- body ---")
+                eprint(json.stringify(conv))
+                eprint("--- end body ---")
+            }
+            if env_or("OVC_AGENT_DEBUG", "") == "full" {
+                eprint("--- system as sent (" + str(len(conv[0]["content"])) + " chars) ---")
+                eprint(conv[0]["content"])
+                eprint("--- end ---")
+            }
         }
         r = ai_request(url, key, model, conv, 60.0)
         if !r["ok"] {
@@ -504,11 +523,17 @@ while true {
             if refuses(call["say"]) and refusals < 1 {
                 refusals = refusals + 1
                 ai_told(history, call["say"])
-                ai_ask(history, "You do have a terminal. You have already run " +
-                                str(ran[0]) + " command(s) in this session and read " +
-                                "their output, most recently '" + last_cmd[0] +
-                                "'. Try again with a real command; if the command " +
-                                "itself fails, its output will say so.")
+                // Worded as a demonstration, not a contradiction. Telling a model
+                // "you DO have a terminal" reads as an attempt to make it
+                // role-play, and it answers "I cannot participate in that
+                // role-play scenario" -- which is what the assertive version
+                // produced. Showing it its own transcript does the same job
+                // without the fight.
+                ai_ask(history, "Context from this session: you are running inside " +
+                                "a process with a shell. You have run " +
+                                str(ran[0]) + " command(s) and read the output; the " +
+                                "most recent was `" + last_cmd[0] + "`. Use a " +
+                                "command, or if it fails, report what its output said.")
                 continue
             }
             if refuses(call["say"]) {
