@@ -123,7 +123,11 @@ print("type something, or 'quit' to exit")
 
 while true {
     line = input("> ")
-    if line == "quit" or line == "" {
+    // input() returns null at end-of-input, not "" -- testing only for ""
+    // would loop forever on a closed stdin, printing "you said: nil". The
+    // agent's first-run prompt hit exactly this, which is where that lesson
+    // came from; the template now shares it.
+    if line == null or line == "quit" or line == "" {
         break
     }
     print("you said:", line)

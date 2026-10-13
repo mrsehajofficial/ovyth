@@ -1,0 +1,25 @@
+// Ovyth :: examples/cli/cli.ov
+//
+// A small interactive command loop -- the shape a real tool takes.
+//
+// read a line, act on it, repeat. This is the basis of a CLI, a REPL, or an
+// agent's input loop, and it is deliberately dull so the interesting part is
+// visible: input() blocks until the user types, and the loop exits when they
+// say so -- or when the input ends, because input() returns null at
+// end-of-input rather than "", and a loop that tests only for "" spins
+// forever on a closed stdin printing "you said: nil".
+//
+//   ovc run examples/cli/cli.ov     try it now (interpreter)
+//   ovc examples/cli/cli.ov         compile a standalone executable
+
+print("type something, or 'quit' to exit")
+
+while true {
+    line = input("> ")
+    if line == null or line == "quit" or line == "" {
+        break
+    }
+    print("you said:", line)
+}
+
+print("bye")
