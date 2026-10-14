@@ -35,6 +35,17 @@ import "rag"
 ran = [0]
 last_cmd = [""]
 
+// ------------------------------------------------------------------- debug
+
+// OVC_AGENT_DEBUG turns on the request dump. Read once, here, because "set" is
+// not the same as "non-empty": OVC_AGENT_DEBUG=0 used to switch the dump *on*,
+// which is the opposite of what anyone setting it to 0 expects — and it cost a
+// test a whole afternoon.
+debug_on = [env_or("OVC_AGENT_DEBUG", "").lower()]
+if debug_on[0] == "0" or debug_on[0] == "false" or debug_on[0] == "off" {
+    debug_on[0] = ""
+}
+
 // ------------------------------------------------------------------- memory
 
 // Long-term memory, as a RAG store on disk.
@@ -820,7 +831,7 @@ function handle_turn(line) {
     recalled = recall(line)
     if recalled != "" {
         ai_ask(history, recalled)
-        if env_or("OVC_AGENT_DEBUG", "") != "" {
+        if debug_on[0] != "" {
             eprint("[recall] " + recalled.slice(0, 200))
         }
     }
@@ -835,7 +846,7 @@ function handle_turn(line) {
         // What is actually being sent, because "the model refused" has two very
         // different causes: it never saw the system prompt, or it saw it and
         // pushed back. Only one of those is a bug in the agent.
-        if env_or("OVC_AGENT_DEBUG", "") != "" {
+        if debug_on[0] != "" {
             eprint("[req " + str(req_n[0]) + " msgs=" + str(len(conv)) +
                    " first=" + conv[0]["role"] + "]")
             for m in conv { eprint("  [" + m["role"] + "] " + m["content"].slice(0, 90)) }

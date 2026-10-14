@@ -6,15 +6,19 @@
 # grows while the context window does not -- which is the whole reason for
 # using retrieval rather than dragging history through the prompt.
 #
-# No model is involved here, and that is deliberate: what is under test is the
-# recall path (load -> topk -> inject) and the store commands (:memory,
+# No real model is involved here, and that is deliberate: what is under test is
+# the recall path (load -> topk -> inject) and the store commands (:memory,
 # :forget), not whether a particular endpoint answers well. The fixture ai
 # module answers every request as a failure, so the turn loop stops before the
 # model -- but the recall happens *before* that, which is what gets asserted.
 #
-# The recall block is asserted through OVC_AGENT_DEBUG, which the agent already
-# writes to stderr; that keeps the test on the real code path rather than a
-# copy of it.
+# Two things this suite learned the hard way:
+#
+#   * Every agent run needs a complete endpoint config, or the first-run
+#     prompt ("API key >") consumes the test's stdin and every assertion
+#     collapses. They are exported once, here.
+#   * The agent also imports ai and rag from the package store, and a clean
+#     runner has no package store, so both are installed from the fixtures.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -43,6 +47,19 @@ cp "$PWD/tests/fixtures/rag.ov" "$AGENT_HOME/packages/rag/rag.ov"
 
 MEM="$BIN/memory.json"
 
+# A complete endpoint, so the first-run prompt never fires. Unreachable on
+# purpose: the fixture ai module fails every request anyway, and a test that
+# depends on a real endpoint would be a test that depends on a network.
+export AI_API_KEY="test-key-not-a-secret"
+export AI_API_URL="http://127.0.0.1:1/v1/chat/completions"
+export AI_MODEL="test-model"
+export OVC_AGENT_DEBUG=1
+
+run_agent() { # <stdin-file> -> stdout+stderr
+  OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
+  timeout 90 "$OVC" run "$PWD/examples/agent/tui.ov" 2>&1
+}
+
 # A seeded store holding one fact, written by hand: the shape remember_turn
 # produces, so the recall path is exercised against real data.
 cat > "$MEM" <<'EOF'
@@ -50,11 +67,6 @@ cat > "$MEM" <<'EOF'
  {"text":"Q: which editor do i use\nA: You use Neovim.","source":"turn","chunk":0,"doc":1},
  {"text":"Ovyth compiles .ov files to native executables with zero VM overhead.","source":"note","chunk":0,"doc":2}]
 EOF
-
-run_agent() { # <stdin-file> -> stdout+stderr
-  OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
-  OVC_AGENT_DEBUG=1 timeout 90 "$OVC" run "$PWD/examples/agent/tui.ov" 2>&1
-}
 
 # ---------------------------------------------------------------- recall
 # A question about a stored fact must recall it. The fixture model then fails,
@@ -79,16 +91,38 @@ else
 fi
 
 # ------------------------------------------------------------------ :memory
-# The seeded store holds 3 chunks; the two recall turns above each filed their
-# exchange, so the count grows. That growth is the assertion — it is what
-# proves turns are being written back, which is half of the memory loop.
+# The seeded store holds 3 chunks; this run makes no turns, so :memory must
+# report exactly 3. A wrong path or an unread store shows up here as 0.
+#
+# The count is read from the command's own line, not the startup banner: the
+# banner is a snapshot of the store as it was loaded, before any turn in this
+# session could have been filed.
 printf ':memory\n:quit\n' > "$BIN/mem.txt"
 out="$(run_agent < "$BIN/mem.txt")"
-chunks="$(sed -n 's/.*memory: \([0-9]*\) chunk(s).*/\1/p' <<<"$out" | head -1)"
-[[ "$chunks" =~ ^[0-9]+$ && "$chunks" -gt 3 ]] && ok ":memory reports the store growing ($chunks chunks)" \
+chunks="$(sed -n 's/^you> *\([0-9]*\) chunk(s).*/\1/p' <<<"$out" | head -1)"
+[[ "$chunks" == "3" ]] && ok ":memory reports the store size (3 chunks)" \
   || bad ":memory reports the store size" "$out"
 grep -q "cat is called Pixel" <<<"$out" && ok ":memory previews recent chunks" \
   || bad ":memory previews recent chunks" "$out"
+
+# Write-back, the other half of the loop: a turn that answered must be filed,
+# so the store this run ends with holds one more chunk than it began with.
+#
+# This needs a model that actually answers, which the default fixture does not
+# do -- it fails every request, and a turn with no answer is never filed (that
+# is correct behaviour, not something to paper over). Hence the say gateway.
+SGPORT=$(( 19500 + (RANDOM % 1000) ))
+python3 "$PWD/tests/fixtures/saygateway.py" "$SGPORT" >/dev/null 2>&1 &
+sg_pid=$!
+sleep 1
+printf 'hello there agent\n:memory\n:quit\n' > "$BIN/grow.txt"
+out="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
+       AI_API_URL="http://127.0.0.1:$SGPORT/v1/chat/completions" \
+       timeout 90 "$OVC" run "$PWD/examples/agent/tui.ov" < "$BIN/grow.txt" 2>&1)"
+kill $sg_pid 2>/dev/null || true
+after="$(sed -n 's/^you> *\([0-9]*\) chunk(s).*/\1/p' <<<"$out" | head -1)"
+[[ "$after" =~ ^[0-9]+$ && "$after" -gt 3 ]] && ok "a completed turn is filed ($after chunks)" \
+  || bad "a completed turn is filed" "$out"
 
 # ------------------------------------------------------------------ :forget
 printf ':forget\n:memory\n:quit\n' > "$BIN/forget.txt"
@@ -117,7 +151,8 @@ fi
 # top-level lists, and a top-level `let` is invisible to functions on the
 # native backend. That predates the memory work and affects the whole agent,
 # so it is asserted as the known gap rather than skipped silently.
-if nce="$("$OVC" "$PWD/examples/agent/tui.ov" -o "$BIN/native" 2>&1)"; then
+if nce="$(OVYTH_HOME="$AGENT_HOME" "$OVC" "$PWD/examples/agent/tui.ov" \
+          -o "$BIN/native" 2>&1)"; then
   nout="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
           OVC_AGENT_DEBUG=1 timeout 90 "$BIN/native" < "$BIN/ask.txt" 2>&1 || true)"
   if grep -q "cat is called Pixel" <<<"$nout"; then
@@ -137,7 +172,7 @@ fi
 # called .trim() on it, and the agent died mid-session.
 #
 # This drives it with an ai module that still behaves the old way -- ok=true,
-# text=nil -- because with ai 1.0.4 fixed the package reports the failure
+# text=nil — because with ai 1.0.4 fixed the package reports the failure
 # itself and the agent's own guard would never be exercised. The point of the
 # test is the agent's guard, so the package side is made to fail again.
 OLD_HOME="$BIN/oldhome"
@@ -202,8 +237,12 @@ mg_pid=$!
 sleep 1
 
 printf 'what is your name\n:quit\n' > "$BIN/mg.txt"
+# Debug off for this one: the request dump prints the whole message history,
+# which contains the meta reply verbatim, and would match the "never shown to
+# the user" assertion no matter what the agent correctly does with it.
 if out="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
           AI_API_URL="http://127.0.0.1:$MGPORT/v1/chat/completions" \
+          OVC_AGENT_DEBUG=0 \
           timeout 90 "$OVC" run "$PWD/examples/agent/tui.ov" < "$BIN/mg.txt" 2>&1)"; then
   if grep -q "Understood. I will reply" <<<"$out"; then
     bad "meta-commentary is not shown to the user" "$out"
