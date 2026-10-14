@@ -6,7 +6,11 @@
 // in, so the tests exercise the same code users run; refresh it deliberately
 // when the package changes.
 //
-// --- snapshot of ovyth-ai 1.0.3 ---
+// One deviation, deliberate: ai_path is inlined into ai_normalize_url()
+// because a top-level `let` is invisible to functions on the native backend,
+// and this fixture has to compile on both. Everything else is verbatim.
+//
+// --- snapshot of ovyth-ai 1.0.4 ---
 
 // ai :: ai.ov
 //
@@ -119,8 +123,18 @@ function ai_request(url, key, model, messages, timeout_s) {
         result["elapsed_ms"] = response.elapsed_ms
         if response.status == 200 {
             data = json.parse(response.body)
-            result["text"] = data["choices"][0]["message"]["content"]
-            result["ok"] = true
+            text = data["choices"][0]["message"]["content"]
+            // A 200 with no message content in it is not a success. Some
+            // gateways answer that way, and reporting ok with a nil text means
+            // every caller has to check for nil after being told it worked --
+            // so the shape is validated here, once, where the response is
+            // still in hand.
+            if text == null {
+                result["error"] = "the endpoint replied with no message content"
+            } else {
+                result["text"] = text
+                result["ok"] = true
+            }
         } else {
             // Keep the server's message, not just its status. "HTTP 502" gives
             // the user nothing to act on; "HTTP 502: upstream error: HTTP Error

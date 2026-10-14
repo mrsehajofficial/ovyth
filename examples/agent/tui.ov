@@ -834,7 +834,17 @@ function handle_turn(line) {
             emit("  ✖ model error: " + r["error"])
             return
         }
-        reply = r["text"].trim()
+        // A gateway can answer 200 with a body that has no content in it.
+        // That was not theoretical: a router returned choices without a
+        // message content, ai_request reported ok with a nil text, and this
+        // line called .trim() on nil and took the agent down. Check before
+        // trusting the shape.
+        reply = r["text"]
+        if reply == null or reply.trim() == "" {
+            emit("  ✖ model error: the endpoint replied with no message content")
+            return
+        }
+        reply = reply.trim()
 
         // No JSON at all. A model that answers from general knowledge instead of
         // looking is the commonest failure of a tool-using agent, so it is

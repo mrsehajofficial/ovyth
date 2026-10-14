@@ -131,6 +131,66 @@ else
   bad "native compile failed unexpectedly" "$nce"
 fi
 
+# ------------------------------------------------- a reply with no content
+# A gateway answering 200 with no message content must not take the agent
+# down. It did once: ai_request reported ok with a nil text, the turn loop
+# called .trim() on it, and the agent died mid-session.
+#
+# This drives it with an ai module that still behaves the old way -- ok=true,
+# text=nil -- because with ai 1.0.4 fixed the package reports the failure
+# itself and the agent's own guard would never be exercised. The point of the
+# test is the agent's guard, so the package side is made to fail again.
+OLD_HOME="$BIN/oldhome"
+mkdir -p "$OLD_HOME/packages/ai" "$OLD_HOME/packages/rag"
+cp "$PWD/tests/fixtures/rag.ov" "$OLD_HOME/packages/rag/rag.ov"
+cat > "$OLD_HOME/packages/ai/ai.ov" <<'EOF'
+// The message half of ai, with a request that reproduces the old bug:
+// 200 answered, no content in the body, and ok left true.
+function ai_message(role, content) {
+    return {"role": role, "content": content}
+}
+function ai_conversation(system) {
+    return [ai_message("system", system)]
+}
+function ai_ask(messages, text) {
+    messages.push(ai_message("user", text))
+    return messages
+}
+function ai_told(messages, text) {
+    messages.push(ai_message("assistant", text))
+    return messages
+}
+function ai_trim(messages, keep) {
+    if len(messages) <= keep { return messages }
+    head = []
+    i = len(messages) - keep
+    if i < 0 { i = 0 }
+    while i < len(messages) {
+        head.push(messages[i])
+        i = i + 1
+    }
+    return head
+}
+function ai_request(url, key, model, messages, timeout_s) {
+    return {"ok": true, "text": null, "status": 200, "error": "",
+            "elapsed_ms": 1.0}
+}
+EOF
+
+printf 'hi\nhello\n:quit\n' > "$BIN/nc.txt"
+if out="$(OVYTH_HOME="$OLD_HOME" OVYTH_AGENT_MEMORY="$MEM" \
+          timeout 60 "$OVC" run "$PWD/examples/agent/tui.ov" < "$BIN/nc.txt" 2>&1)"; then
+  if grep -qE "nil has no method" <<<"$out"; then
+    bad "a reply with no content does not crash the agent" "$out"
+  elif grep -q "no message content" <<<"$out"; then
+    ok "a reply with no content does not crash the agent"
+  else
+    bad "a reply with no content does not crash the agent" "$out"
+  fi
+else
+  bad "a reply with no content does not crash the agent" "agent exited non-zero"
+fi
+
 echo
 echo "ovc agent memory regression: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
