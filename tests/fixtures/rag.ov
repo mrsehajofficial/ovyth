@@ -1,0 +1,284 @@
+// Test fixture -- a snapshot of the published ovyth-rag package.
+//
+// The agent imports "rag" from the package store, and the store is empty on a
+// clean runner, so the memory and remote suites would fail there for a reason
+// that has nothing to do with what they test. This is the real package copied
+// in, so the tests exercise the same code users run; refresh it deliberately
+// when the package changes.
+//
+// --- snapshot of ovyth-rag 1.0.0 ---
+
+// rag :: rag.ov
+//
+// One job: keep a knowledge base, retrieve from it, and build the prompt.
+//
+//   install:  ovc pkg install rag
+//   import:   import "rag"
+//
+// Every public name is prefixed rag_ because Ovyth flattens all top-level
+// names into one program — the prefix is the namespace. The store is a plain
+// list of maps the caller owns, so it serialises with json.stringify and
+// survives with rag_save/rag_load; the module holds nothing between calls.
+//
+// Retrieval is lexical by default, which searches offline with no model and
+// no embeddings. When you do have vectors — from the ai module, or an
+// embeddings endpoint — store one per document as doc["vec"] and rank with
+// rag_topk_vec. Both paths return the same hit shape, so the code above them
+// does not care which was used.
+//
+// Definitions are ordered callee-first: Ovyth resolves a name at the call
+// site, so a helper has to exist before the function that uses it.
+
+// Words of a text, lower-cased, with empties dropped.
+function rag_words(text) {
+    words = []
+    for w in text.lower().split(" ") {
+        if w != "" {
+            words.push(w)
+        }
+    }
+    return words
+}
+
+// Split text into fixed-size chunks with overlap, on word boundaries.
+// The overlap is what keeps a sentence that straddles a cut searchable.
+function rag_chunk(text, size, overlap) {
+    words = text.split(" ")
+    chunks = []
+    i = 0
+    while i < len(words) {
+        end = i + size
+        if end > len(words) {
+            end = len(words)
+        }
+        part = []
+        j = i
+        while j < end {
+            part.push(words[j])
+            j = j + 1
+        }
+        chunks.push(join(" ", part))
+        i = i + size - overlap
+        if i < 0 {
+            i = 0
+        }
+    }
+    return chunks
+}
+
+// Cosine similarity. Zero for a zero-length vector rather than a division.
+function rag_cosine(a, b) {
+    n = 0
+    dot = 0.0
+    ma = 0.0
+    mb = 0.0
+    while n < len(a) and n < len(b) {
+        dot = dot + a[n] * b[n]
+        ma = ma + a[n] * a[n]
+        mb = mb + b[n] * b[n]
+        n = n + 1
+    }
+    if ma == 0.0 or mb == 0.0 {
+        return 0.0
+    }
+    return dot / (sqrt(ma) * sqrt(mb))
+}
+
+// Sort by score, best first, and keep the top k. Selection sort: stores are
+// human-sized, and it keeps the ordering completely unsurprising.
+function rag_sort(scored, k) {
+    j = 0
+    while j < k and j < len(scored) {
+        best = j
+        m = j + 1
+        while m < len(scored) {
+            if scored[m]["score"] > scored[best]["score"] {
+                best = m
+            }
+            m = m + 1
+        }
+        tmp = scored[j]
+        scored[j] = scored[best]
+        scored[best] = tmp
+        j = j + 1
+    }
+    out = []
+    i = 0
+    while i < k and i < len(scored) {
+        out.push(scored[i])
+        i = i + 1
+    }
+    return out
+}
+
+// A standing-in embedding: four character-frequency buckets. Not semantic,
+// and named so nobody mistakes it for one. Use it to exercise the vector path
+// before wiring a real embeddings endpoint.
+function rag_fake_embed(text) {
+    v0 = 0.0
+    v1 = 0.0
+    v2 = 0.0
+    v3 = 0.0
+    i = 0
+    while i < len(text) {
+        c = text[i]
+        if c == "a" or c == "e" or c == "i" or c == "o" or c == "u" {
+            v0 = v0 + 1.0
+        }
+        if c >= "a" and c <= "m" {
+            v1 = v1 + 1.0
+        }
+        if c >= "n" and c <= "z" {
+            v2 = v2 + 1.0
+        }
+        v3 = v3 + 1.0
+        i = i + 1
+    }
+    mag = sqrt(v0 * v0 + v1 * v1 + v2 * v2 + 1.0)
+    return [v0 / mag, v1 / mag, v2 / mag, v3 / mag]
+}
+
+// Chunk a corpus into a store. `docs` is a list of strings, or of maps shaped
+// {"text": ..., "source": ...}; a plain string carries no source. Returns the
+// store — a list of {"text", "source", "chunk", "doc"} — ready to stringify.
+function rag_build(docs, size, overlap) {
+    store = []
+    i = 0
+    while i < len(docs) {
+        doc = docs[i]
+        text = doc
+        source = ""
+        if type(doc) == "Map" {
+            text = doc["text"]
+            source = doc["source"]
+        }
+        chunks = rag_chunk(text, size, overlap)
+        c = 0
+        while c < len(chunks) {
+            store.push({"text": chunks[c], "source": source, "chunk": c, "doc": i})
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return store
+}
+
+// Add one document to a store and return it. Chunking and indexing in one
+// call, for a knowledge base that grows a document at a time.
+function rag_add(store, text, source, size, overlap) {
+    chunks = rag_chunk(text, size, overlap)
+    c = 0
+    while c < len(chunks) {
+        store.push({"text": chunks[c], "source": source, "chunk": c, "doc": len(store)})
+        c = c + 1
+    }
+    return store
+}
+
+// How well a query matches a chunk, lexically: how many distinct query terms
+// occur in it, weighted by how often. Simple, deterministic, and offline.
+function rag_score(query, text) {
+    haystack = rag_words(text)
+    terms = rag_words(query)
+    score = 0
+    seen = []
+    i = 0
+    while i < len(terms) {
+        t = terms[i]
+        dup = false
+        d = 0
+        while d < len(seen) {
+            if seen[d] == t {
+                dup = true
+            }
+            d = d + 1
+        }
+        if !dup {
+            seen.push(t)
+            j = 0
+            while j < len(haystack) {
+                if haystack[j] == t {
+                    score = score + 1
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    return score
+}
+
+// Rank a store lexically. Returns [{"text", "source", "score"}] best first.
+function rag_topk(store, query, k) {
+    scored = []
+    i = 0
+    while i < len(store) {
+        scored.push({
+            "text": store[i]["text"],
+            "source": store[i]["source"],
+            "score": rag_score(query, store[i]["text"])
+        })
+        i = i + 1
+    }
+    return rag_sort(scored, k)
+}
+
+// Rank by cosine similarity against a stored doc["vec"] — the path to use once
+// you have real embeddings. A document with no vector scores zero rather than
+// failing, so a half-embedded store still ranks.
+function rag_topk_vec(store, vector, k) {
+    scored = []
+    i = 0
+    while i < len(store) {
+        s = 0.0
+        if store[i]["vec"] != null {
+            s = rag_cosine(vector, store[i]["vec"])
+        }
+        scored.push({
+            "text": store[i]["text"],
+            "source": store[i]["source"],
+            "score": s
+        })
+        i = i + 1
+    }
+    return rag_sort(scored, k)
+}
+
+// Turn hits into a prompt. Each hit is numbered, so the model can cite it and
+// you can see which chunk it used.
+function rag_prompt(query, hits, max_chars) {
+    ctx = ""
+    i = 0
+    while i < len(hits) {
+        text = hits[i]["text"]
+        if len(text) > max_chars {
+            text = text.slice(0, max_chars) + "..."
+        }
+        ctx = ctx + "[" + str(i + 1) + "] " + text + "\n\n"
+        i = i + 1
+    }
+    return "Answer from the context below. Say when the context is not enough.\n\n" +
+        "Context:\n" + ctx + "Question: " + query
+}
+
+// Persist a store as JSON.
+function rag_save(store, path) {
+    return file.write(path, json.stringify(store))
+}
+
+// Read a store back. An empty store for a missing or unreadable file, so a
+// first run behaves like a cold start instead of an error.
+function rag_load(path) {
+    if !file.exists(path) {
+        return []
+    }
+    text = file.read(path)
+    if text == "" {
+        return []
+    }
+    store = json.parse(text)
+    if type(store) != "List" {
+        return []
+    }
+    return store
+}

@@ -167,43 +167,9 @@ AGENT_HOME="$BIN/home"
 # test is the transport, and a model call would make the suite depend on a
 # network. ai_request answers as a failure instead, so a test that ever did
 # reach it would say so loudly rather than hang.
-mkdir -p "$AGENT_HOME/packages/ai"
-cat > "$AGENT_HOME/packages/ai/ai.ov" <<'EOF'
-// Test fixture: the message/history half of the ai module.
-function ai_message(role, content) {
-    return {"role": role, "content": content}
-}
-function ai_conversation(system) {
-    return [ai_message("system", system)]
-}
-function ai_ask(messages, text) {
-    messages.push(ai_message("user", text))
-    return messages
-}
-function ai_told(messages, text) {
-    messages.push(ai_message("assistant", text))
-    return messages
-}
-function ai_trim(messages, keep) {
-    if len(messages) <= keep { return messages }
-    head = []
-    if len(messages) > 0 and messages[0]["role"] == "system" {
-        head.push(messages[0])
-    }
-    start = len(messages) - (keep - len(head))
-    if start < 0 { start = 0 }
-    i = start
-    while i < len(messages) {
-        head.push(messages[i])
-        i = i + 1
-    }
-    return head
-}
-function ai_request(url, key, model, messages, timeout_s) {
-    return {"ok": false, "text": "", "status": 0,
-            "error": "test fixture: no model call available", "elapsed_ms": 0.0}
-}
-EOF
+mkdir -p "$AGENT_HOME/packages/ai" "$AGENT_HOME/packages/rag"
+cp "$PWD/tests/fixtures/ai.ov"  "$AGENT_HOME/packages/ai/ai.ov"
+cp "$PWD/tests/fixtures/rag.ov" "$AGENT_HOME/packages/rag/rag.ov"
 
 OVYTH_HOME="$AGENT_HOME" \
 OVYTH_AGENT_SERVE=0 \

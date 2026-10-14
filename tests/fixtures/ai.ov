@@ -1,0 +1,174 @@
+// Test fixture -- a snapshot of the published ovyth-ai package.
+//
+// The agent imports "ai" from the package store, and the store is empty on a
+// clean runner, so the memory and remote suites would fail there for a reason
+// that has nothing to do with what they test. This is the real package copied
+// in, so the tests exercise the same code users run; refresh it deliberately
+// when the package changes.
+//
+// --- snapshot of ovyth-ai 1.0.3 ---
+
+// ai :: ai.ov
+//
+// One job: talk to an OpenAI-compatible chat endpoint.
+//
+//   install:  ovc pkg install ai
+//   import:   import "ai"
+//
+// Every public name is prefixed ai_ because Ovyth flattens all top-level
+// names into one program — the prefix is the namespace. Nothing here runs at
+// import time and nothing holds state between calls, so the module is safe to
+// import next to anything else.
+//
+// The contract: ai_request() never throws and never returns a bare string.
+// It returns a result map — {"ok", "text", "status", "error", "elapsed_ms"} —
+// so a script can write `if !result["ok"]` and an agent can branch on the
+// reason, without either of them wrapping the module in try/catch.
+
+// Build one message. ai_message("user", "hi") -> {"role": "user", "content": "hi"}
+function ai_message(role, content) {
+    return {"role": role, "content": content}
+}
+
+// Start a conversation with a system prompt.
+function ai_conversation(system) {
+    return [ai_message("system", system)]
+}
+
+// Push a user turn. Returns the messages list, so it chains.
+function ai_ask(messages, text) {
+    messages.push(ai_message("user", text))
+    return messages
+}
+
+// Push an assistant turn. Returns the messages list, so it chains.
+function ai_told(messages, text) {
+    messages.push(ai_message("assistant", text))
+    return messages
+}
+
+// Trim the oldest turns, keeping a system message first if there is one.
+// History grows forever otherwise, and every request pays for it.
+function ai_trim(messages, keep) {
+    if len(messages) <= keep {
+        return messages
+    }
+    head = []
+    if len(messages) > 0 and messages[0]["role"] == "system" {
+        head.push(messages[0])
+    }
+    start = len(messages) - (keep - len(head))
+    if start < 0 {
+        start = 0
+    }
+    i = start
+    while i < len(messages) {
+        head.push(messages[i])
+        i = i + 1
+    }
+    return head
+}
+
+// The transport. `messages` is the full conversation; `timeout_s` is seconds.
+// An OpenAI-compatible endpoint path. Ollama, llama.cpp, LocalAI and vLLM
+// all serve one at /v1/chat/completions on the bare host.
+
+// A bare host means "the OpenAI-compatible endpoint on it".
+//
+// Without this, pointing at http://127.0.0.1:11434 gets a 405 from the server
+// root — Ollama answers GET / with "Ollama is running" and rejects everything
+// else — which is a confusing way to learn the path. With it, the host alone
+// is a complete configuration.
+function ai_normalize_url(url) {
+    path = "/v1/chat/completions"
+    if !url.contains("://") { return url }
+    rest = url.slice(url.indexof("://") + 3, len(url))
+    slash = rest.indexof("/")
+    if slash >= 0 {
+        path = rest.slice(slash, len(rest))
+        if path != "" and path != "/" { return url }
+    }
+    if url.endswith("/") { return url + path.slice(1, len(path)) }
+    return url + path
+}
+
+function ai_request(url, key, model, messages, timeout_s) {
+    url = ai_normalize_url(url)
+    result = {
+        "ok": false,
+        "text": "",
+        "status": 0,
+        "error": "",
+        "elapsed_ms": 0.0
+    }
+    try {
+        response = http.post(
+            url,
+            headers = {
+                "Authorization": "Bearer " + key,
+                "Content-Type": "application/json"
+            },
+            json = {
+                "model": model,
+                "messages": messages,
+                "think": false
+            },
+            timeout = timeout_s
+        )
+        result["status"] = response.status
+        result["elapsed_ms"] = response.elapsed_ms
+        if response.status == 200 {
+            data = json.parse(response.body)
+            result["text"] = data["choices"][0]["message"]["content"]
+            result["ok"] = true
+        } else {
+            // Keep the server's message, not just its status. "HTTP 502" gives
+            // the user nothing to act on; "HTTP 502: upstream error: HTTP Error
+            // 405" tells them the proxy is the thing that is down, which is a
+            // different problem from a bad key or a wrong URL, and a different
+            // fix.
+            detail = response.body.trim()
+            msg = ""
+            if detail != "" {
+                try {
+                    e = json.parse(detail)
+                    if e["error"] != null and e["error"]["message"] != null {
+                        msg = e["error"]["message"]
+                    }
+                } catch err { }
+                if msg == "" and len(detail) < 200 { msg = detail }
+                if len(msg) > 200 { msg = msg.slice(0, 200) + "..." }
+            }
+            result["error"] = "HTTP " + str(response.status) +
+                              (msg == "" ? "" : ": " + msg)
+        }
+    } catch e {
+        result["error"] = str(e)
+    }
+    return result
+}
+
+// The reply text, or "" when the call failed. The shape a five-line script wants.
+function ai_chat(url, key, model, messages, timeout_s) {
+    result = ai_request(url, key, model, messages, timeout_s)
+    return result["text"]
+}
+
+// One question, one answer, no history to manage.
+function ai_say(url, key, model, system, question, timeout_s) {
+    messages = ai_conversation(system)
+    ai_ask(messages, question)
+    return ai_chat(url, key, model, messages, timeout_s)
+}
+
+// A fake that never touches the network — what makes an agent script testable
+// offline. Same shape as a real result map.
+function ai_offline_reply(question) {
+    return {
+        "ok": true,
+        "text": "(offline) " + question,
+        "status": 0,
+        "error": "",
+        "elapsed_ms": 0.0
+    }
+}

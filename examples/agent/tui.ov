@@ -22,6 +22,7 @@
 // this into a file or a log stays clean and greppable.
 
 import "ai"
+import "rag"
 
 // ------------------------------------------------------------------- style
 
@@ -33,6 +34,101 @@ import "ai"
 // success while changing nothing.
 ran = [0]
 last_cmd = [""]
+
+// ------------------------------------------------------------------- memory
+
+// Long-term memory, as a RAG store on disk.
+//
+// Without it the agent forgets everything the moment the process exits, and
+// the only way to remember was to drag the whole history through the context
+// window on every turn — which is exactly what a small local model cannot
+// afford. With it, memory grows while the prompt stays small: each turn is
+// chunked into the store, and only the chunks relevant to what you just said
+// are recalled into the request.
+//
+// A one-element list rather than a bare name, because a function assigning to
+// a bare name creates a local of its own — the same reason sink and the
+// settings above are lists.
+memory_path = env_or("OVYTH_AGENT_MEMORY",
+                     env_or("HOME", "") + "/.ovyth/agent-memory.json")
+memory_chunk = 30     // words per chunk; a turn is usually one or two
+memory_overlap = 4
+memory_top_k = 4      // chunks recalled per turn
+mem = [rag_load(memory_path)]
+
+// Record one exchange so a later session can recall it.
+function remember_turn(q, a) {
+    mem[0] = rag_add(mem[0], "Q: " + q + "\nA: " + a, "turn",
+                     memory_chunk, memory_overlap)
+    rag_save(mem[0], memory_path)
+}
+
+// What earlier sessions know that is relevant to `line`.
+// Scored lexically, so it is deterministic, offline, and free — and empty
+// until the store actually holds something that matches.
+// Words that carry no meaning between two sentences. Keeping them out of the
+// comparison is most of what stops "what time is it in tokyo" from matching
+// "what is my cats name".
+function stopword_free(line) {
+    stop = ["what", "is", "the", "a", "an", "in", "it", "to", "of",
+            "my", "your", "you", "i", "do", "does", "for", "on", "and",
+            "are", "was", "with", "that", "this", "me", "be", "at"]
+    out = []
+    for w in line.lower().split(" ") {
+        keep = true
+        n = 0
+        while n < len(stop) {
+            if stop[n] == w { keep = false }
+            n = n + 1
+        }
+        if w != "" and keep { out.push(w) }
+    }
+    return out
+}
+
+// Does this chunk share a word of substance with the question? Without it a
+// stopword that slipped through would still be enough to recall.
+function shares_content(text, query_words) {
+    haystack = []
+    for w in text.lower().split(" ") {
+        if w != "" { haystack.push(w) }
+    }
+    q = 0
+    while q < len(query_words) {
+        h = 0
+        while h < len(haystack) {
+            if haystack[h] == query_words[q] { return true }
+            h = h + 1
+        }
+        q = q + 1
+    }
+    return false
+}
+function recall(line) {
+    hits = rag_topk(mem[0], line, memory_top_k * 2)
+
+    // The naive overlap score is not enough on its own, and the agent's own
+    // memory showed why: every stored turn begins "Q: what ...", so asking
+    // "what time is it in tokyo" matched on the single shared word "what" and
+    // recalled a cat's name. One common word must not be a memory hit.
+    //
+     // Two corrections, here rather than in the package, because they are the
+     // agent's concerns: strip the words the language is mostly made of, and
+     // require the hit to share a word of substance with the question.
+    query = stopword_free(line)
+    recalled = ""
+    i = 0
+    while i < len(hits) {
+        if hits[i]["score"] <= 0 { break }
+        if !shares_content(hits[i]["text"], query) { i = i + 1; continue }
+        recalled = recalled + "- " + hits[i]["text"] + "\n"
+        if len(recalled.split("\n")) > memory_top_k { break }
+        i = i + 1
+    }
+    if recalled == "" { return "" }
+    return "(recalled from earlier sessions)\n" + recalled.trim()
+}
+
 
 // ---------------------------------------------------------------- transports
 
@@ -224,7 +320,8 @@ if pretty {
 }
 
 emit("model:  " + model[0] + "  at  " + url[0])
-emit("guard:  " + (guard_on ? "on" : "off") + "  (refuses the unrebuildable)")
+emit("guard:  " + (guard_on[0] ? "on" : "off") + "  (refuses the unrebuildable)")
+emit("memory: " + str(len(mem[0])) + " chunk(s) in " + memory_path)
 emit("type :help for commands, :quit to leave")
 emit("")
 
@@ -248,11 +345,13 @@ emit("")
 // like it is doing something it should not. Plain wins on evidence.
 system = "You are Ovyth. You are a real process running on a Linux machine and " +
     "you have a terminal right now. Every command you send is executed for real " +
-    "and its output comes back to you. You have four tools.\n" +
+    "and its output comes back to you. You have five tools, and you keep\n" +
+    "memory across sessions, so a fact you are told once is still yours later.\n" +
     "Each turn, reply with exactly one JSON object and nothing else:\n" +
     "  {\"cmd\": \"sh -c ...\"}          run one shell command, in quotes\n" +
     "  {\"read\": \"a/path.txt\"}        read a file\n" +
     "  {\"write\": \"a/path.txt\", \"text\": \"the content\"}   write a file\n" +
+    "  {\"remember\": \"the fact\"}      save a durable fact to memory\n" +
     "  {\"say\": \"the answer\"}         answer the user in words\n" +
     "Prefer fewer commands. Read before you write. If a command fails, read the\n" +
     "error and try something else. A missing binary is swept for its common\n" +
@@ -566,6 +665,16 @@ function run_tool(call) {
         return ok ? "wrote " + str(len(call["text"])) + " bytes to " + path
                   : "could not write " + path
     }
+    // A fact worth keeping. The model decides what matters; the store decides
+    // what is still relevant when it comes back.
+    if call["remember"] != null {
+        what = call["remember"]
+        mem[0] = rag_add(mem[0], what, "note", memory_chunk, memory_overlap)
+        saved = rag_save(mem[0], memory_path)
+        if !saved { return "could not write " + memory_path }
+        mark("✦", "remembered")
+        return "remembered: " + what.slice(0, 100)
+    }
     return null   // not a tool call
 }
 
@@ -578,6 +687,8 @@ function commands(text) {
         emit("  :tools         what the model can do")
         emit("  :clear         clear the screen")
         emit("  :reset         forget the conversation")
+        emit("  :memory        what the agent remembers")
+        emit("  :forget        erase the memory store")
         emit("  :quit          leave")
         return true
     }
@@ -597,6 +708,30 @@ function commands(text) {
         history = ai_conversation(system)
         prime_conversation()
         emit("  conversation cleared")
+        return true
+    }
+    // Memory is separate from the conversation: :reset forgets this session,
+    // :forget forgets everything the agent has ever learned.
+    if text == ":memory" {
+        emit("  " + str(len(mem[0])) + " chunk(s) in " + memory_path)
+        // The most recent chunks, not a ranked query: "what have you been
+        // thinking about lately" is the question, and answering it with a
+        // search for "ovyth agent" would make the preview depend on the store
+        // containing that exact word.
+        total = len(mem[0])
+        first = total - 5
+        if first < 0 { first = 0 }
+        i = first
+        while i < total {
+            emit("    · " + mem[0][i]["text"].slice(0, 70))
+            i = i + 1
+        }
+        return true
+    }
+    if text == ":forget" {
+        mem[0] = []
+        erased = rag_save(mem[0], memory_path)
+        if erased { emit("  memory erased") } else { emit("  could not write " + memory_path) }
         return true
     }
     // The setters. They live here, in a function, because the four settings
@@ -662,6 +797,17 @@ req_n = [0]
 
 function handle_turn(line) {
     ai_ask(history, line)
+
+    // Recall before the model sees the turn: relevant past exchanges go in as
+    // one compact block, so history can stay short and the context window
+    // stays open no matter how long the agent has been running.
+    recalled = recall(line)
+    if recalled != "" {
+        ai_ask(history, recalled)
+        if env_or("OVC_AGENT_DEBUG", "") != "" {
+            eprint("[recall] " + recalled.slice(0, 200))
+        }
+    }
 
     budget = 12
     nudges = 0
@@ -760,6 +906,10 @@ function handle_turn(line) {
             }
             side("Ovyth: " + call["say"])
             ai_told(history, call["say"])
+            // The turn is over: file the exchange so a later session can
+            // recall it. This is the whole point of the memory store — it is
+            // written once per turn, not once per request.
+            remember_turn(line, call["say"])
             return
         }
         if call["done"] != null {
