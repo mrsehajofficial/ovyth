@@ -1,0 +1,112 @@
+{
+  "name": "ovyth",
+  "displayName": "Ovyth",
+  "description": "Language support for the Ovyth language (.ov)",
+  "version": "0.1.0",
+  "publisher": "ovyth",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ovyth/ovyth"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ovyth"
+  ],
+  "main": "./dist/client/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -b",
+    "watch": "tsc -b -w",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "ovyth",
+        "extensions": [
+          ".ov"
+        ],
+        "aliases": [
+          "Ovyth",
+          "ovyth"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ovyth",
+        "scopeName": "source.ovyth",
+        "path": "./syntaxes/ovyth.tmLanguage.json"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Ovyth",
+        "uiTheme": "vs-dark",
+        "path": "./themes/ovyth-color-theme.json"
+      },
+      {
+        "label": "Ovyth Code Colors",
+        "uiTheme": "vs-dark",
+        "path": "./themes/ovyth-codecolors.json"
+      }
+    ],
+    "configuration": {
+      "title": "Ovyth",
+      "properties": {
+        "ovyth.serverPath": {
+          "type": "string",
+          "default": "ovyth-lsp",
+          "description": "Path to the Ovyth language server: an absolute path, or a binary name on PATH."
+        },
+        "ovyth.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace communication between VS Code and the Ovyth language server."
+        },
+        "[ovyth]": {
+          "type": "object",
+          "description": "Editor settings applied to .ov files.",
+          "properties": {
+            "editor.quickSuggestions": {
+              "type": "object",
+              "default": {
+                "other": true,
+                "comments": false,
+                "strings": true
+              },
+              "description": "Suggest while typing inside import strings; VS Code only asks the server for completions inside strings when this is on."
+            }
+          }
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "ovyth.restartServer",
+        "title": "Ovyth: Restart Language Server"
+      }
+    ]
+  }
+}

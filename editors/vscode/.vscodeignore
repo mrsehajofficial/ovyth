@@ -1,0 +1,17 @@
+# What does NOT go into the .vsix. Everything else is shipped, including
+# bin/ovyth-lsp (the language server built by `make lsp`) and dist/ (the
+# compiled client).
+.gitignore
+.vscodeignore
+tsconfig.json
+package-lock.json
+.github/**
+.vscode/**
+client/**/*.ts
+**/*.map
+
+node_modules/**
+!node_modules/vscode-jsonrpc/**
+!node_modules/vscode-languageclient/**
+!node_modules/vscode-languageserver-protocol/**
+!node_modules/vscode-languageserver-types/**

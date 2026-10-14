@@ -678,7 +678,12 @@ function handle_turn(line) {
                    " first=" + conv[0]["role"] + "]")
             for m in conv { eprint("  [" + m["role"] + "] " + m["content"].slice(0, 90)) }
         }
-        r = ai_request(url, key, model, conv, 60.0)
+        // The endpoints are one-element lists so `:config` can write them; the
+        // call needs the value, not the wrapper. Passing the list stringifies
+        // to ["https://..."] and libcurl reads the brackets as a bad IPv6
+        // literal, which is a "URL rejected" error with nothing to say about
+        // the actual URL.
+        r = ai_request(url[0], key[0], model[0], conv, 60.0)
         if !r["ok"] {
             emit("  ✖ model error: " + r["error"])
             return

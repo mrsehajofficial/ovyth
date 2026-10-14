@@ -1,0 +1,138 @@
+{
+  "$schema": "vscode://schemas/color-theme",
+  "name": "Ovyth Code Colors",
+  "type": "dark",
+  "tokenColors": [
+    {
+      "name": "Comments",
+      "scope": ["comment", "punctuation.definition.comment"],
+      "settings": { "foreground": "#6e7a92", "fontStyle": "italic" }
+    },
+    {
+      "name": "Strings",
+      "scope": ["string", "string.quoted", "string.template"],
+      "settings": { "foreground": "#efc987" }
+    },
+    {
+      "name": "Escapes inside strings",
+      "scope": ["constant.character.escape"],
+      "settings": { "foreground": "#ff9e64" }
+    },
+    {
+      "name": "Numbers",
+      "scope": ["constant.numeric"],
+      "settings": { "foreground": "#f2976a" }
+    },
+    {
+      "name": "Language constants (true/false/null)",
+      "scope": ["constant.language"],
+      "settings": { "foreground": "#f2a3bd" }
+    },
+    {
+      "name": "Keywords",
+      "scope": ["keyword", "storage"],
+      "settings": { "foreground": "#c58af0" }
+    },
+    {
+      "name": "Operators and punctuation",
+      "scope": ["keyword.operator", "punctuation", "keyword.operator.assignment", "keyword.operator.comparison", "keyword.operator.arithmetic"],
+      "settings": { "foreground": "#94a3b8" }
+    },
+    {
+      "name": "Functions",
+      "scope": ["entity.name.function", "support.function", "meta.function-call"],
+      "settings": { "foreground": "#4ed3e0" }
+    },
+    {
+      "name": "Types",
+      "scope": ["entity.name.type", "support.type", "support.class"],
+      "settings": { "foreground": "#a6c1e0" }
+    },
+    {
+      "name": "Variables",
+      "scope": ["variable", "variable.parameter"],
+      "settings": { "foreground": "#c9d2e0" }
+    },
+
+    {
+      "name": "Ovyth: comments",
+      "scope": ["comment.line.double-slash.ovyth"],
+      "settings": { "foreground": "#6e7a92", "fontStyle": "italic" }
+    },
+    {
+      "name": "Ovyth: control keywords (the spark)",
+      "scope": ["keyword.control.ovyth"],
+      "settings": { "foreground": "#c58af0" }
+    },
+    {
+      "name": "Ovyth: word operators and/or/not (the diamond)",
+      "scope": ["keyword.operator.word.ovyth"],
+      "settings": { "foreground": "#45cfc0" }
+    },
+    {
+      "name": "Ovyth: other keywords (debug)",
+      "scope": ["keyword.other.ovyth"],
+      "settings": { "foreground": "#7d8798" }
+    },
+    {
+      "name": "Ovyth: operators and punctuation",
+      "scope": ["keyword.operator.ovyth"],
+      "settings": { "foreground": "#94a3b8" }
+    },
+    {
+      "name": "Ovyth: true/false",
+      "scope": ["constant.language.boolean.ovyth"],
+      "settings": { "foreground": "#f2a3bd" }
+    },
+    {
+      "name": "Ovyth: null",
+      "scope": ["constant.language.null.ovyth"],
+      "settings": { "foreground": "#8a94a6" }
+    },
+    {
+      "name": "Ovyth: numbers",
+      "scope": ["constant.numeric.ovyth"],
+      "settings": { "foreground": "#f2976a" }
+    },
+    {
+      "name": "Ovyth: escapes",
+      "scope": ["constant.character.escape.ovyth"],
+      "settings": { "foreground": "#ff9e64" }
+    },
+    {
+      "name": "Ovyth: strings",
+      "scope": ["string.quoted.double.ovyth"],
+      "settings": { "foreground": "#efc987" }
+    },
+    {
+      "name": "Ovyth: string quotes",
+      "scope": ["punctuation.definition.string.begin.ovyth", "punctuation.definition.string.end.ovyth"],
+      "settings": { "foreground": "#c9a86e" }
+    },
+    {
+      "name": "Ovyth: function calls (the tool marker)",
+      "scope": ["entity.name.function.ovyth"],
+      "settings": { "foreground": "#4ed3e0" }
+    },
+    {
+      "name": "Ovyth: module and object names",
+      "scope": ["variable.other.object.ovyth"],
+      "settings": { "foreground": "#4ed3e0" }
+    },
+    {
+      "name": "Ovyth: variables",
+      "scope": ["variable.other.ovyth"],
+      "settings": { "foreground": "#a6c1e0" }
+    },
+    {
+      "name": "Ovyth: parameters",
+      "scope": ["variable.parameter.ovyth"],
+      "settings": { "foreground": "#a6c1e0", "fontStyle": "italic" }
+    },
+    {
+      "name": "Ovyth: type annotations",
+      "scope": ["variable.other.type.ovyth"],
+      "settings": { "foreground": "#d9a2e8" }
+    }
+  ]
+}

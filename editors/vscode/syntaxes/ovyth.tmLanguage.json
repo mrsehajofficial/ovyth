@@ -1,0 +1,101 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "source.ovyth",
+  "name": "Ovyth",
+  "fileTypes": ["ov"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords-control" },
+    { "include": "#keywords-operator-word" },
+    { "include": "#keywords-other" },
+    { "include": "#constants" },
+    { "include": "#type-annotation" },
+    { "include": "#operators" },
+    { "include": "#method-call" },
+    { "include": "#function-call" },
+    { "include": "#variable-parameter" },
+    { "include": "#variable" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.double-slash.ovyth",
+      "match": "//.*$"
+    },
+    "strings": {
+      "name": "string.quoted.double.ovyth",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.ovyth" }
+      },
+      "end": "(\"|\\n)",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.ovyth" }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.ovyth",
+          "match": "\\\\(?:e|n|t|r|0|\\\\|\"|'|u\\{[0-9a-fA-F]+\\})"
+        }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.ovyth",
+      "match": "\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?)\\b"
+    },
+    "keywords-control": {
+      "name": "keyword.control.ovyth",
+      "match": "\\b(?:function|return|if|else|for|in|while|break|continue|try|catch|throw|as|enum|import)\\b"
+    },
+    "keywords-operator-word": {
+      "name": "keyword.operator.word.ovyth",
+      "match": "\\b(?:and|or|not)\\b"
+    },
+    "keywords-other": {
+      "name": "keyword.other.ovyth",
+      "match": "\\b(?:debug)\\b"
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.ovyth",
+          "match": "\\b(?:true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.ovyth",
+          "match": "\\bnull\\b"
+        }
+      ]
+    },
+    "operators": {
+      "name": "keyword.operator.ovyth",
+      "match": "->|=>|\\.\\.\\.|\\*\\*|<<|>>|==|!=|<=|>=|\\+\\+|--|[-+*/%=<>!&|^~?:]"
+    },
+    "type-annotation": {
+      "match": "(?<=->\\s*)[a-zA-Z_][a-zA-Z0-9_]*",
+      "name": "variable.other.type.ovyth"
+    },
+    "variable-parameter": {
+      "match": "(?<=[(,]\\s*)[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*[,)])",
+      "name": "variable.parameter.ovyth"
+    },
+    "variable": {
+      "match": "[a-zA-Z_][a-zA-Z0-9_]*",
+      "name": "variable.other.ovyth"
+    },
+    "method-call": {
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\.\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "variable.other.object.ovyth" },
+        "2": { "name": "entity.name.function.ovyth" }
+      }
+    },
+    "function-call": {
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.ovyth" }
+      }
+    }
+  }
+}

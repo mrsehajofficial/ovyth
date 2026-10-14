@@ -27,6 +27,14 @@ tests/gemini_ask
 *~
 .DS_Store
 
+# ---- vs code extension -----------------------------------------------------
+# node_modules and dist are build products; bin/ovyth-lsp is built by
+# `make lsp` at package time and vendored into the .vsix.
+editors/vscode/node_modules/
+editors/vscode/dist/
+editors/vscode/bin/
+editors/vscode/*.vsix
+
 # ---- scratch --------------------------------------------------------------
 *.tmp
 # compiled test binaries (an `ovc x.ov` with no -o writes ./x)
