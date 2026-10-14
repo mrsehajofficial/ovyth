@@ -385,6 +385,22 @@ function prime_conversation() {
 
 prime_conversation()
 
+// Is the model talking about the protocol instead of answering?
+//
+// When it fails to produce a tool call it is nudged, and a weak model answers
+// the nudge: "Understood. I will reply with exactly one JSON object per turn."
+// That is a message about the instructions, not an answer to anything, and
+// showing it to the user is worse than admitting the model did not answer.
+// The tell is that it mentions the protocol it was told to follow — a real
+// answer essentially never does.
+function is_meta_commentary(reply) {
+    t = reply.lower()
+    if t.contains("json") { return true }
+    if t.contains("tool call") { return true }
+    if t.contains("one object") { return true }
+    return false
+}
+
 // ------------------------------------------------------- the json bracketing
 
 // The position of the "}" that closes the JSON object starting at `start`.
@@ -850,15 +866,33 @@ function handle_turn(line) {
         // looking is the commonest failure of a tool-using agent, so it is
         // nudged back to the protocol rather than shown to the user as if it
         // were an answer.
+        //
+        // The nudge restates the original message, and that is load-bearing. It
+        // used to say only "reply with exactly one JSON object", which is an
+        // instruction — so a weak model answered the instruction instead of the
+        // question, replying "Understood. I will reply with exactly one JSON
+        // object per turn." to "whats your name". Without the question back in
+        // the message there is nothing else for it to answer.
         start = reply.indexof("{")
-        if start < 0 {
+        // Meta-commentary counts as a miss, and is caught here rather than
+        // after the parse so it stops on the second occurrence instead of
+        // burning the whole nudge budget on a reply that was never going to
+        // become a tool call.
+        if start < 0 or is_meta_commentary(reply) {
             nudges = nudges + 1
             if nudges > 2 {
-                side(reply)
+                if is_meta_commentary(reply) {
+                    emit("  ✖ the model kept replying about the protocol instead")
+                    emit("     of answering — a stronger model at the same endpoint")
+                    emit("     would not")
+                } else {
+                    side(reply)
+                }
                 return
             }
             ai_told(history, reply)
-            ai_ask(history, "That was not a tool call. Reply with exactly one JSON " +
+            ai_ask(history, "That was not a JSON tool call. Now answer this: " +
+                            "\"" + line + "\". Reply with exactly one JSON " +
                             "object: {\"cmd\": \"...\"} to run a command, or " +
                             "{\"say\": \"...\"} to answer.")
             continue
@@ -875,7 +909,8 @@ function handle_turn(line) {
             call = json.parse(reply.slice(start, end + 1))
         } catch e {
             emit("  ✖ json: " + str(e))
-            ai_told(history, "That was not valid JSON. Reply with exactly one object.")
+            ai_told(history, "That was not valid JSON. Reply with exactly one " +
+                            "object answering: \"" + line + "\"")
             continue
         }
 
@@ -927,7 +962,8 @@ function handle_turn(line) {
             return
         }
         emit("  ✖ the model sent an object with no tool in it")
-        ai_told(history, "That did not name a tool. Use cmd, read, write, or say.")
+        ai_told(history, "That did not name a tool. Use cmd, read, write, " +
+                        "remember, or say, to answer: \"" + line + "\"")
     }
 }
 

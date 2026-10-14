@@ -191,6 +191,32 @@ else
   bad "a reply with no content does not crash the agent" "agent exited non-zero"
 fi
 
+# ------------------------------------------- a model that answers the nudge
+# A weak model, nudged for not producing a tool call, answers the nudge:
+# "Understood. I will reply with exactly one JSON object per turn." That is a
+# message about the protocol, not an answer, and the agent used to show it to
+# the user verbatim. It now says so plainly instead.
+MGPORT=$(( 19500 + (RANDOM % 1000) ))
+python3 "$PWD/tests/fixtures/metagateway.py" "$MGPORT" >/dev/null 2>&1 &
+mg_pid=$!
+sleep 1
+
+printf 'what is your name\n:quit\n' > "$BIN/mg.txt"
+if out="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
+          AI_API_URL="http://127.0.0.1:$MGPORT/v1/chat/completions" \
+          timeout 90 "$OVC" run "$PWD/examples/agent/tui.ov" < "$BIN/mg.txt" 2>&1)"; then
+  if grep -q "Understood. I will reply" <<<"$out"; then
+    bad "meta-commentary is not shown to the user" "$out"
+  elif grep -q "replying about the protocol" <<<"$out"; then
+    ok "meta-commentary is not shown to the user"
+  else
+    bad "meta-commentary is not shown to the user" "$out"
+  fi
+else
+  bad "meta-commentary is not shown to the user" "agent exited non-zero"
+fi
+kill $mg_pid 2>/dev/null || true
+
 echo
 echo "ovc agent memory regression: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
