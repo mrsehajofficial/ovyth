@@ -1,0 +1,356 @@
+// Test program -- the system layer: processes without a shell, with a
+// deadline, and control over the child's world.
+//
+// Every case prints one deterministic line; the suite asserts each on both
+// backends. Values that legitimately vary (elapsed_ms, pid) are never
+// printed, so a difference is always a real difference.
+//
+// The claims under test, in order: argv is bytes rather than a command line;
+// exit status and signal death are reported the way a shell reports them;
+// stdout and stderr stay apart; a deadline actually kills the child; the
+// child's directory and environment are the caller's choice; stdin is fed,
+// nulled or inherited; output has a ceiling; and the failure modes throw
+// defined errors rather than returning nothing.
+
+function case_argv() {
+    // A semicolon and a pipe are characters in an argument, not syntax: the
+    // whole point of dropping the shell.
+    r = os.exec(["printf", "%s|%s\n", "a b;c", "d|e"])
+    print("argv", r["status"], r["stdout"].trim())
+}
+
+function case_exit() {
+    r = os.exec(["sh", "-c", "exit 3"])
+    print("exit", r["status"], r["code"], r["ok"])
+    r = os.exec(["sh", "-c", "exit 0"])
+    print("exit0", r["status"], r["code"], r["ok"])
+}
+
+function case_streams() {
+    r = os.exec(["sh", "-c", "echo out; echo err 1>&2"])
+    print("streams", r["stdout"].trim(), r["stderr"].trim())
+}
+
+function case_timeout() {
+    // If the deadline did not fire, this prints "ok" instead -- the case
+    // asserts itself, and takes ten seconds to be wrong.
+    r = os.exec(["sleep", "10"], timeout=250)
+    print("timeout", r["status"], r["ok"])
+}
+
+function case_signal() {
+    // 128 + signo, exactly what a shell reports for a child killed by one.
+    r = os.exec(["sh", "-c", "kill -TERM $$"])
+    print("signal", r["status"], r["code"])
+}
+
+function case_cwd() {
+    r = os.exec(["pwd"], cwd="/tmp")
+    print("cwd", r["stdout"].trim())
+}
+
+function case_env() {
+    // Given a map, the child sees exactly that: FOO arrives, HOME does not.
+    r = os.exec(["sh", "-c", "echo $FOO:$HOME"], env={"FOO": "bar"})
+    print("env", r["stdout"].trim())
+    // No env given: the child inherits, as it always did.
+    r = os.exec(["sh", "-c", "echo $HOME"], cwd="/tmp")
+    print("inherit-env", r["status"])
+}
+
+function case_stdin() {
+    r = os.exec(["cat"], stdin="piped in")
+    print("stdin-feed", r["stdout"].trim())
+    // The default: /dev/null, never the script's own input.
+    r = os.exec(["sh", "-c", "wc -c < /dev/stdin"])
+    print("stdin-null", r["stdout"].trim())
+}
+
+function case_inherit() {
+    // stdout="inherit": the child writes to our stdout, so its bytes appear
+    // between two lines of ours.
+    r = os.exec(["printf", "direct\n"], stdout="inherit")
+    print("inherit-status", r["status"])
+}
+
+function case_cap() {
+    // A child producing more than the ceiling gets its output cut and is
+    // told, rather than the buffer growing without limit.
+    r = os.exec(["sh", "-c", "yes x | head -c 20000"], max_output=4096)
+    print("cap", r["status"], len(r["stdout"]))
+}
+
+function case_errors() {
+    // Each of these is a defined error, not silence.
+    try {
+        os.exec("not a list")
+        print("argv-type no-throw")
+    } catch e {
+        print("argv-type throws")
+    }
+    try {
+        os.exec(["definitely-not-a-real-program-xyz"])
+        print("missing-program no-throw")
+    } catch e {
+        print("missing-program throws")
+    }
+    try {
+        os.exec(["echo"], env={"N": 5})
+        print("env-type no-throw")
+    } catch e {
+        print("env-type throws")
+    }
+    try {
+        os.exec([])
+        print("empty-argv no-throw")
+    } catch e {
+        print("empty-argv throws")
+    }
+}
+
+function case_paths() {
+    // A name without a slash is found on PATH, like every shell does.
+    r = os.exec(["echo", "via-path"])
+    print("path", r["stdout"].trim())
+    // A name with a slash is used exactly as given.
+    r = os.exec(["/bin/echo", "via-absolute"])
+    print("absolute", r["stdout"].trim())
+}
+
+function case_sleep() {
+    // sleep(ms) waits: at least what was asked. The suite bounds the upper
+    // end, because "at least" is what a caller may rely on.
+    t0 = time.clock()
+    sleep(60)
+    slept = (time.clock() - t0) * 1000.0
+    print("sleep at-least", slept >= 59.0)
+    sleep(0)
+    print("sleep-zero ok")
+}
+
+
+// --------------------------------------------------- W4: file fds and stat
+function setup() {
+    file.write("/tmp/ovyth_sys_test.txt", "line-one\nline-two\nline-three\n")
+    file.write("/tmp/ovyth_sys_big.txt", "")
+    i = 0
+    while i < 5000 {
+        file.append("/tmp/ovyth_sys_big.txt", "0123456789")
+        i = i + 1
+    }
+}
+
+function case_fd_read() {
+    // Streaming: an fd reads n bytes at a time instead of slurping the file.
+    fd = file.open("/tmp/ovyth_sys_test.txt")
+    first = os.read(fd, 8)
+    rest = os.read(fd, 4096)
+    os.close(fd)
+    print("fd-read", "[" + first + "]", rest.trim().replace("\n", ","))
+}
+
+function case_fd_seek() {
+    // seek into the middle, read from there
+    fd = file.open("/tmp/ovyth_sys_test.txt")
+    pos = file.seek(fd, 9, "start")
+    chunk = os.read(fd, 8)
+    os.close(fd)
+    print("fd-seek", pos, "[" + chunk + "]")
+    fd = file.open("/tmp/ovyth_sys_test.txt")
+    pos = file.seek(fd, 0, "end")
+    os.close(fd)
+    print("fd-seek-end", pos)
+}
+
+function case_fd_write() {
+    // Write through an fd: no whole-file buffer, no temporary.
+    fd = file.open("/tmp/ovyth_sys_out.txt", "w")
+    n = os.write(fd, "written through an fd\n")
+    os.close(fd)
+    fd2 = file.open("/tmp/ovyth_sys_out.txt")
+    back = os.read(fd2, 4096)
+    os.close(fd2)
+    print("fd-write", n, back.trim())
+    fd = file.open("/tmp/ovyth_sys_out.txt", "a")
+    os.write(fd, "appended\n")
+    os.close(fd)
+    fd2 = file.open("/tmp/ovyth_sys_out.txt")
+    back = os.read(fd2, 4096)
+    os.close(fd2)
+    print("fd-append", back.trim().replace("\n", ","))
+}
+
+function case_fd_big() {
+    // A 50KB file read in 4KB slices: the read count is arithmetic, not a
+    // slurp, and the file's size comes from stat rather than from reading it.
+    st = os.stat("/tmp/ovyth_sys_big.txt")
+    fd = file.open("/tmp/ovyth_sys_big.txt")
+    total = 0
+    reads = 0
+    while true {
+        chunk = os.read(fd, 4096)
+        if chunk == "" { break }
+        total = total + len(chunk)
+        reads = reads + 1
+    }
+    os.close(fd)
+    print("fd-big", st["size"] == total, total, reads)
+}
+
+function case_procfs() {
+    // The case that made fd-level file I/O necessary: procfs reports no size,
+    // so the whole-file read used to return "" silently. An fd streams it.
+    fd = file.open("/proc/self/status")
+    head = os.read(fd, 64)
+    os.close(fd)
+    print("procfs", len(head) > 0, head.contains("Name:"))
+}
+
+function case_stat() {
+    st = os.stat("/tmp/ovyth_sys_test.txt")
+    d = os.stat("/tmp")
+    f = os.stat("/etc/hostname")
+    print("stat", st["is_file"], st["is_dir"], st["size"] > 0, st["mtime"] > 0)
+    print("stat-dir", d["is_dir"], d["is_file"])
+    print("stat-e", f["is_dir"], f["size"] > 0)
+    try {
+        os.stat("/tmp/definitely-not-here-xyz")
+        print("stat-missing no-throw")
+    } catch e {
+        print("stat-missing throws")
+    }
+}
+
+function case_open_errors() {
+    try {
+        file.open("/tmp/definitely-not-here-xyz")
+        print("open-missing no-throw")
+    } catch e {
+        print("open-missing throws")
+    }
+    try {
+        file.open("/tmp/ovyth_sys_test.txt", "q")
+        print("open-mode no-throw")
+    } catch e {
+        print("open-mode throws")
+    }
+}
+
+
+function case_still_works() {
+    // os.run is untouched by any of this.
+    r = os.run("echo via-run")
+    print("run", r["code"], r["stdout"].trim())
+}
+
+// ------------------------------------------------------- W3: pipes and wiring
+// A pipeline without a shell: two children and a pipe the caller owns.
+function case_pipe() {
+    p = os.pipe()
+    c = os.exec(["printf", "hello from a child\n"], stdout=p["write"])
+    // The caller must close its copy: that is what gives the reader EOF.
+    os.close(p["write"])
+    data = os.read(p["read"], 1024)
+    os.close(p["read"])
+    print("pipe-tail", c["status"], data.trim())
+}
+
+function case_pipeline() {
+    // The tail is a child: producer | sort.
+    p = os.pipe()
+    prod = os.exec(["printf", "b\na\nc\n"], stdout=p["write"])
+    os.close(p["write"])
+    cons = os.exec(["sort"], stdin=p["read"])
+    os.close(p["read"])
+    print("pipeline", prod["status"], cons["status"], cons["stdout"].trim().replace("\n", ","))
+}
+
+function case_three_stage() {
+    // Three children, two pipes, no shell anywhere.
+    p = os.pipe()
+    q = os.pipe()
+    os.exec(["printf", "a b c\n"], stdout=p["write"])
+    os.close(p["write"])
+    mid = os.exec(["tr", " ", "\n"], stdin=p["read"], stdout=q["write"])
+    os.close(p["read"])
+    os.close(q["write"])
+    tail = os.exec(["wc", "-l"], stdin=q["read"])
+    os.close(q["read"])
+    print("three-stage", mid["status"], tail["stdout"].trim())
+}
+
+function case_feed() {
+    // Fill the pipe and close it *before* the consumer runs: ordering is the
+    // caller's job, because the caller is the one writing.
+    p = os.pipe()
+    n = os.write(p["write"], "line one\nline two\n")
+    os.close(p["write"])
+    c = os.exec(["cat"], stdin=p["read"])
+    os.close(p["read"])
+    print("feed", c["status"], n, c["stdout"].trim().replace("\n", ","))
+}
+
+function case_feed_deadlock_is_bounded() {
+    // The misuse this API makes possible: feeding a child from the same
+    // thread while blocked inside its exec call would wait forever. A
+    // deadline is what keeps it bounded -- which is the reason every spawn
+    // has one.
+    p = os.pipe()
+    c = os.exec(["cat"], stdin=p["read"], timeout=250)
+    os.close(p["write"])
+    os.close(p["read"])
+    print("feed-bounded", c["status"], c["ok"])
+}
+
+function case_pipe_eof() {
+    // A pipe with no writer is an immediate, clean EOF.
+    p = os.pipe()
+    os.close(p["write"])
+    c = os.exec(["cat"], stdin=p["read"], timeout=1000)
+    os.close(p["read"])
+    print("pipe-eof", c["status"], "[" + c["stdout"] + "]")
+}
+
+function case_write_epipe() {
+    // Writing to a pipe whose reader went away is a defined error.
+    p = os.pipe()
+    os.close(p["read"])
+    try {
+        os.write(p["write"], "nobody home")
+        print("epipe no-throw")
+    } catch e {
+        print("epipe throws")
+    }
+    os.close(p["write"])
+}
+
+case_argv()
+case_exit()
+case_streams()
+case_timeout()
+case_signal()
+case_cwd()
+case_env()
+case_stdin()
+case_inherit()
+case_cap()
+case_errors()
+case_paths()
+case_sleep()
+case_pipe()
+case_pipeline()
+case_three_stage()
+case_feed()
+case_feed_deadlock_is_bounded()
+case_pipe_eof()
+case_write_epipe()
+setup()
+case_still_works()
+case_fd_read()
+case_fd_seek()
+case_fd_write()
+case_fd_big()
+case_procfs()
+case_stat()
+case_open_errors()
+print("done")

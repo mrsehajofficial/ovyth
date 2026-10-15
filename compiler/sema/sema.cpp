@@ -124,7 +124,7 @@ bool Sema::run(Program& program) {
       "contains", "replace", "indexof", "sort", "reverse", "append", "extend",
       "json", "http", "time", "args", "exit", "throw", "assert", "parseInt", "number",
       "eprint", "env_or", "getenv", "getenv_or", "setenv", "gc", "pad", "clock", "now",
-      "file", "os", "net",
+      "file", "os", "net", "sleep",
   };
   push_scope(true);
   for (const char* b : kBuiltins) define(b, Ty::Func);
@@ -530,6 +530,40 @@ Ty Sema::check_call(Expr* e) {
   if (qualified == "json.parse" || qualified == "json.stringify" ||
       qualified == "json.valid" || qualified == "json.extract") {
     return Ty::Any;
+  }
+
+  // Same contract for the system layer: a typo in an option name is a silent
+  // nil otherwise, and a nil timeout is "no deadline" -- which for os.exec
+  // means an unbounded wait.
+  if (qualified == "os.exec") {
+    static const std::vector<std::string> known = {
+        "timeout", "cwd", "env", "stdin", "stdout", "stderr", "max_output"};
+    for (auto& na : e->named_args) {
+      if (std::find(known.begin(), known.end(), na.name) == known.end())
+        error(na.value->pos, "os.exec does not take an argument named '" +
+                                 na.name + "' (expected one of timeout, cwd, env, "
+                                 "stdin, stdout, stderr, max_output)");
+    }
+    return Ty::Map;
+  }
+  if (qualified == "file.open") {
+    static const std::vector<std::string> known = {"mode"};
+    for (auto& na : e->named_args) {
+      if (std::find(known.begin(), known.end(), na.name) == known.end())
+        error(na.value->pos,
+              "file.open does not take an argument named '" + na.name +
+                  "' (expected one of mode)");
+    }
+    return Ty::Int;
+  }
+  if (qualified == "file.seek") {
+    static const std::vector<std::string> known = {};
+    for (auto& na : e->named_args) {
+      if (std::find(known.begin(), known.end(), na.name) == known.end())
+        error(na.value->pos, "file.seek does not take named arguments "
+                                 "(the offset and whence are positional)");
+    }
+    return Ty::Int;
   }
 
   if (qualified.rfind("str.", 0) == 0) return Ty::Str;

@@ -186,6 +186,19 @@ bool body_uses_break(const StmtList& body) {
   return false;
 }
 
+// Scan context for the boundary planner: which function's body is being
+// scanned, and which function's claims the scan is collecting. `for_call_arg`
+// marks the one place an own parameter may be assumed int -- the argument of
+// a call to the function being planned itself, where the assumption is the
+// signature under test. Return expressions and other functions' arguments
+// must use the computed claim: a return of a string parameter is a return
+// of a string, whatever the call sites pass.
+struct ScanCtx {
+  const std::string* enclosing = nullptr;  // function whose body this is
+  const std::string* planning = nullptr;   // whose claims are being computed
+  bool for_call_arg = false;               // scanning a self-call's argument
+};
+
 class Gen {
  public:
   std::string out;
@@ -311,9 +324,8 @@ class Gen {
       if (kv.first.find('/') != std::string::npos) continue;  // a function local
       const std::string& name = kv.first;
       const TyInfo& info = kv.second;
-      // Use the C variable name that will be generated for this Ovyth name
       std::string cname = ident(name, 0);  // base name, uniq=0 for globals/params
-      if (info.is_proven_int) proven_ints_.insert(cname);
+      if (info.is_proven_int) { proven_ints_.insert(cname); }
       if (info.is_proven_float) proven_floats_.insert(cname);
     }
   }
@@ -332,6 +344,13 @@ class Gen {
   void push_scope() { scopes_.emplace_back(); }
   void pop_scope() { scopes_.pop_back(); }
   std::string* lookup(const std::string& n) {
+    for (size_t i = scopes_.size(); i-- > 0;) {
+      auto it = scopes_[i].find(n);
+      if (it != scopes_[i].end()) return &it->second;
+    }
+    return nullptr;
+  }
+  const std::string* lookup(const std::string& n) const {
     for (size_t i = scopes_.size(); i-- > 0;) {
       auto it = scopes_[i].find(n);
       if (it != scopes_[i].end()) return &it->second;
@@ -424,6 +443,13 @@ class Gen {
   bool is_int_expr(const Expr* e) const;
   std::string ex_int(const Expr* e);  // raw int64_t C expression
 
+  // The C condition text for an `if`/`while` whose test is a comparison of
+  // two provably int expressions, or "" when the test does not qualify.
+  // The general path materialises an OvValue and switches on its tag on
+  // every evaluation; in a tight recursive function that is most of the
+  // per-call cost, and in a 20M-iteration loop it is the loop's tax.
+  std::string raw_int_condition(const Expr* e);
+
   // A raw int64 expression for a value that is not provably an int: coerces
   // through the runtime's cast, which throws for a non-number. Only a guard --
   // sema retires any collection whose push is not provably int, so a reachable
@@ -455,9 +481,42 @@ class Gen {
   std::string call_global(const std::string& q, const Expr* e);
   std::string call_namespace(const std::string& ns, const std::string& name,
                              const Expr* e);
+  void plan_function_boundaries();
+  // The `try` blocks currently open, innermost last. Every path that leaves
+  // one other than its own end -- return, break, continue -- must run its
+  // cleanup; the exit statements ask for the list here.
+  std::vector<std::pair<std::string, std::string>> try_cleanups_;
+  void emit_try_cleanups();
+  // The C signature for a user function: raw parameters and a raw return
+  // where the planner proved them. Forward declarations and definitions
+  // both come from here.
+  std::string fn_signature(const Stmt* s) const;
+  // A direct call to a top-level user function whose return value crosses the
+  // boundary as a raw int64_t (see plan_function_boundaries). False when the
+  // callee is shadowed by a local, because then the call goes through a value.
+  bool call_returns_raw_int(const Expr* e) const;
+  bool fn_ret_is_raw(const std::string& fn) const;
+  bool fn_param_is_raw(const std::string& fn, size_t idx) const;
+  // The argument for parameter `idx` as a raw int64_t expression, or a hard
+  // error when the plan said raw but this site is not provably int.
+  std::string raw_arg_or_fail(const Expr* a, const std::string& fn, size_t idx);
+  // The planner's statically-int test; ScanCtx is defined with the planner.
+  bool pre_int(const Expr* e, const ScanCtx& ctx) const;
 
   // A hoisted user function, plus whether it is variadic.
   std::unordered_map<std::string, const Stmt*> userfns_;
+
+  // Callee names bound anywhere as a local: a call to one of those is a
+  // value call and must not constrain (or trust) a signature.
+  std::set<std::string> bound_names_;
+
+  // Which user functions cross their call boundary as raw int64_t: per
+  // parameter (arguments) and as a whole (the return value).
+  struct FnPlan {
+    bool raw_ret = false;
+    std::vector<bool> raw_param;
+  };
+  std::unordered_map<std::string, FnPlan> fn_plans_;
 };
 
 // ----------------------------------------------------------- const folding
@@ -594,6 +653,21 @@ static bool fold_const_unary(const Expr* e, std::string& out) {
 }
 
 // ---------------------------------------------------------------- proven-int helpers
+std::string Gen::raw_int_condition(const Expr* e) {
+  if (!e || e->kind != ExprKind::Binary) return "";
+  if (!is_int_expr(e->a) || !is_int_expr(e->b)) return "";
+  const std::string a = ex_int(e->a), b = ex_int(e->b);
+  switch (e->op) {
+    case Tok::EQUAL:         return "(" + a + ") == (" + b + ")";
+    case Tok::BANG_EQUAL:    return "(" + a + ") != (" + b + ")";
+    case Tok::LESS:          return "(" + a + ") < (" + b + ")";
+    case Tok::GREATER:       return "(" + a + ") > (" + b + ")";
+    case Tok::LESS_EQUAL:    return "(" + a + ") <= (" + b + ")";
+    case Tok::GREATER_EQUAL: return "(" + a + ") >= (" + b + ")";
+    default:                 return "";
+  }
+}
+
 // Returns true when `e` is provably a pure int64_t expression:
 //   - IntLit
 //   - Identifier whose C name is in proven_ints_
@@ -603,6 +677,10 @@ static bool fold_const_unary(const Expr* e, std::string& out) {
 bool Gen::is_int_expr(const Expr* e) const {
   if (!e) return false;
   if (e->kind == ExprKind::IntLit) return true;
+  // A call whose function the planner proved returns a raw int. Its
+  // arguments are verified at the boundary (the planner checked every call
+  // site), so the call is an int expression wherever its result is used.
+  if (e->kind == ExprKind::Call) return call_returns_raw_int(e);
   if (e->kind == ExprKind::Identifier) {
     // Look up the C variable name and check if it's proven int.
     for (int i = (int)scopes_.size() - 1; i >= 0; i--) {
@@ -617,8 +695,7 @@ bool Gen::is_int_expr(const Expr* e) const {
     return is_int_expr(e->a);
   if (e->kind != ExprKind::Binary) return false;
   // Ops that keep int->int:
-  switch (e->op) {
-    case Tok::PLUS: case Tok::MINUS: case Tok::STAR: case Tok::PERCENT:
+  switch (e->op) {    case Tok::PLUS: case Tok::MINUS: case Tok::STAR: case Tok::PERCENT:
     case Tok::AMP: case Tok::PIPE: case Tok::CARET:
     case Tok::SHL: case Tok::SHR:
       return is_int_expr(e->a) && is_int_expr(e->b);
@@ -628,6 +705,13 @@ bool Gen::is_int_expr(const Expr* e) const {
 
 // Returns a raw int64_t C expression. Only call when is_int_expr() is true.
 std::string Gen::ex_int(const Expr* e) {
+  // A call to a raw-returning function is already an int64_t C expression;
+  // no boxing wrapper is wanted on this path.
+  if (e->kind == ExprKind::Call) {
+    if (call_returns_raw_int(e)) return emit_call(e);
+    fail("internal: ex_int called on a call that does not return a raw int");
+    return "0LL";
+  }
   if (e->kind == ExprKind::IntLit)
     return std::to_string(e->ival) + "LL";
   if (e->kind == ExprKind::Identifier) {
@@ -1017,8 +1101,12 @@ std::string Gen::ex(const Expr* e) {
     case ExprKind::Slice:    return emit_slice(e);
     case ExprKind::ListComp: return emit_listcomp(e);
     case ExprKind::Closure:  return emit_closure(e);
-    case ExprKind::Call:     return emit_call(e);
-
+    // A raw-returning call yields int64_t at the C level; a value context
+    // needs the 16-byte tagged form, so it is boxed here. The int fast
+    // paths never come through here -- is_int_expr/ex_int use the raw call.
+    case ExprKind::Call:
+      if (call_returns_raw_int(e)) return "ov_int(" + emit_call(e) + ")";
+      return emit_call(e);
     case ExprKind::Cast: {
       if (!e->type) return ex(e->a);
       const std::string& n = e->type->name;
@@ -1487,6 +1575,311 @@ static bool stmt_keeps_loop_var_raw(const Stmt* s, const std::string& name) {
   }
 }
 
+// --- cross-function boundary planning -------------------------------------
+//
+// Which user functions may cross their call boundary as a raw int64_t
+// instead of a 16-byte tagged OvValue? BASELINE.md measured the cost of
+// boxing every argument and every return: `fib` sits at 9-16x of C while a
+// call is a compare, two decrements and an add. Loop locals and specialized
+// collections are already unboxed; parameters and return values were not.
+//
+// A signature is one decision applied to every call site, so each claim is
+// proved from the whole program before any body is lowered. The rules are
+// deliberately conservative -- each one exists to prevent a specific way
+// the claim could be wrong:
+//
+//   * no anonymous function anywhere in the body. A closure captures its
+//     enclosing scope by reference, and a raw int64 has no box to capture
+//     through.
+//   * no parameter is ever assigned (`n = 2.5` would truncate into the
+//     int64 silently -- the exact class of divergence this work must not
+//     introduce) and no body binding shadows a parameter (`for n in ...`,
+//     `n = ...`, a closure param, a catch var): later uses of the name
+//     would refer to the local, not the parameter.
+//   * every call site's argument is statically an int: a literal, int
+//     arithmetic on literals, the *enclosing* function's own raw
+//     parameters, or a global sema already proved int. A map read, a list
+//     element, or another function's boxed parameter keeps it boxed.
+//   * the return is raw only when the body's last statement is a `return`
+//     (falling off the end answers nil on the interpreter and 0 on a raw
+//     function -- a silent divergence) and every own-level return is
+//     statically an int.
+//
+// Self-recursion is allowed and is load-bearing: `fib(n-1)` is an argument
+// built from `fib`'s own raw parameter. A function planning its own claims
+// assumes them; every other context uses the claims computed so far, and
+// the whole thing is iterated to a fixed point. Mutually recursive
+// functions never bootstrap that way and simply stay boxed.
+
+static void block_has_closure(const StmtList& body, bool& found);
+
+static bool expr_has_closure(const Expr* e) {
+  if (!e) return false;
+  if (e->kind == ExprKind::Closure) return true;
+  for (const Expr* c : {e->a, e->b, e->c})
+    if (expr_has_closure(c)) return true;
+  for (const Expr* it : e->items)
+    if (expr_has_closure(it)) return true;
+  for (const Expr* p : e->parts)
+    if (expr_has_closure(p)) return true;
+  for (const auto& f : e->fields)
+    if (expr_has_closure(f.first) || expr_has_closure(f.second)) return true;
+  for (const Expr* a : e->args)
+    if (expr_has_closure(a)) return true;
+  for (const auto& na : e->named_args)
+    if (expr_has_closure(na.value)) return true;
+  for (const Param& p : e->params)
+    if (p.default_value && expr_has_closure(p.default_value)) return true;
+  bool nested = false;
+  block_has_closure(e->body, nested);
+  if (nested) return true;
+  for (const Generator& g : e->generators)
+    if (expr_has_closure(g.iterable) || expr_has_closure(g.cond)) return true;
+  return false;
+}
+
+static void block_has_closure(const StmtList& body, bool& found) {
+  if (found) return;
+  for (const Stmt* s : body) {
+    if (!s) continue;
+    for (Expr* e : {s->expr, s->expr2, s->expr3})
+      if (expr_has_closure(e)) { found = true; return; }
+    for (Expr* e : s->values)
+      if (expr_has_closure(e)) { found = true; return; }
+    for (const Param& p : s->params)
+      if (p.default_value && expr_has_closure(p.default_value)) { found = true; return; }
+    block_has_closure(s->body, found);
+    block_has_closure(s->else_body, found);
+    block_has_closure(s->init, found);
+    if (found) return;
+  }
+}
+
+// Names bound by a statement or anything inside it: declarations, loop
+// variables, catch variables, closure and (nested) function parameters.
+// Function parameters themselves are supplied by the caller, which is
+// checking whether the body shadows one of them.
+static void collect_expr_bindings(const Expr* e, std::set<std::string>& out);
+static void collect_block_bindings(const StmtList& body, std::set<std::string>& out) {
+  for (const Stmt* s : body) {
+    if (!s) continue;
+    for (const auto& n : s->names) out.insert(n);
+    for (const auto& v : s->iter_vars) out.insert(v);
+    if (!s->catch_var.empty()) out.insert(s->catch_var);
+    for (Expr* e : {s->expr, s->expr2, s->expr3}) collect_expr_bindings(e, out);
+    for (Expr* e : s->values) collect_expr_bindings(e, out);
+    for (const Param& p : s->params) {
+      out.insert(p.name);
+      collect_expr_bindings(p.default_value, out);
+    }
+    collect_block_bindings(s->body, out);
+    collect_block_bindings(s->else_body, out);
+    collect_block_bindings(s->init, out);
+  }
+}
+
+static void collect_expr_bindings(const Expr* e, std::set<std::string>& out) {
+  if (!e) return;
+  if (e->kind == ExprKind::Closure) {
+    for (const Param& p : e->params) out.insert(p.name);
+    collect_block_bindings(e->body, out);  // its locals too: they bind here
+    return;
+  }
+  for (const Expr* c : {e->a, e->b, e->c}) collect_expr_bindings(c, out);
+  for (const Expr* it : e->items) collect_expr_bindings(it, out);
+  for (const Expr* p : e->parts) collect_expr_bindings(p, out);
+  for (const auto& f : e->fields) {
+    collect_expr_bindings(f.first, out);
+    collect_expr_bindings(f.second, out);
+  }
+  for (const Expr* a : e->args) collect_expr_bindings(a, out);
+  for (const auto& na : e->named_args) collect_expr_bindings(na.value, out);
+  for (const Param& p : e->params) {
+    out.insert(p.name);
+    collect_expr_bindings(p.default_value, out);
+  }
+  for (const Generator& g : e->generators) {
+    collect_expr_bindings(g.iterable, out);
+    collect_expr_bindings(g.cond, out);
+  }
+}
+
+// Identifiers a statement (or anything inside it) assigns to. An assignment
+// is a write to an existing binding, not a new one, so it is tracked apart.
+static void collect_expr_assignments(const Expr* e, std::set<std::string>& out) {
+  if (!e) return;
+  if (e->kind == ExprKind::Assign && e->a && e->a->kind == ExprKind::Identifier)
+    out.insert(e->a->name);
+  if (e->kind == ExprKind::Closure) {
+    collect_expr_assignments(e->a, out);
+    return;  // the body's assignments bind its own scope; covered by bindings
+  }
+  for (const Expr* c : {e->a, e->b, e->c}) collect_expr_assignments(c, out);
+  for (const Expr* it : e->items) collect_expr_assignments(it, out);
+  for (const Expr* p : e->parts) collect_expr_assignments(p, out);
+  for (const auto& f : e->fields) {
+    collect_expr_assignments(f.first, out);
+    collect_expr_assignments(f.second, out);
+  }
+  for (const Expr* a : e->args) collect_expr_assignments(a, out);
+  for (const auto& na : e->named_args) collect_expr_assignments(na.value, out);
+  for (const Param& p : e->params) collect_expr_assignments(p.default_value, out);
+  for (const Generator& g : e->generators) {
+    collect_expr_assignments(g.iterable, out);
+    collect_expr_assignments(g.cond, out);
+  }
+}
+
+static void collect_block_assignments(const StmtList& body, std::set<std::string>& out) {
+  for (const Stmt* s : body) {
+    if (!s) continue;
+    if (s->kind == StmtKind::Assign && s->expr && s->expr->kind == ExprKind::Identifier)
+      out.insert(s->expr->name);
+    for (Expr* e : {s->expr, s->expr2, s->expr3}) collect_expr_assignments(e, out);
+    for (Expr* e : s->values) collect_expr_assignments(e, out);
+    for (const Param& p : s->params) collect_expr_assignments(p.default_value, out);
+    collect_block_assignments(s->body, out);
+    collect_block_assignments(s->else_body, out);
+    collect_block_assignments(s->init, out);
+  }
+}
+
+// `return <expr>` statements at this function's own level. Closure bodies
+// are skipped on purpose: their returns belong to the anonymous function.
+static void collect_own_returns(const StmtList& body, std::vector<const Expr*>& out) {
+  for (const Stmt* s : body) {
+    if (!s) continue;
+    if (s->kind == StmtKind::Return) out.push_back(s->expr);  // null: bare `return`
+    if (s->kind == StmtKind::FuncDecl) continue;              // a nested function's returns
+    collect_own_returns(s->body, out);
+    collect_own_returns(s->else_body, out);
+    collect_own_returns(s->init, out);
+  }
+}
+
+static bool block_tail_returns(const StmtList& body) {
+  for (auto it = body.rbegin(); it != body.rend(); ++it) {
+    const Stmt* s = *it;
+    if (!s) return false;
+    if (s->kind == StmtKind::FuncDecl) continue;
+    return s->kind == StmtKind::Return;
+  }
+  return false;
+}
+
+// A raw int64 parameter may only appear where a value is read. A member
+// (`a.len`), an index (`a[i]`), a slice, a call through the parameter itself
+// (`a(...)`), or iterating it (`for x in a`) all need the 16-byte tagged
+// form: the raw claim cannot serve any of them, and emitting one for such a
+// body is a clang type error, not a slow program. Value positions -- call
+// arguments, arithmetic, returns, interpolations -- are fine, because ex()
+// boxes a proven int at every one of them.
+static bool ident_is(const Expr* e, const std::string& name) {
+  return e && e->kind == ExprKind::Identifier && e->name == name;
+}
+
+static bool expr_uses_param_as_value(const Expr* e, const std::string& name);
+static bool block_uses_param_as_value(const StmtList& body,
+                                       const std::string& name) {
+  for (const Stmt* s : body)
+    if (s) {
+      for (Expr* x : {s->expr, s->expr2, s->expr3})
+        if (expr_uses_param_as_value(x, name)) return true;
+      for (Expr* x : s->values)
+        if (expr_uses_param_as_value(x, name)) return true;
+      // `for v in <param>` iterates the parameter itself.
+      if (ident_is(s->expr, name) && s->kind == StmtKind::For) return true;
+      if (block_uses_param_as_value(s->body, name)) return true;
+      if (block_uses_param_as_value(s->else_body, name)) return true;
+      if (block_uses_param_as_value(s->init, name)) return true;
+    }
+  return false;
+}
+
+static bool expr_uses_param_as_value(const Expr* e, const std::string& name) {
+  if (!e) return false;
+  switch (e->kind) {
+    case ExprKind::Member:
+    case ExprKind::Slice:
+      // The object being read from must be the tagged form; the parts in
+      // slice bounds are value positions and are checked by recursion below.
+      if (ident_is(e->a, name)) return true;
+      break;
+    case ExprKind::Index:
+      if (ident_is(e->a, name)) return true;
+      break;
+    case ExprKind::Call:
+      if (ident_is(e->a, name)) return true;  // calling the parameter itself
+      break;
+    case ExprKind::Assign:
+      // `a[0] = ...`, `a.field = ...`: writing through the parameter.
+      if (expr_uses_param_as_value(e->a, name)) return true;
+      break;
+    default:
+      break;
+  }
+  for (const Expr* c : {e->a, e->b, e->c})
+    if (expr_uses_param_as_value(c, name)) return true;
+  for (const Expr* it : e->items)
+    if (expr_uses_param_as_value(it, name)) return true;
+  for (const Expr* p : e->parts)
+    if (expr_uses_param_as_value(p, name)) return true;
+  for (const auto& f : e->fields) {
+    if (expr_uses_param_as_value(f.first, name)) return true;
+    if (expr_uses_param_as_value(f.second, name)) return true;
+  }
+  for (const Expr* a : e->args)
+    if (expr_uses_param_as_value(a, name)) return true;
+  for (const auto& na : e->named_args)
+    if (expr_uses_param_as_value(na.value, name)) return true;
+  for (const Param& p : e->params) {
+    if (expr_uses_param_as_value(p.default_value, name)) return true;
+    if (block_uses_param_as_value(e->body, name)) return true;
+  }
+  for (const Generator& g : e->generators) {
+    if (expr_uses_param_as_value(g.iterable, name)) return true;
+    if (expr_uses_param_as_value(g.cond, name)) return true;
+  }
+  return false;
+}
+
+// Every Call node, including inside closure bodies: a closure calls a
+// top-level function through the same signature as any other caller.
+static void walk_stmt_calls(const Stmt* s, const std::function<void(const Expr*)>& fn);
+static void walk_expr_calls(const Expr* e, const std::function<void(const Expr*)>& fn) {
+  if (!e) return;
+  if (e->kind == ExprKind::Call) fn(e);
+  for (const Expr* c : {e->a, e->b, e->c}) walk_expr_calls(c, fn);
+  for (const Expr* it : e->items) walk_expr_calls(it, fn);
+  for (const Expr* p : e->parts) walk_expr_calls(p, fn);
+  for (const auto& f : e->fields) {
+    walk_expr_calls(f.first, fn);
+    walk_expr_calls(f.second, fn);
+  }
+  for (const Expr* a : e->args) walk_expr_calls(a, fn);
+  for (const auto& na : e->named_args) walk_expr_calls(na.value, fn);
+  for (const Param& p : e->params) walk_expr_calls(p.default_value, fn);
+  for (const Stmt* s : e->body) walk_stmt_calls(s, fn);
+  for (const Generator& g : e->generators) {
+    walk_expr_calls(g.iterable, fn);
+    walk_expr_calls(g.cond, fn);
+  }
+}
+
+static void walk_stmt_calls(const Stmt* s, const std::function<void(const Expr*)>& fn) {
+  if (!s) return;
+  for (Expr* e : {s->expr, s->expr2, s->expr3}) walk_expr_calls(e, fn);
+  for (Expr* e : s->values) walk_expr_calls(e, fn);
+  for (const Param& p : s->params) walk_expr_calls(p.default_value, fn);
+  for (const Stmt* b : s->body) walk_stmt_calls(b, fn);
+  for (const Stmt* b : s->else_body) walk_stmt_calls(b, fn);
+  for (const Stmt* b : s->init) walk_stmt_calls(b, fn);
+}
+
+static void walk_block_calls(const StmtList& body, const std::function<void(const Expr*)>& fn) {
+  for (const Stmt* s : body) walk_stmt_calls(s, fn);
+}
+
 std::string Gen::emit_closure(const Expr* e) {
   // Free-variable analysis: params + body-defined locals are bound; anything
   // else the body reads that is neither a user function nor a resolvable
@@ -1556,6 +1949,15 @@ std::string Gen::emit_closure(const Expr* e) {
   for (size_t i = 0; i < e->params.size(); i++)
     line("OvValue " + ident(e->params[i].name, i) + " = _argv[" +
          std::to_string(i) + "];");
+  // Parameters are heap references like any other local, so they are rooted
+  // the same way. They are not roots by siding: a parameter that holds a
+  // freshly built array is only reachable from this frame, and the collector
+  // fires on any allocation -- so a function that allocates in a loop over a
+  // parameter would otherwise read freed memory. The mask the rag index
+  // passes down is exactly that shape, and it segfaulted at index 730 of a
+  // 1003-slot array whose data pointer had already been swept.
+  for (size_t i = 0; i < e->params.size(); i++)
+    line("ov_gc_register_root(&" + ident(e->params[i].name, i) + ");");
   block(e->body, false);
   if (fn_has_return_) line(ret_label_ + ": ;");
   line("  ov_gc_roots_restore(_roots_mark);");
@@ -1792,9 +2194,10 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
     if (name == "now")   return "ov_int(ov_h_now_realtime())";
   }
   if (ns == "os") {
-    // The agent's hands. One method, on purpose: everything an agent needs to
-    // do to a machine is a command, and the answer is a map with the exit code
-    // and both streams kept apart.
+    // The agent's hands: a command, and (since the automation pass) the
+    // file-descriptor primitives the command layer is built on. Answer for a
+    // command is a map with the exit code and both streams kept apart.
+    auto A = [&](size_t i) { return i < args.size() ? args[i] : "ov_nil()"; };
     if (name == "tty") return "ov_bool(ov_os_tty())";
     if (name == "run") {
       std::string cmd = args.empty() ? "ov_nil()" : args[0];
@@ -1802,6 +2205,48 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
       return "({ int " + c + " = 0; OvValue " + o + "; if (ov_os_run(" +
              "ov_tagof(" + cmd + ") == OV_STRING ? (" + cmd + ").str->bytes : \"\", &" +
              c + ", &" + o + ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
+    }
+    if (name == "pipe") {
+      std::string o = fresh();
+      return "({ int _t = 0; OvValue " + o + "; if (ov_os_pipe(&" + o +
+             ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
+    }
+    if (name == "read") {
+      std::string o = fresh();
+      return "({ OvValue " + o + "; int _f = ov_tagof(" + A(0) +
+             ") == OV_INT ? (int)(" + A(0) + ").i : -1; int64_t _n = 4096; "
+             "if (ov_tagof(" + A(1) + ") == OV_INT) _n = (" + A(1) + ").i; "
+             "else if (ov_tagof(" + A(1) + ") == OV_FLOAT) _n = (int64_t)(" + A(1) + ").f; "
+             "if (ov_os_read_fd(_f, _n, &" + o + ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
+    }
+    if (name == "write") {
+      std::string o = fresh();
+      return "({ int64_t " + o + " = 0; int _f = ov_tagof(" + A(0) +
+             ") == OV_INT ? (int)(" + A(0) + ").i : -1; "
+             "if (ov_os_write_fd(_f, " + A(1) + ", &" + o +
+             ")) ov_throw_value(ov_h_err_value()); ov_int(" + o + "); })";
+    }
+    if (name == "close") {
+      return "({ ov_os_close(ov_tagof(" + A(0) + ") == OV_INT ? (int)(" + A(0) +
+             ").i : -1); ov_nil(); })";
+    }
+    if (name == "stat") {
+      std::string o = fresh();
+      return "({ OvValue " + o + " = ov_nil(); if (ov_os_stat_path("
+             "({ OvValue _p = " + A(0) + "; ov_tagof(_p) == OV_STRING ? _p.str->bytes : \"\"; }), &" + o +
+             ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
+    }
+
+    // os.exec: the same spawn the interpreter performs, argv and options in
+    // the same order, so a program's result map is byte-identical either way.
+    if (name == "exec") {
+      std::string c = fresh(), o = fresh();
+      return "({ int " + c + " = 0; OvValue " + o + "; if (ov_os_exec(" +
+             (args.empty() ? "ov_nil()" : args[0]) + ", " +
+             named("timeout") + ", " + named("cwd") + ", " + named("env") +
+             ", " + named("stdin") + ", " + named("stdout") + ", " +
+             named("stderr") + ", " + named("max_output") +
+             ", &" + c + ", &" + o + ")) ov_throw_value(ov_h_err_value()); " + o + "; })";
     }
   }
   if (ns == "net") {
@@ -1878,9 +2323,30 @@ std::string Gen::call_namespace(const std::string& ns, const std::string& name,
     }
   }
   if (ns == "file") {
-    // Persistence builtins. Each takes a path string; ov_file_read/write are
-    // plain C in the runtime (io.c). `write`/`append` return Bool.
     auto A = [&](size_t i) { return i < args.size() ? args[i] : "ov_nil()"; };
+    if (name == "open") {
+      std::string o = fresh(), f = fresh();
+      return "({ int64_t " + o + " = -1; char* " + f + " = "
+             "({ OvValue _m = " + A(1) + "; "
+             "ov_tagof(_m) == OV_STRING ? _m.str->bytes : "
+             "({ OvValue _n = " + named("mode") + "; "
+             "ov_tagof(_n) == OV_STRING ? _n.str->bytes : \"r\"; }); }); "
+             "if (ov_file_open_fd(({ OvValue _p = " + A(0) + "; ov_tagof(_p) == "
+             "OV_STRING ? _p.str->bytes : \"\"; }), " + f + ", &" + o +
+             ")) ov_throw_value(ov_h_err_value()); ov_int(" + o + "); })";
+    }
+    if (name == "seek") {
+      std::string o = fresh();
+      return "({ int64_t " + o + " = ov_file_seek_fd("
+             "({ OvValue _f0 = " + A(0) + "; ov_tagof(_f0) == OV_INT ? (int)_f0.i : -1; }), "
+             "({ OvValue _o1 = " + A(1) + "; ov_tagof(_o1) == OV_INT ? _o1.i : 0; }), "
+             "({ OvValue _w2 = " + A(2) + "; ov_tagof(_w2) == OV_STRING && "
+             "_w2.str->len == 7 && !memcmp(_w2.str->bytes, \"current\", 7) ? SEEK_CUR : "
+             "ov_tagof(_w2) == OV_STRING && _w2.str->len == 3 && !memcmp(_w2.str->bytes, "
+             "\"end\", 3) ? SEEK_END : SEEK_SET; })); "
+             "if (" + o + " < 0) ov_throw_value(ov_str(ov_str_new(\"file.seek failed\", 16))); "
+             "ov_int(" + o + "); })";
+    }
     if (name == "read") {
       return "({ OvValue _p = " + A(0) + "; ov_str(ov_file_read(" +
              "ov_tagof(_p) == OV_STRING ? _p.str->bytes : \"\")); })";
@@ -1929,6 +2395,11 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
     }
     return s + "fputc('\\n', stdout); ov_nil(); })";
   }
+  if (q == "sleep") {
+    // Wait without holding a core: the monotonic sleep lives in the runtime,
+    // so the interpreter and every compiled binary wait identically.
+    return "({ ov_os_sleep(" + ARG(0) + "); ov_nil(); })";
+  }
   if (q == "eprint") {
     // Same rendering as print, but on stderr, so a program's machine-readable
     // stdout stays clean while progress and diagnostics go to the terminal.
@@ -1967,10 +2438,16 @@ std::string Gen::call_global(const std::string& q, const Expr* e) {
     if (args.size() == 1 && e->args[0] && e->args[0]->kind == ExprKind::Identifier) {
       const std::string& arg_name = e->args[0]->name;
       if (std::string* c = lookup(arg_name)) {
-        // Check if it's a proven int/float array
-        if (proven_ints_.count(*c) || proven_floats_.count(*c)) {
-          // It's a raw array, not a OvList
-          return "(" + *c + "->len)";
+        // Only a specialized int collection has an addressable length here,
+      // and its C variable is an OvValue whose array sits in .i64a. The old
+      // condition tested proven_ints_/proven_floats_ -- which also holds raw
+      // int64_t scalars -- and emitted `->len` on them, which is a clang type
+       // error: `len(n)` for a proven int local never compiled. A raw scalar
+      // now falls through to ov_h_len, which boxes it and answers correctly.
+        if (int_coll_.count(*c)) {
+          /* Boxed: len() is a value at every use site, and printing one is
+           * the common one. */
+          return "ov_int((" + *c + ").i64a->len)";
         }
       }
     }
@@ -2146,22 +2623,26 @@ std::string Gen::emit_call(const Expr* e) {
     auto it = userfns_.find(q);
     if (it != userfns_.end()) {
       const Stmt* decl = it->second;
-      // Positional then named arguments bound by parameter name.
-      std::vector<std::string> pos;
-      for (const Expr* a : e->args) pos.push_back(ex(a));
-      std::vector<std::string> byname(decl->params.size());
-      for (size_t i = 0; i < byname.size(); i++) byname[i] = "ov_nil()";
-      for (size_t i = 0; i < pos.size() && i < byname.size(); i++) byname[i] = pos[i];
+      // Positional then named arguments bound by parameter name. The bound
+      // expressions are kept as AST nodes so a parameter the planner proved
+      // raw can emit its argument as a raw int64_t instead of a boxed
+      // OvValue; everything else boxes exactly as before.
+      std::vector<const Expr*> argval(decl->params.size(), nullptr);
+      for (size_t i = 0; i < e->args.size() && i < argval.size(); i++)
+        argval[i] = e->args[i];
       for (const auto& na : e->named_args) {
         bool found = false;
         for (size_t k = 0; k < decl->params.size(); k++)
-          if (decl->params[k].name == na.name) { byname[k] = ex(na.value); found = true; }
+          if (decl->params[k].name == na.name) { argval[k] = na.value; found = true; }
         if (!found) { fail("'" + q + "' has no parameter named '" + na.name + "'"); }
       }
       std::string call = funcname(q) + "(";
-      for (size_t k = 0; k < byname.size(); k++) {
+      for (size_t k = 0; k < decl->params.size(); k++) {
         if (k) call += ", ";
-        call += byname[k];
+        const Expr* a = argval[k];
+        if (!a) call += "ov_nil()";
+        else if (fn_param_is_raw(q, k)) call += raw_arg_or_fail(a, q, k);
+        else call += ex(a);
       }
       // Empty parameter list at a CALL site is `()`, never `(void)` -- `void`
       // is only legal in a declaration/definition. The function's own
@@ -2403,10 +2884,47 @@ case StmtKind::VarDecl: {
 
     case StmtKind::Return:
       fn_has_return_ = true;
+      // A raw-returning function assigns int64_t. The planner proved every
+      // own-level return statically int, so the live check is a guard
+      // against an analysis bug: failing here is a compile error, never a
+      // silently truncated value.
+      // A return from inside a `try` leaves its block without running the
+      // cleanup: the jump out of the block skips the push's matching pop and
+      // the restore of the roots it registered, and the frame then returns
+      // with the runtime's unwind state and root list describing a scope that
+      // no longer exists. Clean up on the way out, innermost first.
+      emit_try_cleanups();
+      if (!cur_fn_.empty() && fn_ret_is_raw(cur_fn_)) {
+        if (!s->expr || !is_int_expr(s->expr)) {
+          fail("'" + cur_fn_ + "' returns a raw int, but this return is not a "
+               "provable int");
+          return;
+        }
+        line("_ret = " + ex_int(s->expr) + "; goto " + ret_label_ + ";");
+        return;
+      }
       line("_ret = " + (s->expr ? ex(s->expr) : "ov_nil()") + "; goto " + ret_label_ + ";");
       return;
 
     case StmtKind::If: {
+      // A comparison of two provable int expressions can be the C condition
+      // itself. The general path builds an OvValue and switches on its tag
+      // on every evaluation -- which, in a tight recursive function, is most
+      // of the per-call cost.
+      if (std::string rc = raw_int_condition(s->expr); !rc.empty()) {
+        line("if (" + rc + ") {");
+        indent_++;
+        block(s->body, true);
+        indent_--;
+        if (!s->else_body.empty()) {
+          line("} else {");
+          indent_++;
+          block(s->else_body, true);
+          indent_--;
+        }
+        line("}");
+        return;
+      }
       std::string c = fresh();
       line("{ OvValue " + c + " = " + ex(s->expr) + ";");
       indent_++;
@@ -2464,10 +2982,18 @@ case StmtKind::VarDecl: {
 
       bool uses_continue = body_uses_continue(s->body);
       line(top + ": ;");
-      std::string c = fresh();
-      line("{ OvValue " + c + " = " + ex(s->expr) + ";");
-      indent_++;
-      line("if (!ov_truthy(" + c + ")) goto " + L.brk + "; }");
+      // A comparison of provable int expressions tests directly in C (see
+      // the If case): the boxed test costs an OvValue and a tag switch per
+      // iteration, which is what a 20M-iteration loop pays for.
+      if (std::string rc = raw_int_condition(s->expr); !rc.empty()) {
+        line("if (!(" + rc + ")) goto " + L.brk + ";");
+      } else {
+        std::string c = fresh();
+        line("{ OvValue " + c + " = " + ex(s->expr) + ";");
+        indent_++;
+        line("if (!ov_truthy(" + c + ")) goto " + L.brk + "; }");
+        indent_--;
+      }
       loop_depth_++;
       std::string saved_seed = last_empty_str_;
       last_empty_str_.clear();   // only the declaring loop may own the builder
@@ -2501,11 +3027,13 @@ case StmtKind::VarDecl: {
 
     case StmtKind::Break:
       if (loops_.empty()) { fail("break outside a loop"); return; }
+      emit_try_cleanups();
       line("goto " + loops_.back().brk + ";");
       return;
 
     case StmtKind::Continue:
       if (loops_.empty()) { fail("continue outside a loop"); return; }
+      emit_try_cleanups();
       line("goto " + loops_.back().cont + ";");
       return;
 
@@ -2525,6 +3053,12 @@ case StmtKind::VarDecl: {
       // scan them as roots.
       std::string trm = fresh();
       line("size_t " + trm + " = ov_gc_roots_mark();");
+      // Every path that leaves the try body must run its cleanup: a `return`,
+      // `break` or `continue` out of the body used to jump straight past
+      // ov_try_pop() and the roots restore, and left the unwind state of the
+      // frame inconsistent with what the runtime believes it is. The exit
+      // statements emit the pending cleanups below before they jump.
+      try_cleanups_.push_back({tb, "  ov_try_pop(); ov_gc_roots_restore(" + trm + ");"});
       indent_++;
       line("if (setjmp(*_jb) == 0) {");
       indent_++;
@@ -2540,6 +3074,7 @@ case StmtKind::VarDecl: {
       indent_--;
       line("}");
       try_depth_--;
+      try_cleanups_.pop_back();
       return;
     }
 
@@ -2611,6 +3146,11 @@ void Gen::emit_for(const Stmt* s) {
     scopes_.back()[s->iter_vars.empty() ? std::string("__unused") : s->iter_vars[0]] = var;
     cur_roots_.push_back(var);
     // Extract element based on iterable type
+    // The final else is unreachable -- one of the four shapes always matches,
+    // because the loop was entered through it -- but without it the variable
+    // is formally uninitialized on some path, and clang says so
+    // (-Wsometimes-uninitialized) on every program whose iterable type it
+    // cannot narrow.
     line("OvValue " + var + ";");
     line("if (" + seq + ") " + var + " = " + seq + "->items[" + X + "];");
     line("else if (" + seq + "_i64a) " + var + " = ov_int(" + seq + "_i64a->data[" + X + "]);");
@@ -2632,6 +3172,12 @@ void Gen::emit_for(const Stmt* s) {
   // keeps it raw (no writes, no shadowing, no closure capture), and a
   // name that is not already a closure-shared box (bind() would store
   // through the box instead of declaring the local).
+  //
+  // The loop variable always gets a FRESH C local, never an outer slot:
+  // `for n in ...` inside a function with a boxed parameter `n` must not
+  // assign an int64 into the parameter's OvValue (that shape is a clang
+  // type error), and a loop variable that shadows a local must be its own
+  // local anyway -- the interpreter scopes the loop variable to the body.
   if (s->iter_vars.size() == 1 && !box_writes_.count(s->iter_vars[0]) &&
       block_keeps_loop_var_raw(s->body, s->iter_vars[0])) {
     line("if (" + seq + "_i64a) {");
@@ -2640,7 +3186,13 @@ void Gen::emit_for(const Stmt* s) {
     line("for (int64_t " + X + " = 0; " + X + " < " + seq + "_i64a->len; " + X + "++) {");
     indent_++;
     push_scope();
-    line(bind(s->iter_vars[0], seq + "_i64a->data[" + X + "]", true, false) + ";");
+    {
+      std::string rv = ident(s->iter_vars[0], tmp_++);
+      scopes_.back()[s->iter_vars[0]] = rv;
+      proven_ints_.insert(rv);
+      cur_roots_.push_back("@int:" + rv);
+      line("int64_t " + rv + " = " + seq + "_i64a->data[" + X + "];");
+    }
     loops_.push_back(BL);
     block(s->body, false);
     loops_.pop_back();
@@ -2656,7 +3208,13 @@ void Gen::emit_for(const Stmt* s) {
     line("for (int64_t " + X + " = 0; " + X + " < " + seq + "_f64a->len; " + X + "++) {");
     indent_++;
     push_scope();
-    line(bind(s->iter_vars[0], seq + "_f64a->data[" + X + "]", false, true) + ";");
+    {
+      std::string rv = ident(s->iter_vars[0], tmp_++);
+      scopes_.back()[s->iter_vars[0]] = rv;
+      proven_floats_.insert(rv);
+      cur_roots_.push_back("@float:" + rv);
+      line("double " + rv + " = " + seq + "_f64a->data[" + X + "];");
+    }
     loops_.push_back(FL);
     block(s->body, false);
     loops_.pop_back();
@@ -2688,26 +3246,247 @@ void Gen::collect_functions(const StmtList& body) {
       userfns_[s->name] = s;
 }
 
-void Gen::emit_function(const Stmt* s) {
-  std::ostringstream sig;
-  sig << "static OvValue " << funcname(s->name) << "(";
-  if (s->params.empty()) {
-    sig << "void";
-  } else {
-    for (size_t i = 0; i < s->params.size(); i++) {
-      if (i) sig << ", ";
-      sig << "OvValue " << ident(s->params[i].name, 0);
+// Statically-int test used only by the boundary planner. Unlike
+// is_int_expr() it cannot consult emission scopes -- no body has been
+// lowered yet -- so an identifier is an int only when it is the scanned
+// function's own parameter (assumed while that function plans itself) or a
+// global sema proved int.
+static const Expr* arg_for_param(const Expr* call, const Stmt* decl, size_t idx) {
+  const Expr* got = nullptr;
+  if (idx < call->args.size()) got = call->args[idx];
+  for (const auto& na : call->named_args)
+    if (decl->params[idx].name == na.name) got = na.value;
+  return got;
+}
+
+bool Gen::pre_int(const Expr* e, const ScanCtx& ctx) const {
+  if (!e) return false;
+  switch (e->kind) {
+    case ExprKind::IntLit:
+      return true;
+    case ExprKind::Unary:
+      return e->op == Tok::MINUS && pre_int(e->a, ctx);
+    case ExprKind::Binary:
+      switch (e->op) {
+        case Tok::PLUS: case Tok::MINUS: case Tok::STAR: case Tok::PERCENT:
+        case Tok::AMP: case Tok::PIPE: case Tok::CARET: case Tok::SHL: case Tok::SHR:
+          return pre_int(e->a, ctx) && pre_int(e->b, ctx);
+        default:
+          return false;
+      }
+    case ExprKind::Identifier: {
+      if (ctx.enclosing) {
+        auto it = userfns_.find(*ctx.enclosing);
+        if (it != userfns_.end()) {
+          const Stmt* fn = it->second;
+          for (size_t i = 0; i < fn->params.size(); i++)
+            if (fn->params[i].name == e->name) {
+              // A self-call's argument may assume the parameter under test;
+              // everything else must trust the claim computed so far.
+              if (ctx.planning && *ctx.planning == *ctx.enclosing && ctx.for_call_arg)
+                return true;
+              auto pit = fn_plans_.find(*ctx.enclosing);
+              return pit != fn_plans_.end() && i < pit->second.raw_param.size() &&
+                     pit->second.raw_param[i];
+            }
+        }
+      }
+      auto git = sema_.proven_types.find(e->name);
+      return git != sema_.proven_types.end() && git->second.is_proven_int;
+    }
+    case ExprKind::Call: {
+      const Expr* callee = e->a;
+      if (!callee || callee->kind != ExprKind::Identifier) return false;
+      const std::string& n = callee->name;
+      if (!userfns_.count(n) || bound_names_.count(n)) return false;
+      if (ctx.planning && *ctx.planning == n) return true;  // self-recursion
+      auto pit = fn_plans_.find(n);
+      return pit != fn_plans_.end() && pit->second.raw_ret;
+    }
+    default:
+      return false;
+  }
+}
+
+void Gen::plan_function_boundaries() {
+  struct Static {
+    bool has_closure = false;
+    bool variadic = false;
+    bool tail_return = false;
+    std::set<std::string> assigned;
+    std::set<std::string> bound;
+    std::vector<const Expr*> returns;
+  };
+  std::unordered_map<std::string, Static> info;
+
+  for (const Stmt* s : prog_.statements) {
+    if (!s || s->kind != StmtKind::FuncDecl) continue;
+    Static st;
+    st.variadic = s->is_variadic;
+    bool cl = false;
+    block_has_closure(s->body, cl);
+    st.has_closure = cl;
+    collect_block_assignments(s->body, st.assigned);
+    collect_block_bindings(s->body, st.bound);
+    collect_own_returns(s->body, st.returns);
+    st.tail_return = block_tail_returns(s->body);
+    if (!userfns_.count(s->name)) userfns_[s->name] = s;
+    info[s->name] = std::move(st);
+  }
+
+  // A callee name bound anywhere as a local is a call through a value, not
+  // a direct call, so it never constrains a signature.
+  bound_names_ = {};
+  {
+    std::set<std::string> b;
+    collect_block_bindings(prog_.statements, b);
+    for (const auto& kv : userfns_) b.erase(kv.first);
+    bound_names_ = std::move(b);
+  }
+
+  struct CallSite {
+    const std::string* enclosing;
+    const Expr* call;
+  };
+  std::unordered_map<std::string, std::vector<CallSite>> sites;
+  auto record = [&](const Expr* c, const std::string* enclosing) {
+    const Expr* callee = c->a;
+    if (!callee || callee->kind != ExprKind::Identifier) return;
+    if (!userfns_.count(callee->name) || bound_names_.count(callee->name)) return;
+    sites[callee->name].push_back({enclosing, c});
+  };
+  for (const Stmt* s : prog_.statements) {
+    if (s && s->kind == StmtKind::FuncDecl) {
+      walk_block_calls(s->body, [&](const Expr* c) { record(c, &s->name); });
+    } else {
+      walk_stmt_calls(s, [&](const Expr* c) { record(c, nullptr); });
     }
   }
-  sig << ")";
 
+  for (const auto& kv : info) {
+    FnPlan plan;
+    plan.raw_param.assign(userfns_[kv.first]->params.size(), false);
+    fn_plans_[kv.first] = std::move(plan);
+  }
+
+  // Claims only ever grow: a call site's argument becomes provable when a
+  // callee's return is claimed, and a parameter claim enables the caller's
+  // argument. Start from nothing and iterate to the fixed point.
+  bool changed = true;
+  int rounds = 0;
+  const int cap = (int)info.size() + 2;
+  while (changed && rounds++ <= cap) {
+    changed = false;
+    for (const auto& kv : info) {
+      const std::string& name = kv.first;
+      const Static& st = kv.second;
+      const Stmt* decl = userfns_[name];
+      FnPlan& plan = fn_plans_[name];
+      std::vector<bool> cand(decl->params.size(), true);
+      for (size_t i = 0; i < decl->params.size(); i++) {
+        const std::string& p = decl->params[i].name;
+        if (st.assigned.count(p) || st.bound.count(p)) { cand[i] = false; continue; }
+        // The body must also only *read* the parameter as a value; a member,
+        // index, slice, self-call or iteration needs the tagged form.
+        if (block_uses_param_as_value(decl->body, p)) { cand[i] = false; continue; }
+        for (const CallSite& cs : sites[name]) {
+          ScanCtx ctx;
+          ctx.enclosing = cs.enclosing;
+          // Only a self-call's argument may assume the parameter under test;
+          // an argument inside another function must trust that function's
+          // computed claim, or a boxed caller would silently force a raw
+          // signature on its callee.
+          if (cs.enclosing && *cs.enclosing == name) {
+            ctx.planning = &name;
+            ctx.for_call_arg = true;
+          }
+          const Expr* arg = arg_for_param(cs.call, decl, i);
+          if (!arg || !pre_int(arg, ctx)) { cand[i] = false; break; }
+        }
+      }
+      bool ret = false;
+      if (!st.has_closure && !st.variadic && st.tail_return && !st.returns.empty()) {
+        ScanCtx ctx;
+        ctx.enclosing = &name;
+        ctx.planning = &name;
+        ret = true;
+        for (const Expr* r : st.returns)
+          if (!r || !pre_int(r, ctx)) { ret = false; break; }
+      }
+      if (st.has_closure || st.variadic) {
+        for (size_t i = 0; i < cand.size(); i++) cand[i] = false;
+        ret = false;
+      }
+      if (ret != plan.raw_ret) { plan.raw_ret = ret; changed = true; }
+      for (size_t i = 0; i < cand.size(); i++)
+        if (cand[i] != plan.raw_param[i]) { plan.raw_param[i] = cand[i]; changed = true; }
+    }
+  }
+
+  // Non-convergence would mean oscillating claims, which the rules above
+  // cannot produce; if it ever happened, boxed is the safe answer.
+  if (changed) {
+    for (auto& kv : fn_plans_) {
+      kv.second.raw_ret = false;
+      for (size_t i = 0; i < kv.second.raw_param.size(); i++)
+        kv.second.raw_param[i] = false;
+    }
+  }
+}
+
+bool Gen::fn_ret_is_raw(const std::string& fn) const {
+  auto it = fn_plans_.find(fn);
+  return it != fn_plans_.end() && it->second.raw_ret;
+}
+
+bool Gen::fn_param_is_raw(const std::string& fn, size_t idx) const {
+  auto it = fn_plans_.find(fn);
+  return it != fn_plans_.end() && idx < it->second.raw_param.size() &&
+         it->second.raw_param[idx];
+}
+
+bool Gen::call_returns_raw_int(const Expr* e) const {
+  if (!e || e->kind != ExprKind::Call) return false;
+  const Expr* callee = e->a;
+  if (!callee || callee->kind != ExprKind::Identifier) return false;
+  if (lookup(callee->name)) return false;  // a local shadows the function: value call
+  return fn_ret_is_raw(callee->name);
+}
+
+std::string Gen::raw_arg_or_fail(const Expr* a, const std::string& fn, size_t idx) {
+  if (is_int_expr(a)) return ex_int(a);
+  fail("'" + fn + "' parameter " + std::to_string(idx + 1) +
+       " crosses the call boundary as a raw int, but this argument is not a "
+       "provable int");
+  return "0LL";
+}
+
+// Leaving a try body by any path other than its own end -- `return`,
+// `break`, `continue` -- must still run the try's cleanup: the runtime tracks
+// the unwind state by push/pop, and skipping the pop leaves it describing a
+// frame that has already gone.
+void Gen::emit_try_cleanups() {
+  for (auto it = try_cleanups_.rbegin(); it != try_cleanups_.rend(); ++it)
+    line(it->second);
+}
+
+void Gen::emit_function(const Stmt* s) {
   auto saved_scopes = scopes_;
   auto saved_ret = ret_label_;
   auto saved_fn = cur_fn_;
   auto saved_box_of = box_of_;
   auto saved_box_writes = box_writes_;
+  auto saved_ints = proven_ints_;
+  auto saved_floats = proven_floats_;
   box_of_.clear();
   box_writes_.clear();
+  // Sema keys a local's proven type by the enclosing function, and the
+  // planner keys a parameter's raw claim by function too. Both are reset
+  // here for the same reason: a parameter's C name is unqualified
+  // (`v_n_0` in every function), so one function's claim must never be
+  // visible while another's body is lowered.
+  proven_ints_.clear();
+  proven_floats_.clear();
   std::string saved_out;
   saved_out.swap(out);
   int saved_indent = indent_;
@@ -2717,6 +3496,11 @@ void Gen::emit_function(const Stmt* s) {
 
   push_scope();
   for (const auto& p : s->params) scopes_.back()[p.name] = ident(p.name, 0);
+  // Parameters the planner proved raw cross the boundary as int64_t. Reads
+  // box at their use sites through the same proven-local machinery loop
+  // locals use, so no expression site changes.
+  for (size_t i = 0; i < s->params.size(); i++)
+    if (fn_param_is_raw(s->name, i)) proven_ints_.insert(ident(s->params[i].name, 0));
 
   // Two passes. The body is lowered first into a scratch buffer so every local
   // it introduces is known; only then is the entry prologue written, declaring
@@ -2734,18 +3518,41 @@ void Gen::emit_function(const Stmt* s) {
   indent_ = 1;
   fn_has_return_ = false;
   block(s->body, false);
+  // The root mark/restore pair exists to pop this frame's registrations on
+  // return -- without it every call would leave its locals in the root
+  // array forever. A function that registers nothing owns no root: raw
+  // int64 parameters are not heap references, and no local was rooted.
+  // Skipping the pair there removes two calls and a global store/load per
+  // invocation, which measurement showed is the entire remaining gap
+  // between `fib` and the same function in hand-written C.
+  bool fn_needs_roots = !cur_roots_.empty();
+  for (size_t i = 0; i < s->params.size(); i++)
+    if (!fn_param_is_raw(s->name, i)) fn_needs_roots = true;
   if (fn_has_return_) line(ret_label_ + ": ;");
-  line("  ov_gc_roots_restore(_roots_mark);");
+  if (fn_needs_roots) line("  ov_gc_roots_restore(_roots_mark);");
   line("  return _ret; }");
   body_buf.swap(out);
   indent_ = 0;
 
   nl();
-  line(sig.str() + " {");
+  line(fn_signature(s) + " {");
   indent_++;
-  line("OvValue _ret = ov_nil();");
-  line("size_t _roots_mark = ov_gc_roots_mark();");
+  line(fn_ret_is_raw(s->name) ? "int64_t _ret = 0;" : "OvValue _ret = ov_nil();");
+  if (fn_needs_roots) line("size_t _roots_mark = ov_gc_roots_mark();");
   emit_root_prologue();
+  // Parameters live in the C signature, so the prologue has no declaration to
+  // hang them from and they are registered here instead. A parameter is a heap
+  // reference like any other local: the collector fires on any allocation, so a
+  // function that allocates in a loop over a parameter -- or holds one a caller
+  // built in the same expression -- was reading freed memory otherwise. Raw
+  // int64 parameters are not heap references and are deliberately absent.
+  {
+    std::string regs;
+    for (size_t i = 0; i < s->params.size(); i++)
+      if (!fn_param_is_raw(s->name, i))
+        regs += "ov_gc_register_root(&" + ident(s->params[i].name, 0) + "); ";
+    if (!regs.empty()) line(regs);
+  }
   cur_roots_.swap(outer_roots);
   int_coll_.swap(outer_int_coll);   // done: locals are rooted by the prologue
   out += body_buf;
@@ -2759,13 +3566,36 @@ void Gen::emit_function(const Stmt* s) {
   cur_fn_ = saved_fn;
   box_of_ = saved_box_of;
   box_writes_ = saved_box_writes;
+  proven_ints_ = saved_ints;
+  proven_floats_ = saved_floats;
   pending_fns_.push_back(body);
+}
+
+// The emitted signature. Parameters the planner proved raw are int64_t and
+// the return is int64_t when every own-level return is provably int; both
+// the forward declarations and the definition come from here so they cannot
+// drift.
+std::string Gen::fn_signature(const Stmt* s) const {
+  std::string sig = fn_ret_is_raw(s->name) ? "static int64_t " : "static OvValue ";
+  sig += funcname(s->name) + "(";
+  if (s->params.empty()) {
+    sig += "void";
+  } else {
+    for (size_t i = 0; i < s->params.size(); i++) {
+      if (i) sig += ", ";
+      sig += fn_param_is_raw(s->name, i) ? "int64_t " : "OvValue ";
+      sig += ident(s->params[i].name, 0);
+    }
+  }
+  sig += ")";
+  return sig;
 }
 
 // ------------------------------------------------------------------- module
 std::string Gen::run() {
   collect_functions(prog_.statements);
   init_proven_types();
+  plan_function_boundaries();
 
   // ---- header ----
   out +=
@@ -2784,18 +3614,7 @@ std::string Gen::run() {
     // Forward declarations first, so a function may call any other.
     for (const Stmt* s : prog_.statements) {
       if (!s || s->kind != StmtKind::FuncDecl) continue;
-      std::ostringstream sig;
-      sig << "static OvValue " << funcname(s->name) << "(";
-      if (s->params.empty()) {
-        sig << "void";
-      } else {
-        for (size_t i = 0; i < s->params.size(); i++) {
-          if (i) sig << ", ";
-          sig << "OvValue " << ident(s->params[i].name, 0);
-        }
-      }
-      sig << ");";
-      line(sig.str());
+      line(fn_signature(s) + ";");
     }
     nl();
 
@@ -2865,9 +3684,10 @@ std::string Gen::run() {
 
     line("static OvValue ov_main(void) {");
     indent_++;
-    line("OvValue _ret = ov_nil();");
-    line("size_t _roots_mark = ov_gc_roots_mark();");
-    emit_root_prologue();
+  line("OvValue _ret = ov_nil();");
+  line("size_t _roots_mark = ov_gc_roots_mark();");
+  emit_root_prologue();
+
     cur_roots_.swap(outer_roots);
     out += body;
     indent_ = 0;

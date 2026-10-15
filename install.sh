@@ -118,9 +118,12 @@ if [ "$PRETTY" = 1 ]; then
   install -m 644 build/libovrt.a "$libdir/libovrt.a"
   install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h "$incdir/"
   # The agent TUI ships as source, like every other Ovyth program: `ovc agent`
-  # finds it next to the binary, so there is no second build of it.
+  # finds it next to the binary, so there is no second build of it. websearch.ov
+  # goes with it -- the agent imports it, and a local file wins over the store,
+  # so the installed agent gets the shipped copy and not whatever a package
+  # store happens to hold.
   install -d "$destdir$prefix/share/ovyth/agent"
-  install -m 644 examples/agent/tui.ov "$destdir$prefix/share/ovyth/agent/tui.ov"
+  install -m 644 examples/agent/tui.ov examples/agent/websearch.ov "$destdir$prefix/share/ovyth/agent/"
   step_done
   bullet "$bindir/ovc" "the compiler"
   bullet "$libdir/libovrt.a" "linked into every compiled program"
@@ -134,7 +137,7 @@ else
   install -m 644 build/libovrt.a "$libdir/libovrt.a"
   install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h "$incdir/"
   install -d "$destdir$prefix/share/ovyth/agent"
-  install -m 644 examples/agent/tui.ov "$destdir$prefix/share/ovyth/agent/tui.ov"
+  install -m 644 examples/agent/tui.ov examples/agent/websearch.ov "$destdir$prefix/share/ovyth/agent/"
 fi
 
 if [ "$PRETTY" = 1 ]; then

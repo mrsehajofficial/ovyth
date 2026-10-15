@@ -23,6 +23,14 @@ jobs:
       - name: Test (runtime self-test + both-backend regression)
         run: make test
 
+      # Deterministic performance counters only: allocations and collection
+      # resizes are runtime telemetry, so they are machine-independent.
+      # Absolute wall clock is gated on the pinned machine instead
+      # (benchmarks/gate.sh, full tier) — a wall-clock gate on a shared
+      # runner would fail on noise and teach everyone to ignore it.
+      - name: Performance regression gate (heap counters)
+        run: bash benchmarks/gate.sh --tier heap --reps 3
+
       - name: Run the examples
         run: make examples
 

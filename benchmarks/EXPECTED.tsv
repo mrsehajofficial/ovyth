@@ -1,0 +1,18 @@
+# case	median_ms	rss_kb	allocs	resizes
+# Wall clock and RSS: recorded 15 Oct 2026, `bash benchmarks/profile.sh
+# --reps 5`, clang 22.1.8, i7-8665U at full clock (~1.9-4.8GHz). These two
+# columns are only meaningful at that clock state: the same suite measured on
+# the throttled 900MHz state runs ~4x slower *including the C reference*, so
+# a throttled run must re-record, not fail, the wall-clock column.
+# Allocations and resizes: deterministic runtime counters, identical on every
+# machine, which is why the CI tier gates only those. `procs` is the system
+# layer (200 os.exec spawns with capture, 12 allocations per spawn).
+startup	1	2184	1	0
+intloop	6	2092	1	0
+fib	1	2308	1	0
+strconcat	2	2852	4	0
+listappend	3	6044	3	17
+mapops	70	32740	400005	0
+json	1	2320	90	0
+chatbot	1	2412	12	0
+procs	120	2488	2405	0

@@ -1,0 +1,63 @@
+// Test program -- the AI boundary against a misbehaving provider.
+//
+// One job: make the published package's contract observable. ai_request()
+// promises never to throw and to return {"ok", "text", "status", "error",
+// "elapsed_ms"}, so a caller can branch on the reason instead of wrapping
+// the module in try/catch. This prints one machine-readable line per mode so
+// the suite can assert on all of it, on both backends.
+//
+// Modes:
+//   probe <model> <timeout>   one request; prints RESULT ok status text/error
+//   url                      ai_normalize_url's mapping, one line each
+//   trim                     ai_trim's history cut, one line each
+
+import "ai"
+
+mode = env_or("AI_MODE", "probe")
+
+if mode == "url" {
+    // A bare host is a complete configuration, and a URL that already
+    // carries a path is left exactly as given.
+    print("URL " + ai_normalize_url("http://127.0.0.1:11434"))
+    print("URL " + ai_normalize_url("http://127.0.0.1:11434/"))
+    print("URL " + ai_normalize_url("http://127.0.0.1:8080/v1/chat/completions"))
+    print("URL " + ai_normalize_url("http://127.0.0.1:8080/"))
+    print("URL " + ai_normalize_url("localhost:11434"))
+} else if mode == "trim" {
+    m = ai_conversation("be brief")
+    ai_ask(m, "one")
+    ai_told(m, "two")
+    ai_ask(m, "three")
+    ai_told(m, "four")
+    ai_ask(m, "five")
+    // Keep 3: the system message stays first, the oldest turns drop.
+    t = ai_trim(m, 3)
+    roles = ""
+    for msg in t {
+        roles = roles + msg["role"][0:1] + ","
+    }
+    print("TRIM len=" + str(len(t)) + " roles=" + roles)
+    // A list already within budget is returned unchanged, not copied short.
+    print("TRIM short=" + str(len(ai_trim(m, 99))))
+} else {
+    model = env_or("AI_MODEL", "ok")
+    timeout_s = 5.0
+    if env_or("AI_TIMEOUT", "") != "" {
+        timeout_s = float(env_or("AI_TIMEOUT", "5"))
+    }
+    url = env_or("AI_URL", "http://127.0.0.1:1/v1/chat/completions")
+    key = env_or("AI_KEY", "")
+    messages = ai_conversation("be brief")
+    ai_ask(messages, "ping")
+    result = ai_request(url, key, model, messages, timeout_s)
+    err = result["error"]
+    if err != null and len(err) > 120 {
+        err = err.slice(0, 120) + "..."
+    }
+    text = result["text"]
+    if text != null and len(text) > 80 {
+        text = text.slice(0, 80) + "..."
+    }
+    print("RESULT " + str(result["ok"]) + " " + str(result["status"]) +
+          " [" + err + "] [" + text + "]")
+}

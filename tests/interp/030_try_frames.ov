@@ -1,0 +1,64 @@
+// The panic path is a stack of try frames, not one shared buffer.
+//
+// The single-buffer version could not survive nesting: a `try` inside a
+// function overwrote the caller's saved unwind context, so when that function
+// returned, a later panic or exit() unwound into a frame that no longer
+// existed. That was a stack smash at an unrelated canary, or an exit()
+// reporting "ovyth: null" and exiting 70 instead of the code asked for.
+//
+// Both shapes that exposed it are here: a return out of a try inside a loop
+// followed by exit(), and a nested try whose inner frame must not disturb the
+// outer one.
+
+// A return out of a try, from inside a loop, then an exit.
+function pick(items) {
+  i = 0
+  while i < len(items) {
+    try {
+      if items[i] > 2 { return items[i] }
+      print("skipping", items[i])
+    } catch e {
+      print("caught", str(e))
+    }
+    i = i + 1
+  }
+  return -1
+}
+print("picked", pick([1, 2, 3, 4]))
+
+// A nested try: the inner frame catches, rethrows, and the outer catches --
+// which only works if the inner push did not overwrite the outer context.
+function nested() {
+  try {
+    try {
+      throw "inner"
+    } catch e {
+      print("inner caught", e)
+      throw "rethrown"
+    }
+  } catch e2 {
+    print("outer caught", e2)
+  }
+}
+nested()
+
+// The same, through a call: the callee's try must not outlive its frame.
+function inner_throw() {
+  try {
+    throw "from callee"
+  } catch e {
+    print("callee caught", e)
+  }
+  return "callee done"
+}
+print(inner_throw())
+
+// And a panic that escapes everything still reports once, cleanly.
+print("before the throw")
+try {
+  throw "escapes"
+} catch e {
+  print("escapes caught", e)
+}
+print("done")
+exit(0)

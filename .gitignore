@@ -35,6 +35,23 @@ editors/vscode/dist/
 editors/vscode/bin/
 editors/vscode/*.vsix
 
+# ---- local AI-assistant guidance ---------------------------------------------
+# AGENTS.md is the working set of rules for the AI coding assistant on this
+# machine. It is deliberately not tracked: CONTRIBUTING.md is the repository's
+# contributor guidance, and keeping the two separate means a local experiment
+# in agent instructions can never land as project policy by accident.
+AGENTS.md
+
+# WORKLOG.md is the running session log for the same reason: a working note
+# for whoever is in the tree today, not project history. CHANGELOG.md is the
+# tracked record of what shipped.
+WORKLOG.md
+
+# LOW-LEVEL-AUDIT.md is a working analysis document for the same reason. If
+# the audit's conclusions are accepted, the decisions that survive belong in
+# CHANGELOG.md and the new APIs in docs/USAGE.md -- both tracked.
+LOW-LEVEL-AUDIT.md
+
 # ---- scratch --------------------------------------------------------------
 *.tmp
 # compiled test binaries (an `ovc x.ov` with no -o writes ./x)

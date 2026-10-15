@@ -1,0 +1,10 @@
+picked skipping 1
+skipping 2
+3
+inner caught inner
+outer caught rethrown
+callee caught from callee
+callee done
+before the throw
+escapes caught escapes
+done

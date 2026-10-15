@@ -1,0 +1,96 @@
+// tests/interp/026_gc_parse.ov
+//
+// json.parse under a running collector, on both backends.
+//
+// A parse allocates thousands of short-lived strings, and a collector on a
+// heap that is already large will fire several times while the document is
+// being built. What this pins down is that those collections stay honest: the
+// entry point brackets the parse with the mutation guard, so no collection
+// runs while a container is mid-build, and the mark/sweep accounting is still
+// exact afterwards -- the next parse is not working from a corrupted graph.
+//
+// Written while chasing a segfault in the collector's mark phase, which turned
+// out to be the http builtin building its response map the same unprotected
+// way (see the net regression). This stayed on because the arithmetic below is
+// not obvious and the failure mode it guards is silent: a free in the wrong
+// window shows up as a wrong answer two collections later, not as an error at
+// the parse.
+//
+// The conditions matter more than the size, because the bug only fires when a
+// collection lands inside a parse:
+//
+//   * enough live data that the threshold (2 x live + 8MB) is close, so the
+//     remaining headroom is a few megabytes;
+//   * a single parse that allocates more than that headroom, which the
+//     parser's own short-lived strings do generously: it appends one character
+//     at a time, so a 40-character string costs about 40 growth allocations.
+//
+// A parse that survives all of that with the wrong answer, or dies, fails the
+// golden comparison. The cache-shaped document is the one the agent reloads:
+// a list of entries, each a map with a string key, an int timestamp and a list
+// of hit maps -- array, object and string accumulators in one pass.
+
+// A modest live set: big enough to pin the threshold within reach, small
+// enough that headroom is only a few megabytes. Held in a global so the
+// collector always sees it.
+ballast = []
+i = 0
+while i < 200 {
+    filler = []
+    j = 0
+    while j < 200 {
+        filler.push("filler-string-" + str(i) + "-" + str(j))
+        j = j + 1
+    }
+    ballast.push(filler)
+    i = i + 1
+}
+print("ballast entries: " + str(len(ballast)))
+
+// One cache entry, as the agent writes it, repeated into a document big enough
+// that parsing it allocates far past the headroom. Built with join rather than
+// repeated concatenation: building 900KB by appending is quadratic, and the
+// test would spend its time making the document instead of parsing it.
+entry = "{\"q\":\"ovyth language\",\"t\":1791983676,\"hits\":[{\"title\":\"Ovyth\",\"url\":\"https://ovyth.dev\",\"snippet\":\"a tiny compiled language with no vm overhead\"},{\"title\":\"Agent\",\"url\":\"https://ovyth.dev/docs\",\"snippet\":\"tools, memory and a guard\"}]}"
+doc = ""
+i = 0
+pieces = []
+while i < 3000 {
+    pieces.push(entry)
+    i = i + 1
+}
+doc = "[" + join(",", pieces) + "]"
+print("document bytes: " + str(len(doc)))
+
+// Parsed repeatedly: the corruption is a matter of where the collection lands,
+// and a single lucky pass proves nothing. The last document is read after the
+// loop, so what is asserted on is a value that had to survive every parse.
+k = 0
+last_q = ""
+last_hits = 0
+parsed = null
+while k < 5 {
+    parsed = json.parse(doc)
+    last_q = parsed[0]["q"]
+    last_hits = len(parsed[299]["hits"])
+    k = k + 1
+}
+print("parses: " + str(k))
+print("first entry key: " + last_q)
+print("last entry hits: " + str(last_hits))
+print("first hit title: " + parsed[299]["hits"][0]["title"])
+print("first hit url: " + parsed[299]["hits"][1]["url"])
+print("hit snippet: " + parsed[0]["hits"][1]["snippet"])
+
+// Escapes go through the same accumulator: bytes after the corruption are not
+// there to read.
+esc = json.parse("\"a\\\\nb\\tc\\\"d\\u00e9\"")
+print("escapes: [" + esc + "]")
+print("escape length: " + str(len(esc)))
+
+// A round trip through the value the cache really stores.
+store = json.parse(doc)
+again = json.parse(json.stringify(store))
+print("round trip entries: " + str(len(again)))
+print("round trip last hits: " + str(len(again[299]["hits"])))
+print("round trip title: " + again[299]["hits"][0]["title"])

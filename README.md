@@ -9,26 +9,26 @@ print("hello from", name)
 
 ## Is it fast?
 
-Measured, not guessed: **Ovyth beats Python by 2.5x–310x on loops, recursion and list building, beats CPython on five of the seven AI-pipeline cases (up to 15.5x), stays within 1.5x–1.7x of Python even where it loses, and runs within 1.5x of `-O3 -march=native` C on a tight integer loop.** Where it is slow, it is slow honestly — up to 185x behind C when every operation allocates. Startup is ~6ms and a hello-world binary is ~19 KB.
+Measured, not guessed: **Ovyth beats Python by 2.5x–310x on loops, recursion and list building, beats CPython on five of the seven AI-pipeline cases (up to 19x), stays within 1.5x–2.9x of Python even where it loses, and runs within 1.5x of `-O3 -march=native` C on a tight integer loop.** Where it is slow, it is slow honestly — the worst core-suite gap is list building at ~50x behind C, and even that is down from 185x once `xs.push(int)` learned to use specialized int arrays. Startup is ~1ms and a hello-world binary is ~22 KB.
 
 | Workload | vs Python | vs C | Notes |
 |---|---|---|---|
 | integer loop, 20M iterations | **310x faster** | 1.5x slower | proven `int` locals emit as raw `int64_t` |
-| function calls (`fib(25)`) | **5.1x faster** | 16.7x slower | recursion |
-| list building (500k `push`) | **2.5x faster** | 173x slower | GC per push — the boxing tax |
-| hash maps (100k insert + read) | 1.2x slower | 2.8x slower | within noise of CPython |
-| string building (40k appends) | 1.5x slower | 21x slower | the last case Python wins |
-| JSON field extraction (50k) | **1.5x faster** | 2.6x slower | path-based, no AST parse |
-| repeated JSON access (500k) | **1.9x faster** | C's row is a cached loop | different algorithms — see PERFORMANCE §7 |
-| context assembly (100k joins) | 2.9x slower | 9.8x slower | O(n) string builder |
-| string scan (1M scans) | **1.8x faster** | sub-ms in C | |
-| multi-parse (20k tool JSONs) | **15.5x faster** | 2.8x slower | `strtoll` fast accessors |
-| startup of a compiled binary | ~6 ms | — | no VM to boot |
-| binary size (`print("hi")`) | 19 KB | — | dead-code-stripped runtime |
+| function calls (`fib(25)`) | **13x faster** | 8x — the ~1ms process floor | the recursion itself is at parity with C (BASELINE §5) |
+| list building (500k `push`) | **2.5x faster** | ~50x slower | P1 int arrays: a raw int64 store per push, not a box; resizes + GC remain |
+| hash maps (100k insert + read) | 1.2x slower | 3.1x slower | within noise of CPython |
+| string building (40k appends) | **1.5x faster** | 12x slower | the case Python used to win |
+| JSON field extraction (50k) | **1.9x faster** | 2.9x slower | path-based, no AST parse |
+| repeated JSON access (500k) | **2.0x faster** | 242x slower* | *C's row is a cached loop — different algorithms — see PERFORMANCE §7 |
+| context assembly (100k joins) | 2.9x slower | 9.5x slower | O(n) string builder |
+| string scan (1M scans) | **2.2x faster** | sub-ms in C | |
+| multi-parse (20k tool JSONs) | **19.3x faster** | 2.1x slower | `strtoll` fast accessors |
+| startup of a compiled binary | ~1 ms | — | no VM to boot |
+| binary size (`print("hi")`) | 22 KB | — | dead-code-stripped runtime |
 
-Numbers: `bash benchmarks/compare.sh` + `bash benchmarks/compare_ai.sh --release`, fresh runs. Desktop variance is ±20–40% run to run, so treat the ratios as orders of magnitude. Every row is checked — the driver refuses to print a timing unless Ovyth's answer equals C's and Python's. Full tables, the caveats, and the story of the benchmark the optimiser deleted are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+Numbers: `bash benchmarks/compare.sh` + `bash benchmarks/compare_ai.sh --release`, re-measured 15 Oct 2026 on this machine (they supersede the 8 Oct snapshot in `benchmarks/RESULTS.md`, which predates specialized int arrays). Desktop variance is ±20–40% run to run, so treat the ratios as orders of magnitude. Every row is checked — the driver refuses to print a timing unless Ovyth's answer equals C's and Python's. Full tables, the caveats, and the story of the benchmark the optimiser deleted are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
-The C gap has one dominant cause left: values that flow through lists, maps and function parameters are still boxed 16-byte tagged structs instead of register-resident ints. Loop locals that the compiler can prove are already unboxed — which is what put `intloop` within 1.5x of clang. Closing the rest is tracked in [docs/PERFORMANCE-SPEC.md](docs/PERFORMANCE-SPEC.md).
+The C gap has one dominant cause left: values that flow through generic lists, maps and function parameters are still boxed 16-byte tagged structs instead of register-resident ints. Loop locals that the compiler can prove are already unboxed — which is what put `intloop` within 1.5x of clang — and a `xs.push(int)` list that sema can prove is now a raw `int64_t` array, not a box per element. Closing the rest is tracked in [docs/PERFORMANCE-SPEC.md](docs/PERFORMANCE-SPEC.md).
 
 ## Setup
 
@@ -191,6 +191,7 @@ AI_API_URL=http://localhost:8765/v1/chat/completions AI_API_KEY=dummy \
 | [docs/PERFORMANCE-SPEC.md](docs/PERFORMANCE-SPEC.md) | the performance engineering specification |
 | [benchmarks/RESULTS.md](benchmarks/RESULTS.md) | raw benchmark output and what each optimization bought |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | build, test, style, and the two-backend rule |
+| [AGENTS.md](AGENTS.md) | the engineering rules every contributor and AI coding assistant follows |
 | [CHANGELOG.md](CHANGELOG.md) | what changed in each release |
 
 ## Run everything
@@ -200,9 +201,16 @@ make test                              # unit + both-backend regression
 bash tests/interp.sh                   # language tests only
 bash tests/pkg.sh                      # package manager only
 bash tests/ui.sh                       # installer + output rules
+bash tests/net.sh                      # TCP client/server + http.timeout
+bash tests/ai.sh                       # the AI boundary against a failing provider
+bash tests/system.sh                   # os.exec: deadlines, signals, env, stdin, caps
+bash tests/automation.sh               # the automation example, failures included
+bash tests/rag.sh                      # indexed retrieval == a full scan
 make examples                          # run every offline example
 make chatbot                           # chatbot vs. the bundled mock server
 make chatbot-rag                       # RAG chatbot with persistent memory
+make automation                        # the end-to-end automation example
+make gate                              # performance regression gate (pinned machine)
 bash benchmarks/run.sh                 # benchmark suite
 bash benchmarks/compare.sh             # Ovyth vs C vs Python
 bash benchmarks/compare_ai.sh --release # AI pipeline vs C vs Python

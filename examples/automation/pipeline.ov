@@ -1,0 +1,159 @@
+// Ovyth :: examples/automation/pipeline.ov
+//
+// The flow the PRD names, end to end and offline: fetch JSON from an API,
+// validate it, filter the records, transform them, write the results, retry
+// the transient failures, and report structured errors.
+//
+//   python3 examples/automation/records_api.py 8791 &
+//   ./build/ovc examples/automation/pipeline.ov --release
+//   ./pipeline            # or: ./build/ovc run examples/automation/pipeline.ov
+//
+// Every step prints one line with its outcome, so a failure is visible where
+// it happened rather than as an empty output file. Exit codes are part of the
+// contract: 0 on success, 70 on a defined failure (a problem this program can
+// name), 1 on a usage problem.
+
+// ------------------------------------------------------------------ config
+// Everything the run depends on, in one place. The URL is the one knob; the
+// rest are the pipeline's own policy.
+// The full URL to fetch. Point it at /flaky or /down on the example's API to
+// watch the retry and the defined-failure paths.
+records_url = env_or("RECORDS_URL", "http://127.0.0.1:8791/records")
+out_path = env_or("RECORDS_OUT", "/tmp/ovyth_automation_report.txt")
+// The retry policy. Bounded by construction, and it travels as arguments
+// because a top-level let is an ov_main local: a function reading one
+// compiles on the interpreter and fails on the native backend, and an
+// example must not depend on that difference.
+max_attempts = 4        // the retry ceiling
+attempt_backoff_ms = 50  // short, because this is a demo and a CI run
+
+// ---------------------------------------------------------------- helpers
+// Report one step's outcome. `ok`/`kind` first, because that is what a
+// caller (or a log reader) branches on; the message carries the reason.
+function report(step, ok, kind, detail) {
+  print(step, ok, kind, detail)
+}
+
+// A sleep-and-retry around a fetch. Returns the response map from http.get,
+// or null when the ceiling is reached.
+//
+// Bounded rather than unbounded: ceiling is the ceiling, and every wait
+// between attempts is a real sleep rather than a spin. A permanent failure
+// (503, 404) is retried too -- the point of a ceiling is that a permanent
+// failure costs the ceiling, not the afternoon.
+function fetch_records(url, ceiling, backoff_ms) {
+  attempt = 1
+  while attempt <= ceiling {
+    try {
+      r = http.get(url, timeout=5000)
+      if r["ok"] { return r }
+      print("fetch attempt", attempt, "http", r["status"])
+    } catch e {
+      print("fetch attempt", attempt, "error", str(e))
+    }
+    if attempt < ceiling { sleep(backoff_ms * attempt) }
+    attempt = attempt + 1
+  }
+  return null
+}
+
+// Validate one record against the schema this pipeline needs.
+// Returns "" when the record is good, or the reason it is not.
+//
+// Validated before anything indexes a field: a record missing "cpu" is a
+// gateway being honest about a gap, not a reason to raise a type error three
+// steps later with no idea which record caused it.
+function validate(rec) {
+  if rec["id"] == null { return "missing id" }
+  if type(rec["id"]) != "Int" { return "id is not an Int" }
+  if rec["name"] == null { return "missing name" }
+  if type(rec["name"]) != "String" { return "name is not a String" }
+  if rec["status"] == null { return "missing status" }
+  if rec["status"] != "healthy" and rec["status"] != "degraded" and rec["status"] != "down" {
+    return "status is not one of healthy/degraded/down"
+  }
+  if rec["cpu"] == null { return "missing cpu" }
+  if type(rec["cpu"]) != "Int" and type(rec["cpu"]) != "Float" { return "cpu is not a number" }
+  if rec["region"] == null { return "missing region" }
+  if type(rec["region"]) != "String" { return "region is not a String" }
+  return ""
+}
+
+// ------------------------------------------------------------------ the flow
+print("step 1: fetch")
+
+resp = fetch_records(records_url, max_attempts, attempt_backoff_ms)
+if resp == null {
+  report("fetch", false, "unreachable", "the records service did not answer within " + str(max_attempts) + " attempts")
+  exit(70)
+}
+
+// A 200 is not a success: the body is parsed and its shape checked before
+// anything is indexed, so a gateway answering 200 with a login page is a named
+// failure rather than an index error three steps later.
+parsed = null
+try {
+  parsed = json.parse(resp["body"])
+} catch e {
+  report("fetch", false, "unparseable", "the endpoint answered 200 with a body that is not JSON")
+  exit(70)
+}
+if parsed["records"] == null {
+  report("fetch", false, "malformed", "the endpoint answered 200 with no records key")
+  exit(70)
+}
+report("fetch", true, "ok", str(len(parsed["records"])) + " records")
+
+// Validate, then filter. The rejects are kept and reported rather than
+// dropped silently -- a pipeline that discards a third of its input without
+// saying so is the failure mode this step exists to prevent.
+print("step 2: validate and filter")
+good = []
+rejected = 0
+for rec in parsed["records"] {
+  why = validate(rec)
+  if why == "" {
+    // The filter: only what needs attention. Healthy services are not news.
+    if rec["status"] != "healthy" { good.push(rec) }
+  } else {
+    rejected = rejected + 1
+    print("  rejected", rec["id"], why)
+  }
+}
+report("filter", true, "ok", str(len(good)) + " need attention, " + str(rejected) + " rejected")
+
+// Transform, and write through a file descriptor rather than a whole-file
+// buffer: the output is built a line at a time, the same shape a log or a
+// report has.
+print("step 3: transform and write")
+fd = file.open(out_path, "w")
+lines = ""
+for rec in good {
+  // The transform: a compact, human-readable line per record.
+  cpu = rec["cpu"]
+  lines = lines + str(rec["id"]) + " " + rec["name"] + " " + rec["status"] +
+          " cpu=" + str(cpu) + " region=" + rec["region"] + "\n"
+}
+n = os.write(fd, lines)
+os.close(fd)
+report("write", true, "ok", str(n) + " bytes to " + out_path)
+
+// A subprocess step, the way a real pipeline finishes: hand the result to
+// another program and check what it says. os.exec, not a shell string -- the
+// path came from a config value, so it is an argument, not a command line.
+print("step 4: verify with a subprocess")
+check = os.exec(["wc", "-l", out_path], timeout=5000)
+if check["status"] != "ok" {
+  report("verify", false, check["status"], check["stderr"].trim())
+  exit(70)
+}
+// `wc -l file` reports "3 /path" -- the count is the first field.
+wc = check["stdout"].trim().split(" ")
+line_count = int(wc[0])
+report("verify", true, "ok", "the output file has " + str(line_count) + " lines")
+
+// ---------------------------------------------------------------- summary
+st = os.stat(out_path)
+print("summary ok records=" + str(len(good)) + " rejected=" + str(rejected) +
+      " bytes=" + str(st["size"]) + " lines=" + str(line_count))
+exit(0)

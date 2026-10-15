@@ -1,0 +1,13 @@
+ballast entries: 200
+document bytes: 705001
+parses: 5
+first entry key: ovyth language
+last entry hits: 2
+first hit title: Ovyth
+first hit url: https://ovyth.dev/docs
+hit snippet: tools, memory and a guard
+escapes: [a\nb	c"dé]
+escape length: 10
+round trip entries: 3000
+round trip last hits: 2
+round trip title: Ovyth

@@ -313,7 +313,27 @@ function call_llm(cfg, messages) {
         return "[HTTP " + status + " from " + cfg["api_url"] + "] " + detail + hint
     }
     parsed = json.parse(response["body"])
-    return parsed["choices"][0]["message"]["content"]
+    // A 200 is not a success. Validating the shape here, before anything is
+    // indexed, is what turns a gateway's surprising reply into a message a
+    // user can act on; an index into an empty choices list would otherwise
+    // surface as "list index 0 out of range", which reads like this
+    // program's own list is wrong.
+    choices = parsed["choices"]
+    if choices == null {
+        return "[no choices in " + cfg["api_url"] + " response] " + str(parsed)
+    }
+    if len(choices) == 0 {
+        return "[empty choices from " + cfg["api_url"] + "]"
+    }
+    message = choices[0]["message"]
+    if message == null {
+        return "[no message in the first choice from " + cfg["api_url"] + "]"
+    }
+    content = message["content"]
+    if content == null {
+        return "[the endpoint replied with no message content]"
+    }
+    return content
 }
 
 // ------------------------------------------------------- prompt construction

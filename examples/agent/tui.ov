@@ -23,6 +23,7 @@
 
 import "ai"
 import "rag"
+import "websearch"
 
 // ------------------------------------------------------------------- style
 
@@ -333,13 +334,16 @@ if pretty {
 emit("model:  " + model[0] + "  at  " + url[0])
 emit("guard:  " + (guard_on[0] ? "on" : "off") + "  (refuses the unrebuildable)")
 emit("memory: " + str(len(mem[0])) + " chunk(s) in " + memory_path)
+wcfg = ws_config()
+wcache = [ws_cache_load(wcfg["cache_path"])]
+emit("websearch: " + str(len(wcache[0])) + " cached quer(y/ies) in " + wcfg["cache_path"])
 emit("type :help for commands, :quit to leave")
 emit("")
 
 // -------------------------------------------------------------- the prompt
 
-// What the model is told about itself and its tools. Four JSON commands, one
-// per turn, and the loop below is the interpreter of that protocol.
+// What the model is told about itself and its tools. Several JSON commands,
+// one per turn, and the loop below is the interpreter of that protocol.
 // The system prompt is what makes this an agent rather than a chatbot, and the
 // load-bearing sentences are the first two. A model's strong prior is that it is
 // an assistant with no environment -- asked to "reinstall the compiler" it will
@@ -356,12 +360,14 @@ emit("")
 // like it is doing something it should not. Plain wins on evidence.
 system = "You are Ovyth. You are a real process running on a Linux machine and " +
     "you have a terminal right now. Every command you send is executed for real " +
-    "and its output comes back to you. You have five tools, and you keep\n" +
+    "and its output comes back to you. You have six tools, and you keep\n" +
     "memory across sessions, so a fact you are told once is still yours later.\n" +
     "Each turn, reply with exactly one JSON object and nothing else:\n" +
     "  {\"cmd\": \"sh -c ...\"}          run one shell command, in quotes\n" +
     "  {\"read\": \"a/path.txt\"}        read a file\n" +
     "  {\"write\": \"a/path.txt\", \"text\": \"the content\"}   write a file\n" +
+    "  {\"search\": \"a web query\"}     search the web, Google if keyed\n" +
+    "  {\"fetch\": \"https://...\"}     read a page from the web\n" +
     "  {\"remember\": \"the fact\"}      save a durable fact to memory\n" +
     "  {\"say\": \"the answer\"}         answer the user in words\n" +
     "Prefer fewer commands. Read before you write. If a command fails, read the\n" +
@@ -373,6 +379,8 @@ system = "You are Ovyth. You are a real process running on a Linux machine and "
     "Never invent output you did not observe.\n" +
     "Never answer from memory about this machine, its files, or anything\n" +
     "installed on it -- run a command and report what it said.\n" +
+    "You have no knowledge of today's news, prices, versions, or running\n" +
+    "services: when a question needs anything that changes, use search.\n" +
     "You are talking to a person, so answers should be short and concrete."
 
 history = ai_conversation(system)
@@ -702,6 +710,32 @@ function run_tool(call) {
         mark("✦", "remembered")
         return "remembered: " + what.slice(0, 100)
     }
+    if call["search"] != null {
+        q = call["search"]
+        mark("◆", "search: " + q)
+        out = ws_search(wcfg, wcache[0], q)
+        if out["cache"] != null { wcache[0] = out["cache"] }
+        if !out["ok"] {
+            return "search found nothing: " + out["error"] + "\nIf these do not answer it, say so."
+        }
+        via = "cached"
+        if !out["cached"] {
+            src = join(", ", out["sources"])
+            if src == "" { src = "web" }
+            via = src + " in " + str(round(out["ms"])) + "ms"
+        }
+        return "web results (" + via + "):\n" + ws_format(out, 2400) +
+               "\nCite the url when you use them. If these do not answer it, say so."
+    }
+    if call["fetch"] != null {
+        u = call["fetch"]
+        mark("◆", "fetch: " + u)
+        page = ws_fetch(wcfg, u, 3000)
+        if !page["ok"] {
+            return "could not read " + u + ": " + page["error"]
+        }
+        return "page " + u + " (" + str(len(page["text"])) + " chars, " + str(round(page["ms"])) + "ms):\n" + page["text"]
+    }
     return null   // not a tool call
 }
 
@@ -716,6 +750,7 @@ function commands(text) {
         emit("  :reset         forget the conversation")
         emit("  :memory        what the agent remembers")
         emit("  :forget        erase the memory store")
+        emit("  :search <q>    search the web")
         emit("  :quit          leave")
         return true
     }
@@ -724,6 +759,9 @@ function commands(text) {
         emit("    {\"cmd\": \"...\"}                  run a shell command")
         emit("    {\"read\": \"path\"}               read a file")
         emit("    {\"write\": \"path\", \"text\": \"…\"} write a file")
+        emit("    {\"search\": \"a web query\"}     search the web")
+        emit("    {\"fetch\": \"https://...\"}     fetch a web page")
+        emit("    {\"remember\": \"the fact\"}      save a durable fact to memory")
         emit("    {\"say\": \"text\"}                answer you")
         return true
     }
@@ -759,6 +797,26 @@ function commands(text) {
         mem[0] = []
         erased = rag_save(mem[0], memory_path)
         if erased { emit("  memory erased") } else { emit("  could not write " + memory_path) }
+        return true
+    }
+    if text == ":search" or text.startswith(":search ") {
+        q = ""
+        if text.startswith(":search ") { q = text.slice(8, len(text)).trim() }
+        if q == "" { emit("  :search <query>   search the web"); return true }
+        out = ws_search(wcfg, wcache[0], q)
+        if out["cache"] != null { wcache[0] = out["cache"] }
+        if !out["ok"] {
+            mark("✕", out["error"])
+            return true
+        }
+        via = "cached"
+        if !out["cached"] {
+            src = join(", ", out["sources"])
+            if src == "" { src = "web" }
+            via = src + " in " + str(round(out["ms"])) + "ms"
+        }
+        mark("◆", "search: " + q + "  (" + via + ")")
+        emit(ws_format(out, 2400))
         return true
     }
     // The setters. They live here, in a function, because the four settings

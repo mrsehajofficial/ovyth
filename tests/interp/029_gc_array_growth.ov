@@ -1,0 +1,40 @@
+// Growth of the specialized arrays must not corrupt the collector's heap
+// accounting.
+//
+// Each of the three array kinds keeps its data in a separate realloc'd block,
+// and the collector subtracts the *current* size when it frees one. If the
+// growth is not recorded, every growth drifts heap_bytes downward until it
+// wraps negative -- and then every allocation trips the collection threshold.
+// The visible result is a collector running a few times per push: a 27x-170x
+// slowdown on any append-heavy loop, measured as a rag retrieval run at 253
+// seconds instead of 0.6.
+//
+// The cycle count is the tripwire, asserted here rather than in a golden file:
+// the two backends allocate different totals, so the count differs between
+// them, but a broken accounting makes it explode by four orders of magnitude
+// on either one. The threshold is 1000; a healthy run is in single digits.
+i = 0
+xs = []
+ys = []
+zs = []
+while i < 200000 {
+  xs.push(i)
+  ys.push(i * 1.5)
+  zs.push("row " + str(i))
+  i = i + 1
+}
+print("lens", len(xs), len(ys), len(zs))
+print("sum", sum(xs) % 1000000)
+
+stats = gc("stats")
+cycles = 0
+for field in stats.split(" ") {
+  if field.startswith("cycles=") {
+    // slice(a, b) is inclusive of b and clamps past the end
+    cycles = int(field.slice(7, len(field)))
+  }
+}
+// The count itself differs between backends (they allocate different totals),
+// so the golden file carries the assertion rather than the number. A broken
+// accounting puts it in the tens of thousands.
+print("accounting", cycles < 1000)

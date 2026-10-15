@@ -1,0 +1,15 @@
+// Spawn-and-capture throughput: what an automation script pays per external
+// step.
+//
+// 200 spawns with output captured and a deadline in place, which is the
+// shape every os.exec call in a real script takes. os.run goes through a
+// shell; os.exec does not, and this is the measurement that keeps the
+// difference honest.
+i = 0
+total = 0
+while i < 200 {
+  r = os.exec(["printf", "x"], timeout = 5000)
+  total = total + len(r["stdout"]) + r["code"]
+  i = i + 1
+}
+print(total)

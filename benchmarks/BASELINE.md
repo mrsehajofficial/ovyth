@@ -32,15 +32,18 @@ refuses to print a timing at all unless Ovyth's answer equals C's.
 ```
 case           median     best    rss KB   allocs     gc resize    binary
 --------------------------------------------------------------------------------------------
-startup            1ms       1ms      2208        1      2      0     22912
-intloop            6ms       5ms      2264        1      2      0     22912
-fib                2ms       1ms      2084        1      2      0     22912
-strconcat          2ms       2ms      2968        4      2      0     27016
-listappend         3ms       3ms      6040        3      2     17     31128
-mapops            65ms      63ms     32868  400005      4      0     35232
-json               1ms       1ms      2212       90      2      0     43440
-chatbot            1ms       1ms      2436       12      2      0     31128
+startup            1ms       1ms      2192        1      2      0     22944
+intloop            6ms       6ms      2084        1      2      0     22944
+fib                1ms       1ms      2308        1      2      0     22944
+strconcat          2ms       2ms      2952        4      2      0     31144
+listappend         3ms       3ms      5932        3      2     17     31160
+mapops            70ms      70ms     32836   400005      4      0     35264
+json               1ms       1ms      2312       90      2      0     43472
+chatbot            1ms       1ms      2212       12      2      0     31152
 ```
+Re-measured 15 Oct 2026 after the root-pair change (section 5). Every
+number before that date is in `benchmarks/RESULTS.md`; `fib` is the one
+that moved, 2ms -> 1ms, because the per-call root bookkeeping is gone.
 
 Process floor: an empty program is **1ms** and one allocation.
 
@@ -48,11 +51,16 @@ Process floor: an empty program is **1ms** and one allocation.
 
 | case | Ovyth | C -O3 | ratio |
 |---|---|---|---|
-| intloop | 5ms | 3.46ms | **1.4x** |
-| mapops | 65ms | 22.02ms | **3.0x** |
-| fib | 1ms | 0.11ms | 9x |
-| strconcat | 2ms | 0.20ms | 10x |
-| listappend | 2ms | 0.05ms | 40x |
+| intloop | 6ms | 3.47ms | **1.7x** |
+| mapops | 70ms | 22.72ms | **3.1x** |
+| fib | 1ms | 0.12ms | 8x (startup floor; the call work is at parity — §5) |
+| strconcat | 2ms | 0.16ms | 12x |
+| listappend | 3ms | 0.06ms | 50x |
+
+Every case's whole-process number carries the ~1ms process floor, and the
+C/Python columns time the work internally. For sub-millisecond cases the
+ratio measures the floor, not the language — which is why the §5
+experiment ran fib(35) by hand instead of trusting this table.
 
 ## 2b. The finding that changed everything
 
@@ -180,29 +188,69 @@ Flow-insensitivity was the load-bearing part: a `i = 2.5` *after* a `push(i)`
 in source but *before* it on a loop's back edge must still retire the
 collection, so a pre-pass scans the whole body before checking it.
 
-## 5. Where the next change should go
+## 5. What the measurements changed on 15 Oct 2026
 
-By the measurements, in order:
+### The finding that mattered: the root bookkeeping, not the boxing
 
-1. **P1, function boundaries (not done).** An int local is unboxed inside one
-   function, but crossing a call boxes again. `fib` at 18x of C is where that
-   shows up — ~4ns per call is already good, but the argument and return are
-   boxed on every hop.
-2. **String-heavy loops (P3).** Only once a benchmark whose bottleneck is
-   *confirmed* to be the runtime rather than the algorithm exists.
-3. **The `sum()` walk.** It costs 13ms over 500k elements even with the array
-   in hand, because it boxes each element to test its type.
-2. **GC scan cost for large collections (P2).** Three collections over a
-   growing 8MB set is O(live) per cycle. Measured next, only if (1) does not
-   already remove most of it — a specialized int array has no pointers to
-   scan, so (1) may make this moot.
-3. **String-heavy loops (P3).** Only after a case whose bottleneck is
-   *confirmed* to be the runtime rather than the algorithm. Today's string
-   numbers are dominated by a benchmark that builds 200k throwaway keys.
+Section 4 above ranked "P1, function boundaries" as the next change,
+reasoning that a boxed 16-byte argument and return per call was `fib`'s
+9-16x gap to C. That was measured, and it was **wrong**. Boxing is free at
+-O3: `ov_int`/`ov_sub`/`ov_add` inline to a tag test or two, and raw
+`int64_t` boundaries moved `fib(32)` from 27ms to 25-28ms — inside noise.
+Three measurements, in order, on this machine, median of 9 whole-process
+runs:
 
-Not on the list yet: a new GC, a JIT, an LLVM backend, or assembly. `fib` at
-~4ns per call through a boxed dynamic call, and `intloop` at 1.6x of C, do
-not justify them.
+```
+hand-written C, fib(35)                                 31-33 ms
+C + ov_gc_roots_mark/restore per call                  107 ms
+Ovyth fib(35), before                                 103-113 ms
+Ovyth fib(35), raw boundaries + no root pair             31 ms
+```
+
+The gap was never the value representation. It was the pair of
+`ov_gc_roots_mark()` / `ov_gc_roots_restore()` calls every function
+emitted: two out-of-line calls into `libovrt.a` (the archive is built
+without LTO, so they cannot inline) plus a global load and store per
+invocation — about 2.5ns a call, 76ms of `fib(35)`'s 107ms.
+
+The fix is in the codegen: the pair exists to pop a frame's root
+registrations on return, so a function that registers nothing needs it
+never. Raw `int64_t` parameters are not heap references, and a function
+with no rooted local has nothing to pop. Such functions now emit neither
+the mark nor the restore. `fib` is at parity with the same function in C,
+and the rest of the suite is unchanged — every allocation count in the
+table above reproduces exactly.
+
+Two changes were measured and **rejected** on the way:
+
+* raw `int64_t` parameters and returns alone: no measurable effect
+  (27ms -> 25-28ms on `fib(32)`, inside noise), kept only because it is
+  what makes the root pair omissible and it fixes the loop-variable
+  collision below;
+* `-flto` on the runtime archive: 3-6ms on `fib(35)`, and it breaks every
+  non-release link ("plugin needed to handle lto object"), so no.
+
+### The hidden bug the work exposed
+
+`for n in [1, 2]` inside a function with a parameter named `n` assigned
+the raw loop element straight into the parameter's `OvValue` slot — a
+clang type error, so the program would not compile at all. The raw
+loop-variable path reused an outer slot instead of declaring a fresh
+local (the boxed path always declared one). Loop variables now always get
+their own C local, matching the interpreter's scoping. Regression:
+`tests/interp/028_fn_boundary.ov`.
+
+### What replaced the old "next change" list
+
+1. **The remaining `fib` overhead is the recursion itself** — 31ms against
+   31-33ms for C leaves nothing measurable to take.
+2. **`mapops`' 400k allocations** remain the benchmark's own string
+   building (`"key" + str(i)`), not the map — unchanged conclusion, now
+   with one more measurement behind it: hash-map inserts alone are 90ms
+   with 3 allocations.
+3. **Function-call-boundary boxing**: measured, not the bottleneck.
+   Anything that reopens it needs a benchmark whose result contradicts
+   the numbers above.
 
 ## 6. Reproducing a change
 

@@ -458,14 +458,139 @@ you> how many .ov files are in tests?
 Ovyth: There are 29 .ov files in tests.
 ```
 
-The model has four tools — a shell command, reading a file, writing a file, and
-saying something back — and takes as many as it needs before answering, so one
-line from you can be three commands on the machine. `:help` lists the slash
-commands; `:readonly on|off` toggles the guard, `:config model <name>` switches
-model without editing a file. The TUI ships as source next to the binary and
-runs through the interpreter, so there is exactly one implementation of the
-agent. Decoration is emitted only when `os.tty()`, so piping it into a file stays
-clean.
+The model has six tools — a shell command, reading a file, writing a file,
+**searching the web**, fetching a page, and saying something back — and takes
+as many as it needs before answering, so one line from you can be three
+commands on the machine. `:help` lists the slash commands; `:readonly on|off`
+toggles the guard, `:config model <name>` switches model without editing a
+file. The TUI ships as source next to the binary and runs through the
+interpreter, so there is exactly one implementation of the agent. Decoration
+is emitted only when `os.tty()`, so piping it into a file stays clean.
+
+#### Searching the web
+
+`{"search": "..."}` and `{"fetch": "https://..."}`, both from `websearch.ov`
+beside the agent. Set `GOOGLE_API_KEY` and `GOOGLE_CSE_ID` (a Programmable
+Search Engine set to search the whole web) and Google's own search leads the
+chain — the same index and ranking as the search page. Keyless, the chain is
+DuckDuckGo then the APIs that always answer from anywhere (Wikipedia, Hacker
+News, StackExchange, GitHub), each allowed to return nothing, so a general
+engine being challenged just falls through. Results are cached on disk for
+fifteen minutes, and `fetch` reads pages against a character budget.
+
+There is no keyless Google endpoint here, and that is measured rather than
+assumed: `www.google.com/search` answers 200 with ~93KB that contains no
+results at all — its own redirect target is `/httpservice/retry/enablejs`,
+"enable JavaScript to search". `?gbv=1`, `?client=chrome`, `/m?q=`, `?udm=14`,
+and the co.uk mirror all serve the same shell.
+
+`ovc agent` also has a `:search <query>` slash command, which runs the same
+tool directly — useful for checking what the model would see.
+
+#### Running programs: `os.run` and `os.exec`
+
+`os.run(cmd)` hands a string to `/bin/sh` and answers with
+`{cmd, code, ok, stdout, stderr}`. It is the right tool for a command a human
+typed. It is the wrong tool for a value that came from a file, a URL or a
+model: the string is re-parsed by another language, so `os.run("grep " + x)`
+with `x = "; rm -rf ~"` runs a second command.
+
+`os.exec(argv, ...)` is the primitive underneath it. An argv list is a list of
+bytes — there is nothing to inject into — and the child's world is the caller's
+choice:
+
+```ovyth
+r = os.exec(["grep", "-r", needle, "/srv/logs"],
+            timeout=5000,          // ms; 0 (or absent) means no deadline
+            cwd="/srv",            // where the child starts
+            env={"PATH": "/usr/bin"},  // exactly what it sees; absent = inherit
+            stdin="",              // "", "null": /dev/null — never the script's
+                                  // own input; "inherit"; or a string to feed
+            stdout="capture",      // "capture" (default), "inherit", or an fd
+            stderr="capture",
+            max_output=1048576)    // capture ceiling; 64MB default
+
+if r["status"] == "timeout" { ... }   // killed at the deadline
+```
+
+The result is `{ok, status, code, pid, stdout, stderr, elapsed_ms}`, where
+`status` is the *reason* — `"ok"`, `"failed"` (non-zero exit), `"signal"`,
+`"timeout"`, or `"truncated"` (output hit the ceiling) — so a caller branches
+on the cause instead of parsing a message. A signal death reports `128+signo`,
+the way a shell does.
+
+`timeout=` bounds the whole run: at the deadline the child's process group is
+killed (the child leads its own group, so the script itself can never be hit),
+the child is reaped, and `status` says `"timeout"`. `max_output` stops the
+buffer growing without limit, keeps draining so the child never blocks, and
+reports `"truncated"`.
+
+Both are the same runtime call on both backends, so a program's output is
+identical whether it runs interpreted or compiled.
+
+#### File descriptors, pipes and stat
+
+Everything the process layer needs above it is the same four primitives, and
+one fd surface for files, pipes and sockets alike:
+
+```ovyth
+p = os.pipe()                        // {"read": fd, "write": fd}
+
+fd = file.open(path, mode)           // mode: r (default), w, a, rw
+n  = os.read(fd, 4096)               // up to n bytes; "" at end of file
+n  = os.write(fd, "text")            // every byte, retrying short writes
+os.close(fd)
+pos = file.seek(fd, offset, whence)  // whence: "start" (default), "current", "end"
+
+st = os.stat(path)                   // {size, mode, mtime, is_dir, is_file, is_link}
+```
+
+That is what makes a pipeline without a shell — two children and a pipe the
+caller owns:
+
+```ovyth
+p = os.pipe()
+os.exec(["gzip", "-c", "/var/log/syslog"], stdout=p["write"])
+os.close(p["write"])                 // the caller's copy: this is the EOF
+gzipped = os.read(p["read"], 1048576)
+os.close(p["read"])
+```
+
+or with the tail as a child:
+
+```ovyth
+p = os.pipe()
+os.exec(["gzip", "-c", "/var/log/syslog"], stdout=p["write"])
+os.close(p["write"])
+tail = os.exec(["wc", "-c"], stdin=p["read"])
+os.close(p["read"])
+```
+
+Two rules the language cannot enforce for you, because they are the plumbing:
+
+* **close the caller's copy.** Until every write end is closed, the reader
+  sees no EOF — a pipe with a forgotten writer hangs, not errors.
+* **fill and close before the consumer starts.** Feeding a child while you
+  are blocked inside its `os.exec` call would wait forever, so give the exec
+  a `timeout=`: the misuse is then bounded and reported as
+  `status="timeout"` rather than hanging. (This is the shape an async API
+  would make natural; until one exists, the deadline is the safety net.)
+* `stdin=`, `stdout=` and `stderr=` all accept `"inherit"`, an fd, or a
+  string for `stdin=` to feed.
+
+Streaming also fixes a silent failure the whole-file read always had: procfs
+and `/sys` report no size, so `file.read("/proc/self/status")` returned `""`.
+An fd reads it fine, and `os.stat` answers for a path without opening it.
+
+#### Waiting: `sleep`
+
+```ovyth
+sleep(250)        // milliseconds; fractional is fine
+```
+
+Monotonic, so a wall-clock change cannot shorten or extend it, and it gives the
+core back — 20 x 50ms of sleep costs ~1s of wall and 0ms of CPU, which the
+system suite measures. Before it existed, waiting was a busy loop.
 
 ## 6. The `ovc` command
 
@@ -550,7 +675,7 @@ question "why did it see that?".
 | conversion | `len` `str` `int` `float` `bool` `type` `range` |
 | json | `json.parse` `json.stringify` `json.valid` `json.extract` `json.get_int` `json.get_float` `json.get_str` |
 | files | `file.read` `file.write` `file.append` `file.exists` `file.size` `file.delete` |
-| system | `os.run` |
+| system | `os.run` `os.exec` `os.pipe` `os.read` `os.write` `os.close` `os.stat` `sleep` `file.open` `file.seek` |
 | math | `abs` `sqrt` `floor` `ceil` `round` `min` `max` `sum` `pow` |
 | misc | `time.clock` `time.now` `gc` `exit` `throw` `assert` |
 

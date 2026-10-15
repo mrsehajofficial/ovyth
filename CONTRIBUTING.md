@@ -35,6 +35,10 @@ make examples   # run every example through the interpreter
 | `tests/interp/` | language tests, run through **both** backends |
 | `tests/pkg.sh` | package manager regression (install/import/remove) |
 | `tests/ui.sh` | decoration is TTY-only, and `install.sh` / `uninstall.sh` behave |
+| `tests/net.sh` | TCP client/server, and `http`'s timeout contract |
+| `tests/ai.sh` | the AI boundary against a provider that fails on purpose |
+| `tests/system.sh` | process execution without a shell: deadlines, signals, env, stdin, capture caps |
+| `tests/rag.sh` | indexed retrieval must recall exactly what a full scan does |
 | `registry/` | the package index and how to publish to it |
 | `examples/` | runnable examples (chatbot, rag, tool_agent) |
 | `benchmarks/` | performance benchmarks and comparison scripts |
@@ -80,6 +84,12 @@ Read the golden file before committing it — a `.want` captured from a wrong un
 
 - [ ] `make test` passes (both backends, no divergences).
 - [ ] New behaviour has a test in `tests/interp/`, or a reason it can't.
+- [ ] `make gate` reports no performance regression. The wall-clock and RSS
+      tiers are valid on the pinned benchmark machine (the one
+      `benchmarks/BASELINE.md` records); the allocation and resize counters
+      are deterministic and checked everywhere, including CI. A deliberate
+      improvement re-records the expectations with
+      `bash benchmarks/gate.sh --update`.
 - [ ] `README.md` / `docs/USAGE.md` updated if user-visible behaviour changed.
 - [ ] `CHANGELOG.md` updated under a new version heading.
 CI (`.github/workflows/ci.yml`) runs the same steps on every push, plus a `ovc init` smoke test, so it's worth running `make test` locally first.

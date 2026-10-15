@@ -51,7 +51,10 @@ LSP_BIN  := editors/vscode/bin/ovyth-lsp
 -include $(CC_OBJ:.o=.d) $(RT_OBJ:.o=.d) $(LSP_OBJ:.o=.d)
 OVC      := $(BUILD)/ovc
 
-.PHONY: all test clean runtime examples chatbot chatbot-rag agent agent-tui install uninstall lsp
+.PHONY: all test clean runtime examples chatbot chatbot-rag agent agent-tui install uninstall lsp gate
+
+gate:
+	@bash benchmarks/gate.sh
 
 all: $(OVC) $(RT_LIB)
 
@@ -98,7 +101,7 @@ lsp: $(LSP_BIN)
 # Two examples are applications on the published packages (rag_pipeline on
 # `rag`, chatbot on `ai`), so the packages are installed first. That is the
 # point: an example shows the module being used, not re-implemented.
-EXAMPLES := $(filter-out examples/chatbot/chatbot.ov, \
+EXAMPLES := $(filter-out examples/chatbot/chatbot.ov examples/automation/pipeline.ov, \
               $(wildcard examples/*/*.ov examples/*.ov))
 
 # "Already installed" is the goal met, not a failure, so it is not reported as
@@ -125,6 +128,7 @@ examples: $(OVC) modules
 # server, send the chatbot one message, then shut the server down. Override the
 # port with `make chatbot MOCK_PORT=9000` if 8642 is taken.
 MOCK_PORT ?= 8642
+AUTO_PORT ?= 8791
 
 chatbot: $(OVC)
 	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
@@ -154,6 +158,13 @@ chatbot-rag: $(OVC)
 	   CHATBOT_MEMORY_PATH=examples/chatbot/chatbot_rag_memory.json \
 	   $(OVC) run examples/chatbot/chatbot_rag.ov
 
+# The automation example end to end: the bundled records API, then the
+# pipeline against it. Its own suite (tests/automation.sh) is what CI runs;
+# this is the one-command version for a human.
+automation: $(OVC)
+	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
+	@python3 examples/automation/records_api.py $(AUTO_PORT) & api=$$!; 	 trap 'kill $$api 2>/dev/null' EXIT; 	 sleep 1; 	 RECORDS_URL=http://127.0.0.1:$(AUTO_PORT)/records 	 RECORDS_OUT=/tmp/ovyth_automation_report.txt 	 $(OVC) run examples/automation/pipeline.ov; 	 echo "  ---- report:"; cat /tmp/ovyth_automation_report.txt
+
 # --- runtime self-test ----------------------------------------------------
 RT_TEST := $(BUILD)/runtime_test
 
@@ -168,6 +179,10 @@ test: $(OVC) $(RT_TEST)
 	@bash tests/pkg.sh
 	@bash tests/ui.sh
 	@bash tests/net.sh
+	@bash tests/ai.sh
+	@bash tests/system.sh
+	@bash tests/automation.sh
+	@bash tests/rag.sh
 	@bash tests/memory.sh
 
 # --- install --------------------------------------------------------------
@@ -187,7 +202,7 @@ install: all
 	install -m 755 $(OVC) $(DESTDIR)$(PREFIX)/bin/ovc
 	install -m 644 $(RT_LIB) $(DESTDIR)$(PREFIX)/lib/libovrt.a
 	install -m 644 runtime/include/ovrt.h runtime/include/ovrt_helpers.h $(DESTDIR)$(PREFIX)/include/
-	install -m 644 examples/agent/tui.ov $(DESTDIR)$(PREFIX)/share/ovyth/agent/tui.ov
+	install -m 644 examples/agent/tui.ov examples/agent/websearch.ov $(DESTDIR)$(PREFIX)/share/ovyth/agent/
 	@echo "installed ovc into $(DESTDIR)$(PREFIX)"
 
 # Delegated to uninstall.sh so `make uninstall` and `./uninstall.sh` do the

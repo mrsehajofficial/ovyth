@@ -44,12 +44,37 @@ Interp::Root::~Root() {
 }
 
 void Interp::gc_scan() {
-  for (Env* e = active_envs_head_; e; e = e->next_env) {
-    for (const auto& pair : e->vars) {
-      ov_gc_mark_value(pair.second);
+  static int detect = -1;
+  if (detect < 0) detect = getenv("OV_GC_DETECT") != NULL;
+  /* A stale value is not always an unmapped address: the block it names is
+   * usually recycled into the next object allocated from it, so the address
+   * looks alive. What gives it away is the *kind*: a value tagged LIST whose
+   * object is now a STRING is a pointer into freed, reused memory. */
+  auto check = [&](const char* who, OvValue v) {
+    if (!detect) return;
+    uint64_t t = (uint64_t)v.tag;
+    int tag = (int)(t & 7);
+    if (tag < 4 || tag > 6) return;
+    OvHeader* h = tag == OV_STRING ? &((OvHeader*)v.str)[-1]
+                  : tag == OV_LIST  ? &v.list->hdr
+                                   : &v.map->hdr;
+    if (!ov_gc_address_live(h)) {
+      fprintf(stderr, "[gc-detect] %s: DANGLING (unmapped) tag=%d %p\n", who, tag, (void*)h);
+      return;
     }
+    int want = tag == OV_STRING ? 0 : tag == OV_LIST ? 1 : 2;
+    if (h->kind != (uint8_t)want)
+      fprintf(stderr, "[gc-detect] %s: ALIASED tag=%d but object kind=%u at %p\n",
+              who, tag, h->kind, (void*)h);
+  };
+  for (Env* e = active_envs_head_; e; e = e->next_env) {
+    for (const auto& pair : e->vars)
+      check(pair.first.c_str(), pair.second), ov_gc_mark_value(pair.second);
   }
+  int slot = 0;
   for (OvValue v : root_stack_) {
+    char buf[32]; snprintf(buf, sizeof buf, "root_stack_[%d]", slot++);
+    check(buf, v);
     ov_gc_mark_value(v);
   }
 }

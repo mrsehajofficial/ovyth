@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <execinfo.h>
 
 enum { H_STRING = 0, H_LIST = 1, H_MAP = 2, H_I64A = 3, H_F64A = 4, H_STRA = 5 };
 
@@ -57,6 +58,7 @@ size_t ov_heap_alloc_count(void) { return g.alloc_count; }
  * happens, and nothing here is consulted by the allocator. */
 
 size_t ov_gc_cycles(void)        { return g.gc_cycles; }
+size_t ov_gc_cycle_count(void)    { return g.gc_cycles; }
 size_t ov_gc_collected_bytes(void){ return g.collected_bytes; }
 size_t ov_heap_peak_bytes(void)  { return g.peak_heap; }
 size_t ov_heap_resize_count(void){ return g.resizes; }
@@ -169,9 +171,11 @@ static void track(OvHeader* h, size_t bytes) {
  * collector would size the heap from a table that is not yet consistent.
  * The threshold is only recorded here; the next real allocation picks it up. */
 void ov_heap_note_realloc(size_t old_bytes, size_t new_bytes) {
-  size_t delta = new_bytes - old_bytes;
-  g.heap_bytes += delta;
-  g.live_bytes += delta;
+  /* Signed: a shrink must subtract, and a size_t delta on (new < old) wraps
+   * to a huge add -- the exact failure this whole mechanism exists to avoid. */
+  int64_t delta = (int64_t)new_bytes - (int64_t)old_bytes;
+  g.heap_bytes = (size_t)((int64_t)g.heap_bytes + delta);
+  g.live_bytes = (size_t)((int64_t)g.live_bytes + delta);
   /* Deliberately no collect() trigger here -- see note above. */
 }
 
@@ -256,7 +260,50 @@ static size_t object_bytes(OvHeader* h) {
 
 static void mark_value(OvValue v) {
   OvHeader* h = header_of(v);
-  if (!h || h->marked) return;
+  if (!h) return;
+  /* TEMP DIAGNOSTIC, before the marked short-circuit: a value naming an
+   * object that is no longer on the heap list was freed, and whatever is
+   * holding it is about to walk another object's bytes. */
+  {
+    static int detect = -1;
+    if (detect < 0) detect = getenv("OV_GC_DETECT") != NULL;
+    if (detect && !ov_gc_address_live(h)) {
+      fprintf(stderr, "[gc-detect] FREED VALUE tag=%d at %p (kind byte reads %u)\n",
+              (int)ov_tagof(v), (void*)h, h->kind);
+      { void* bt[24]; int nb = backtrace(bt, 24);
+        char** sym = backtrace_symbols(bt, nb);
+        for (int q = 0; q < nb && q < 14; q++)
+          fprintf(stderr, "[gc-bt] %s\n", sym ? sym[q] : "?"); free(sym); }
+      /* Who still points at it: walk the live containers. */
+      for (OvHeader* c = g.heap; c; c = c->next) {
+        if (!c->marked) continue;
+        if (c->kind == H_LIST) {
+          OvList* cl = (OvList*)c;
+          for (uint32_t j = 0; j < cl->len; j++) {
+            OvValue iv = cl->items[j];
+            uint64_t t = (uint64_t)iv.tag & 7;
+            OvHeader* ih = t == OV_LIST ? &iv.list->hdr :
+                           t == OV_MAP  ? &iv.map->hdr  :
+                           t == OV_STRING ? &((OvHeader*)iv.str)[-1] : NULL;
+            if (ih == h)
+              fprintf(stderr, "[gc-detect]   held by live LIST %p item %u\n", (void*)c, j);
+          }
+        } else if (c->kind == H_MAP) {
+          OvMap* cm = (OvMap*)c;
+          for (uint32_t j = 0; j < cm->cap; j++) {
+            OvValue kv = cm->entries[j].key, vv = cm->entries[j].val;
+            uint64_t kt = (uint64_t)kv.tag & 7, vt = (uint64_t)vv.tag & 7;
+            OvHeader* kh = kt == OV_STRING ? &((OvHeader*)kv.str)[-1] : NULL;
+            OvHeader* vh = vt == OV_STRING ? &((OvHeader*)vv.str)[-1] : NULL;
+            if (kh == h || vh == h)
+              fprintf(stderr, "[gc-detect]   held by live MAP %p slot %u\n", (void*)c, j);
+          }
+        }
+      }
+      ov_gc_disable(1);
+    }
+  }
+  if (h->marked) return;
   h->marked = 1;
   /* Accumulate here, not in mark_loop: this is the only place that sees each
    * survivor exactly once (the marked bit makes it idempotent). Without it
@@ -298,6 +345,55 @@ static void mark_loop(void) {
 }
 
 static void sweep(void) {
+  /* --- TEMPORARY DIAGNOSTIC (OV_GC_DETECT) --- */
+  static int detect = -1;
+  if (detect < 0) detect = getenv("OV_GC_DETECT") != NULL;
+  if (detect) {
+    for (OvHeader* doomed = g.heap; doomed; doomed = doomed->next) {
+      if (doomed->marked) continue;
+      for (OvHeader* h = g.heap; h; h = h->next) {
+        if (h->marked) {
+          if (h->kind == H_LIST) {
+            OvList* l = (OvList*)h;
+            for (uint32_t i = 0; i < l->len; i++) {
+              OvValue v = l->items[i];
+              OvHeader* t = NULL;
+              if ((v.tag & 7) == OV_LIST) t = &v.list->hdr;
+              else if ((v.tag & 7) == OV_MAP) t = &v.map->hdr;
+              else if ((v.tag & 7) == OV_STRING) t = &((OvHeader*)v.str)[-1];
+              if (t == doomed) {
+                fprintf(stderr, "[gc-detect] freed kind=%u %p referenced by live LIST %p item %u\n",
+                        doomed->kind, (void*)doomed, (void*)h, i);
+                if (doomed->kind == H_MAP) {
+                  OvMap* m = (OvMap*)doomed;
+                  for (uint32_t s = 0; s < m->cap && s < 8; s++) {
+                    OvValue k = m->entries[s].key, vv = m->entries[s].val;
+                    if ((k.tag & 7) == OV_STRING && k.str->len)
+                      fprintf(stderr, "   slot %u key='%.*s'\n", s, (int)(k.str->len < 40 ? k.str->len : 40), k.str->bytes);
+                    if ((vv.tag & 7) == OV_STRING && vv.str->len)
+                      fprintf(stderr, "   slot %u val='%.*s'\n", s, (int)(vv.str->len < 40 ? vv.str->len : 40), vv.str->bytes);
+                  }
+                }
+              }
+            }
+          } else if (h->kind == H_MAP) {
+            OvMap* m = (OvMap*)h;
+            for (uint32_t s = 0; s < m->cap; s++) {
+              OvValue k = m->entries[s].key, vv = m->entries[s].val;
+              OvHeader* t = NULL;
+              if ((k.tag & 7) == OV_MAP) t = &k.map->hdr;
+              else if ((k.tag & 7) == OV_LIST) t = &k.list->hdr;
+              else if ((vv.tag & 7) == OV_MAP) t = &vv.map->hdr;
+              else if ((vv.tag & 7) == OV_LIST) t = &vv.list->hdr;
+              if (t == doomed)
+                fprintf(stderr, "[gc-detect] freed kind=%u %p referenced by live MAP %p slot %u\n",
+                        doomed->kind, (void*)doomed, (void*)h, s);
+            }
+          }
+        }
+      }
+    }
+  }
   OvHeader** link = &g.heap;
   while (*link) {
     OvHeader* h = *link;
@@ -394,6 +490,14 @@ void ov_gc_collect_ex(OvValue* extra, int n) {
    * steady-state program collects rarely instead of on every append */
   g.next_gc = g.live_bytes * 2 + (8 * 1024 * 1024);
   t_in_gc = 0;
+}
+
+
+/* TEMP DIAGNOSTIC: is this address inside any tracked heap object? */
+int ov_gc_address_live(void* p) {
+  for (OvHeader* h = g.heap; h; h = h->next)
+    if ((void*)h == p) return 1;
+  return 0;
 }
 
 void ov_gc_collect(void) { ov_gc_collect_ex(NULL, 0); }

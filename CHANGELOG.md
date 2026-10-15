@@ -5,6 +5,278 @@ Everything that has happened to Ovyth, newest first. Versions follow
 
 ## 0.1.4 (in progress)
 
+### `os.exec` and `sleep` — the system layer, no shell and no busy-wait — 15 Oct 2026
+
+The automation audit (LOW-LEVEL-AUDIT.md) found the system layer was a
+shell-out: `os.run` hands a string to `/bin/sh`, so every external step pays
+`fork+exec+shell`, arguments get re-parsed by another language (a value from
+a file or a URL is a command), a hung child hangs the program forever, and
+the child inherits everything the parent has open. There was also no way to
+wait at all.
+
+`os.exec(argv, timeout=, cwd=, env=, stdin=, stdout=, stderr=, max_output=)`
+is the primitive underneath, and `os.run` is untouched:
+
+```ovyth
+r = os.exec(["grep", "-r", needle, "/srv/logs"], timeout=5000, cwd="/srv",
+            env={"PATH": "/usr/bin"}, stdin="", max_output=1048576)
+# -> {ok, status, code, pid, stdout, stderr, elapsed_ms}
+#    status: "ok" | "failed" | "signal" | "timeout" | "truncated"
+```
+
+* **argv is bytes.** `os.exec(["echo", "a b;c", "d|e"])` prints `a b;c d|e` —
+  a semicolon is an argument, not syntax. There is nothing to inject into.
+* **`timeout=` bounds the run.** At the deadline the child's process group is
+  killed and reaped, and the reason is reported: `status="timeout"` (the
+  system suite asserts a 250ms deadline fires on a 10-second child).
+* **`env=` isolates the child.** Given a map it sees exactly that; absent, it
+  inherits as before. Credentials stop reaching programs never meant to see
+  them.
+* **`stdin=` is fed, nulled or inherited — `/dev/null` by default**, never the
+  script's own input. `stdout=`/`stderr=` capture (default), inherit, or an fd.
+* **`max_output=` (64MB default)** stops the buffer growing without limit,
+  keeps draining so the child never blocks, and reports `"truncated"`.
+* **A signal death reports `128+signo`**, the way a shell does.
+
+Implementation: `posix_spawn`, not fork+exec. Nothing of ours runs between
+the fork and the exec (so the GC's locks and the heap are never observed
+mid-transition), it is faster than the current fork+execl path (vfork
+semantics, no page-table copy), and `POSIX_SPAWN_SETPGROUP` puts the child
+in a group of its own *at spawn time* — no window in which it is still in
+the script's group, so the group kill cannot reach the script itself. The
+deadline is `poll()`'s own timeout and SIGCHLD arrives through a signalfd,
+so waiting costs no CPU; every pipe is `O_CLOEXEC`. `posix_spawnp` for a bare
+name (PATH search, like every shell), `posix_spawn` for one with a slash.
+Three bugs were found by the first differential run and fixed on the spot:
+a missing PATH search, a failure path that answered nil instead of throwing,
+and an argv check that rejected all-string lists (which lower to string
+arrays natively).
+
+`sleep(ms)` waits without burning a core — 20 x 50ms costs ~1s of wall and
+0ms of user CPU, measured in the suite. Monotonic, so a wall-clock change
+cannot shorten it; EINTR resumes the remainder.
+
+New: `tests/system.sh` (48 assertions on both backends, byte-for-byte), the
+`procs` benchmark case (200 spawns with capture, in `benchmarks/profile.sh`
+and the gate). All suites green: 60 + 43 + 25 + 11 + 48 + 24 + 5 + 17.
+
+One gate fix along the way: `gate.sh --update` could not re-record while the
+current numbers were outside tolerance, which made it impossible to accept a
+deliberate change (or a throttled machine — the CPU at 900MHz runs the whole
+suite, *including the C reference*, ~4x slower). The wall-clock tier now
+re-records; the deterministic allocation counters were unaffected.
+
+### The AI boundary is tested, and three real bugs fell out of it — 15 Oct 2026
+
+`tests/ai.sh` puts a deliberately misbehaving provider in front of the
+published `ovyth-ai` package and asserts what a caller actually gets: a
+500 that keeps the server's own message, a 200 that is not JSON, a 200 with
+an HTML login page, a 200 with zero choices, a 200 with null content, a
+refused connection, and a provider that never answers. Every case runs on
+both backends, and the suite is wired into `make test` and CI. Writing it
+found three bugs the hand-written unit tests never touched:
+
+* **`"...".endswith()` was wrong whenever the needle appeared earlier.**
+  It compared the needle's *first* occurrence against the tail, so
+  `"http://127.0.0.1:11434/".endswith("/")` was false — the "/" in "://"
+  answered the question. Both the runtime and the interpreter had the same
+  wrong answer, so nothing disagreed; this is exactly the bug a
+  single-backend suite cannot see. It is what made the package's
+  `ai_normalize_url` drop the endpoint path for a host written with a
+  trailing slash. Regression in `tests/interp/003_strings.ov`.
+* **`json.parse` of invalid input returned the error string as a value on
+  the native backend** while the interpreter threw — a two-backend
+  divergence, and the AI boundary then reported "no choices" instead of
+  "invalid JSON" because it indexed into the error text. The helper's
+  invalid-JSON branch never set its `threw` flag; the non-string branch
+  above it did. Both backends now throw.
+* **`ai_request` indexed `choices[0]` before checking the shape**, so a
+  gateway answering 200 with `{"choices": []}` produced "list index 0 out
+  of range" (reads like the caller's own list is wrong) and a 200 with a
+  JSON error body produced the same. The shape is now validated where the
+  response is still in hand, the status is named alongside a parse
+  failure, and `chatbot_rag.ov`'s `call_llm` — the one call site that
+  indexed with no guard at all — validates the same way.
+
+Two more fixes the work exposed: the raw-boundary planner now refuses a
+parameter the body uses as a container (`len(a)`, `a[i]`, `for x in a`),
+which `rag_cosine` in the RAG suite does — the claim produced a clang type
+error, not a slow program; and the boxed `for` loop's element variable is
+initialised, which removes a `-Wsometimes-uninitialized` warning from
+generated code. `tests/rag.sh` was failing on native for exactly that
+warning and was not part of `make test`; both it and the AI suite are now.
+
+### `fib` at parity with C — the per-call root bookkeeping was the cost — 15 Oct 2026
+
+The plan said `fib`'s gap to C was boxing on the function boundary, so
+raw `int64_t` parameters and returns landed for functions the analysis
+can prove. Measured, they changed nothing (fib(32): 27ms -> 25-28ms,
+inside noise): `ov_int`/`ov_add` inline to a tag test at -O3, so a boxed
+boundary is nearly free. Attributing the gap by experiment instead found
+the real cause — hand-written C for fib(35) is 31-33ms, the same C with
+`ov_gc_roots_mark`/`ov_gc_roots_restore` per call is 107ms, and Ovyth was
+103-113ms. The pair exists to pop a frame's root registrations on return,
+so a function that registers none needs neither: raw parameters are not
+heap references and a body with no rooted local has nothing to pop. Those
+functions now emit neither call. **fib(35): 103-113ms -> 31ms, at parity
+with the same function in C**, every other case unchanged, every
+allocation count reproducing exactly.
+
+Two changes were measured and rejected on the way: boundary boxing alone
+(no effect, kept only as the enabling half of this), and `-flto` on the
+runtime archive (3-6ms, and it breaks non-release links with "plugin
+needed to handle lto object").
+
+The work also fixed a latent codegen defect it exposed: `for n in [1,2]`
+inside a function with a parameter `n` assigned the raw loop element into
+the parameter's `OvValue` slot, a clang type error — the program would
+not compile. Loop variables now always get their own C local. New
+regression: `tests/interp/028_fn_boundary.ov` (24 cases: raw and boxed
+boundaries, self-recursion, param assignment, shadowing, closures, mutual
+calls, mixed raw/boxed signatures, named arguments, overflow wrap,
+floats).
+
+A performance regression gate joins the suite: `make gate` /
+`benchmarks/gate.sh` compares profile.sh's four dimensions against
+`benchmarks/EXPECTED.tsv` (wall clock and RSS at 1.5x on the pinned
+machine, allocations and resizes exactly, since those are deterministic),
+and CI runs the deterministic tier on every push. The options and the
+record protocol are in the script header.
+
+### Benchmark re-measurement, and the docs that needed fixing — 15 Oct 2026
+
+The published numbers were re-measured from the documented commands
+(`benchmarks/compare.sh`, `compare_ai.sh --release`, `profile.sh`) and two
+claims turned out to be stale in the *favourable* direction for the
+scoreboard: `listappend` had been reported at 173x-185x of C, but that
+figure predates P1 int collections. Today a provable `xs.push(int)` is a
+raw `int64_t` array: **3ms whole-process against C's 0.06ms — ~50x, not
+185x** — with 3 allocations and 17 resizes, and `strconcat` now beats
+CPython (2ms vs 3ms) instead of losing to it. `intloop` stays within
+1.5-1.8x of `-O3 -march=native`, `mapops` 3.1x, the AI suite still ahead of
+Python on 5 of 7 cases (`multi_parse` now 19.3x). README.md and
+docs/PERFORMANCE.md §1 carry the 15 Oct table; RESULTS.md keeps the 8 Oct
+snapshot with a supersession note, and BASELINE.md needed no changes —
+its table reproduces within noise on this machine.
+
+`AGENTS.md` is new: the Ovyth PRD's section 14 rules (workflow, the
+optimization protocol, the forbidden practices) now live in the
+repository contributor guidance, with the commands above verified rather
+than copied.
+
+### Google leads the search chain — 14 Oct 2026
+
+`GOOGLE_API_KEY` and `GOOGLE_CSE_ID` put Google's own search at the head of
+the agent's search chain: the Custom Search JSON API, which is the same index,
+ranking and snippets the search page shows. Without them the chain runs
+keyless, exactly as before, and a key that is wrong answers 400/403 and is
+treated as no results — the question falls through to DuckDuckGo and the topic
+indexes rather than failing.
+
+**What there is no keyless Google here.** The chain was built without keys
+because "a search tool that needs a key is a tool the agent may not have", and
+the cost of that choice was a federation of topic indexes — Wikipedia, Hacker
+News, StackExchange, GitHub — answering for the whole web. It answers *"what
+is Zig"* well and *"who is Sehaj Varma"* badly: one Wikipedia blast fills the
+result quota, and the model tells the user nothing was found.
+
+Google cannot fill that gap without a key, and this was checked rather than
+assumed. `www.google.com/search` on the machine this was written on answers
+200 with 92,933 bytes that hold no results: not one result link, not one result
+heading, no captcha, no embedded result JSON — and its own redirect target is
+`/httpservice/retry/enablejs`, the page that says *enable JavaScript to
+search*. The variants that used to work are equally empty: `?gbv=1`,
+`?client=chrome`, `/m?q=`, `?udm=14`, the `ie`/`oe` pair, a `co.uk` mirror,
+and following the shell's own meta refresh all return the same empty 93KB.
+The conclusion is in the source beside the provider, so nobody spends another
+afternoon on the parser.
+
+`tests/interp/025_websearch.ov` pins the API's hit shape, and asserts the
+chain order in three states: keyless (no Google — a provider that answers with
+nothing is not a provider, and it is tried first), Google plus Brave, and
+Google alone.
+
+### The agent stops segfaulting in the collector — 14 Oct 2026
+
+`ovc agent` died with SIGSEGV inside the GC's mark phase, sometimes on the
+first web search and sometimes on the one after it. Reported twice in the same
+session: a search for a name, then a search for a portfolio site, both ending
+in a core dump and no explanation on screen.
+
+The crash was a use-after-free, and the object was a **response map**. Both
+backends built the `http.*` response map in a C local:
+
+```c
+OvMap* m = ov_map_new();
+ov_map_set(m, ov_str_new("status", 6), ...);   // allocates
+```
+
+Each of those five key allocations can trigger a collection, and at that
+instant the half-built map is reachable from nothing — the collector was
+entitled to free it, and did. The caller was then handed a map built on freed
+memory; reading it two collections later walked a header that had been
+recycled into some other object and died in `mark_loop`.
+
+What made it an agent bug rather than a runtime curiosity is the shape of the
+session: a search response, a model call, and a third search share a heap with
+a memory store and a disk cache, so collections fire often enough that one of
+them lands inside the five allocations. The fix brackets the build with
+`ov_gc_begin_mutation()` — the guard `ov_json_parse` has always used for the
+same reason — so no collection runs while the map is reachable from nothing.
+
+`tests/net.sh` now has "every http response map survives the collector": 30
+requests of a 900KB body each, against a live set large enough that the
+threshold sits inside the window. Verified to dump core on both backends with
+the fix reverted, and to pass with it in place — the bug was that easy to
+reintroduce.
+
+### The agent can search the web — 14 Oct 2026
+
+The agent's tools were a shell, a file read, a file write and its own memory:
+everything it knew about the world came from its training, so its answers
+about anything that changes — today's news, a version, a price — were as stale
+as its checkpoint. Two new tools fix that, both from one new module that ships
+beside the agent: `{"search": "..."}` and `{"fetch": "https://..."}`.
+
+```
+you> what language is bun written in
+  ◆ search: bun javascript runtime language
+  ◆ wikipedia in 553ms
+  1. Bun (software)
+     https://en.wikipedia.org/wiki/Bun
+     began rewriting Bun with heavy use of AI tools, from the programming language Zig to Rust
+Ovyth: Bun is written in Zig.
+```
+
+**No API key, by design.** A search tool that needs a key is a tool the agent
+may not have. What that choice costs is no single backend: from a datacenter,
+DuckDuckGo's html endpoint answers HTTP 202 with a challenge page, Bing
+answers a search for *anything* with a page of Copilot links, and the public
+SearXNG instances sit behind an anti-bot page — all measured on the machine
+this was written on. So there is a chain, in order: DuckDuckGo, then the
+keyless JSON APIs that always answer (Wikipedia, Hacker News, StackExchange,
+GitHub), each allowed to return nothing. Google's own search now leads it when
+keyed (see above), with Brave just behind; both are real engines, and
+everything below them is a federation of topic indexes.
+
+**Where the speed went.** The hot path is a parse, not a request: pages are
+scanned with `indexof`/`slice` and never split into lines, every parse stops
+at `limit`, every string is capped at parse time so the cache holds short
+entries, and `ws_fetch` reads a page against a character budget — a 5MB page
+costs about what a 5KB one costs. Results are cached on disk for fifteen
+minutes, so an agent that asks the same question three times pays the network
+once and the last two answers are a scan. The chain also has a wall-clock
+budget, because six providers times eight seconds of timeout is a thirty-second
+stall and one question is not worth that.
+
+`tests/interp/025_websearch.ov` (30 golden lines, both backends) pins the
+parsers against canned bodies — no network in the language regression. The
+agent's own path is covered in `tests/memory.sh` by a third fixture gateway,
+`searchgateway.py`, which sends a `{"search": ...}` tool call and then an
+answer: the assertions are that the tool fires, that the keyless chain answers,
+that the result reaches the model as its own observation, that it lands in the
+disk cache, and that `:search <query>` answers the repeat from the cache.
+
 ### The agent is drivable from another device — 13 Oct 2026
 
 `OVYTH_AGENT_SERVE=<port> ovc agent` makes the agent wait for connections
@@ -904,3 +1176,126 @@ Closures are no longer a limitation: they capture their enclosing scope by
 reference on both the interpreter and the native backend (read, write, and
 shared capture all work), pinned down by `tests/interp/017_closures.ov`.
 
+
+### `os.pipe` and the fd layer — pipelines without a shell — 15 Oct 2026
+
+W3 and W4 from the automation audit, landing together because they share one
+surface: an fd is an fd.
+
+* **`os.pipe()`** → `{"read", "write"}`, and **`os.read` / `os.write` /
+  `os.close`** work on any fd — a pipe, a socket or a file. `os.exec`'s
+  `stdin=` now accepts an fd, which is what lets children be wired to each
+  other without a shell anywhere in the picture.
+* **`file.open(path, mode)`** (r/w/a/rw) → fd, **`file.seek(fd, off, whence)`**
+  → position, both sharing the same `os.read`/`os.write`/`os.close`.
+* **`os.stat(path)`** → `{size, mode, mtime, is_dir, is_file, is_link}`.
+
+The two rules the language cannot enforce, documented because they are the
+plumbing: close the caller's copy of a write end (that is the EOF), and fill
+and close a pipe *before* the consumer starts — feeding a child while blocked
+in its exec would wait forever, so give the exec a `timeout=` and the misuse
+is bounded and reported as `status="timeout"`.
+
+Streaming also removes a silent failure the whole-file read always had:
+procfs and `/sys` report no size, so `file.read("/proc/self/status")`
+answered `""`. Through an fd it reads fine; `os.stat` answers without
+opening anything.
+
+Bugs the first differential run caught, all fixed on the spot: a `os.pipe`
+key allocated one byte too long (so lookups for `"write"` missed and pipes
+hung at EOF forever), SIGPIPE killing the process before `os.write` could
+report EPIPE, a native `file.open` that only accepted `mode=` as a *named*
+argument (so a positional `"w"` silently opened read-only), a native
+`os.stat` deciding success from an uninitialised value, and a C string
+escaping bug that broke the same call's emitted C. `sema` now validates
+`os.exec`'s and `file.open`'s named arguments the way it already did for
+`http` — a typo'd `timeoutt=` was a silent nil, which for `os.exec` means
+"no deadline".
+
+`tests/system.sh` is now 88 assertions (from 48), both backends byte for
+byte: two- and three-stage pipelines, the caller-owned tail, feeding, EOF-only
+pipes, the bounded-misuse case, EPIPE, slice-by-slice streaming with a
+slice count of 13 for a 50KB file, seek to offset and to end, write/append
+round-trips, procfs, stat on files and directories, and both open-failure
+modes.
+
+### The collector was running a few times per push — a 27x-170x slowdown, found and fixed — 15 Oct 2026
+
+Auditing the blockers on the rag suite's native run (253s interpreted 20s)
+turned up a real bug, not a slow algorithm. `gc("stats")` now reports
+cycles, and the native path was running **40,699 collections for a 200-chunk
+retrieval** where the interpreter ran 17.
+
+Cause: the specialized arrays (`i64a`, `f64a`, `stra`) each realloc their
+backing block as they grow, and `sweep()` subtracts the array's *current*
+size when it frees one — but the growth was never recorded with
+`ov_heap_note_realloc`, so every growth drifted `heap_bytes` down by the
+delta. Enough growth wraps it negative, and then **every allocation trips the
+collection threshold**. Measured after the fix, at 800MHz:
+
+| store size | before | after | |
+|---|---|---|---|
+| 100 | 1671ms | 61ms | 27x |
+| 200 | 10876ms | 128ms | 85x |
+| 400 | 41075ms | 242ms | 170x |
+| 1000 (the rag run) | 253239ms | 629ms | 402x |
+
+`heap_bytes` is no longer underflowing, the cycle count is 7 instead of
+40,699, and the native path now beats the interpreter on this workload
+instead of losing to it by 12.7x. `note_realloc` is signed now too, so a
+shrink subtracts instead of wrapping to a huge add.
+
+Two more bugs the same audit found and fixed:
+
+* **`len()` of a specialized array emitted `->len` on an `OvValue`**, and of
+  a proven int local emitted `->len` on an `int64_t` — the fast path's
+  condition matched `proven_ints_`, which holds raw *scalars*, and it has
+  been dead-wrong-but-unreachable since it was written. `len(n)` for a proven
+  int never compiled natively; it now boxes correctly and, on an int, raises
+  the same defined error the interpreter raises. Regression:
+  `tests/interp/029_gc_array_growth.ov`.
+* `gc("stats")` printed cycles on the interpreter and not natively, and the
+  native `heap=` value was a wrapped negative. Both backends now share one
+  implementation, and the cycle count that found the bug is observable.
+
+### The automation example, and the panic-path bug building it found — 15 Oct 2026
+
+`examples/automation/` is the PRD's flow end to end, offline and
+deterministic, on a bundled records API (`records_api.py`):
+
+```
+fetch JSON from an API -> validate it -> filter -> transform -> write
+-> verify with a subprocess (os.exec(["wc", "-l", ...]))
+-> report structured errors, retry the transient failures
+```
+
+`make automation` runs it; `tests/automation.sh` (17 assertions, in
+`make test` and CI) drives the same pipeline four ways -- a happy path with
+two malformed records rejected *with reasons*, a flaky endpoint the retry
+survives and recovers from identically, an endpoint that is down (exit 70
+and no output file left behind), a refused connection, a 200 that is not
+JSON, and a 404 -- plus a native-vs-interpreter byte-for-byte comparison.
+
+Building it found a real bug, and it was not in the new code:
+
+**The panic path was a single global `jmp_buf`, not a stack.** A `try`
+inside a function overwrote the caller's saved unwind context, so when that
+function returned, any later panic or `exit()` unwound into a frame that no
+longer existed. The shape that exposed it: a `try` with a `return` inside a
+loop, followed by `exit()` -- which produced `*** stack smashing detected ***`
+(the canary of an unrelated function), or an `exit(0)` reporting
+`ovyth: null` and exiting 70. Diagnosing it also showed the codegen let
+`return`/`break`/`continue` jump straight out of a `try` body, skipping its
+`ov_try_pop()` and roots restore.
+
+Both fixed: `ov_try_push`/`ov_try_pop` now keep a stack of frames (128 deep,
+a defined error beyond), `raise()` unwinds to the innermost open frame, and
+the three exit statements emit their pending cleanup innermost-first. A
+`try` nested inside a `try` now works rather than corrupting the outer
+frame, which was a documented limitation until today. Regression:
+`tests/interp/030_try_frames.ov` (return-out-of-try-then-exit, nested
+rethrowing, a callee's try that must not outlive its frame, and a panic that
+escapes and reports once).
+
+Everything green: 64 language tests (both backends) + 43 pkg + 25 ui + 11
+net + 24 ai + 88 system + **17 automation** + 5 rag + 17 memory.

@@ -1,0 +1,846 @@
+// websearch :: examples/agent/websearch.ov
+//
+// One job: search the web, with no API key, and hand the agent text it can
+// read.
+//
+//   install:  none. It ships next to the agent, and `import "websearch"`
+//             resolves a local file before the package store, so the agent
+//             gets this copy. To share it between projects, copy it into a
+//             package directory and add that directory to the registry.
+//   import:   import "websearch"
+//
+// Every public name is prefixed ws_ because Ovyth flattens all top-level
+// names into one program -- the prefix is the namespace. The module holds no
+// state: the caller owns the cache, passes it in, and takes the updated one
+// back out of the result, exactly as the agent already uses the rag store.
+// Definitions are ordered callee-first, because Ovyth resolves a name at the
+// call site.
+//
+// ---------------------------------------------------------------- the design
+//
+// A web search that needs an API key is a web search the agent may not have.
+// This one needs none, and that choice shapes everything else.
+//
+//   * No general engine is reliable without a key. DuckDuckGo answers an
+//     html request from a laptop and challenges it (HTTP 202) from a
+//     datacenter; Bing answers a search for anything with a page of Copilot
+//     links; the public SearXNG instances sit behind an anti-bot page; Mojeek
+//     answers a query with a captcha. So there is no single backend -- there
+//     is a chain of them, tried in order, and every one of them is allowed
+//     to return nothing.
+//
+//   * The chain does not start with an engine. It starts with the keyless
+//     JSON APIs that always answer: Wikipedia, Hacker News, StackExchange,
+//     GitHub. Those cover what an agent actually asks (what is X, how do I
+//     do Y, is there a Z) in 200-400ms each, over a pooled connection, with
+//     a body small enough to parse in microseconds. A general web engine is
+//     only reached when those come back empty -- which is the honest order:
+//     cheap and reliable first, broad and flaky last.
+//
+//   * GOOGLE_API_KEY plus GOOGLE_CSE_ID put Google's own search at the head
+//     of the chain, because Google *is* what a person means by "search the
+//     web", and a federation of topic indexes is not. The keys are optional:
+//     without them the chain runs on the keyless providers and still answers.
+//     The reason there is no keyless Google endpoint here at all is measured,
+//     not assumed -- see the note on ws_hits_google.
+//
+//   * Results are cached on disk. An agent asks the same question three
+//     times in a session ("what version of node", then "again?", then "and
+//     the docs?") and pays for the network once. A cached read is a scan
+//     over at most 128 short entries and costs microseconds.
+//
+// ------------------------------------------------------------- performance
+//
+// The hot path is a parse, not a network call:
+//
+//   * Pages are scanned with indexof()/slice() -- the search itself runs in
+//     C -- and never split into lines. Splitting a 200KB page into 5,000
+//     strings to find ten results is the slow version, and it is the obvious
+//     one.
+//   * Every parse stops at `limit`, and every string it builds is capped at
+//     the size a model can use. The cache therefore holds short entries, so
+//     a repeated search copies kilobytes rather than hundreds of kilobytes.
+//   * ws_fetch() reads a page against a character budget and stops when the
+//     budget is met, so pulling a 5MB page to answer a question costs about
+//     what pulling a 5KB one costs.
+//   * The chain has a wall-clock budget. When the first providers have
+//     already spent it, the rest are skipped rather than turning one
+//     question into a thirty-second stall.
+
+// ------------------------------------------------------------------- config
+
+// int(name) throws on a value it cannot read, so every env read that is
+// allowed to be absent or wrong goes through these two.
+function ws_env_int(name, fallback) {
+    raw = env_or(name, "")
+    if raw == "" { return fallback }
+    try { return int(raw) } catch e { return fallback }
+}
+
+function ws_env_float(name, fallback) {
+    raw = env_or(name, "")
+    if raw == "" { return fallback }
+    try { return float(raw) } catch e { return fallback }
+}
+
+// One user agent for every request. libcurl's default is a reliable way to
+// be served a captcha: hosts that would answer a browser answer that UA
+// with 403, and the tool would look broken rather than blocked.
+function ws_ua() {
+    given = env_or("WEBSEARCH_UA", "")
+    if given != "" { return given }
+    return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+           "Chrome/126.0.0.0 Safari/537.36"
+}
+
+// Everything the tool varies, read from the environment once, so a request
+// never re-reads env and a test can point the cache at a temp file.
+function ws_config() {
+    store = env_or("OVYTH_HOME", env_or("HOME", "") + "/.ovyth")
+    return {
+        "limit": ws_env_int("WEBSEARCH_LIMIT", 5),
+        "ttl": ws_env_int("WEBSEARCH_TTL", 900),
+        "timeout": ws_env_float("WEBSEARCH_TIMEOUT", 8.0),
+        "budget_ms": ws_env_float("WEBSEARCH_BUDGET", 12000.0),
+        "max_chars": ws_env_int("WEBSEARCH_MAX_CHARS", 3000),
+        "ua": ws_ua(),
+        "google_key": env_or("GOOGLE_API_KEY", ""),
+        "google_cx": env_or("GOOGLE_CSE_ID", ""),
+        "brave_key": env_or("BRAVE_API_KEY", ""),
+        "cache_path": env_or("WEBSEARCH_CACHE", store + "/websearch-cache.json")
+    }
+}
+
+// --------------------------------------------------------------- text utils
+
+// Cap a string, and say so. Used on title and snippet at parse time, so the
+// cache holds short entries and the model is never handed a 4000-character
+// result title.
+function ws_cap(s, n) {
+    if len(s) <= n { return s }
+    return s.slice(0, n) + "..."
+}
+
+// One line: whitespace collapsed to single spaces. What a search result's
+// title and snippet want, and what makes two renderings of one page equal.
+function ws_collapse(s) {
+    s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    words = []
+    for w in s.split(" ") {
+        if w != "" { words.push(w) }
+    }
+    return join(" ", words)
+}
+
+// The entities that show up in result text. &amp; is decoded last: the
+// encoded form &amp;lt; means a literal "&lt;", and decoding it first would
+// turn that into "<".
+function ws_entities(s) {
+    s = s.replace("&lt;", "<").replace("&gt;", ">")
+    s = s.replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'")
+    s = s.replace("&#039;", "'").replace("&#x27;", "'").replace("&nbsp;", " ")
+    s = s.replace("&hellip;", "...").replace("&mdash;", "-").replace("&ndash;", "-")
+    s = s.replace("&#x2F;", "/")
+    s = s.replace("&amp;", "&")
+    return s
+}
+
+// The text of a short html fragment: tags dropped, entities decoded,
+// whitespace collapsed. For a whole page use ws_html_text, which is bounded.
+function ws_tagtext(s) {
+    out = ""
+    i = 0
+    while i < len(s) {
+        lt = s.indexof("<", i)
+        if lt < 0 {
+            out = out + s.slice(i, len(s))
+            break
+        }
+        if lt > i { out = out + s.slice(i, lt) }
+        gt = s.indexof(">", lt)
+        if gt < 0 { break }
+        i = gt + 1
+    }
+    return ws_collapse(ws_entities(out))
+}
+
+// Decode, then strip tags: engines escape their highlight markup, so
+// "&lt;span class=...&gt;" is a tag in disguise and the entities have to
+// come off first. The trailing "..." an engine appends to its own excerpt
+// is dropped, because ws_cap adds its own.
+function ws_snippet(text) {
+    t = ws_tagtext(ws_entities(text)).trim()
+    if t.endswith("...") { t = t.slice(0, len(t) - 3).trim() }
+    return t
+}
+
+// str() of a number that may be missing: "null" in the middle of a snippet
+// is noise the model reads as content.
+function ws_num(v, fallback) {
+    if v == null { return str(fallback) }
+    return str(v)
+}
+
+// ---------------------------------------------------------------- html utils
+
+// The value of name="..." inside one tag's text, or "". The check for a
+// leading "-" is there so `href` does not match `data-href="..."`.
+function ws_attr(tag, name) {
+    needle = name + "=\""
+    at = tag.indexof(needle)
+    while at > 0 and tag[at - 1] == "-" {
+        at = tag.indexof(needle, at + 1)
+    }
+    if at < 0 { return "" }
+    start = at + len(needle)
+    close = tag.indexof("\"", start)
+    if close < 0 { return "" }
+    return tag.slice(start, close)
+}
+
+// Every <a ...>...</a> in a page whose tag mentions `want`, as
+// {"href", "text"}, up to `limit`. One pass over the page: the anchors are
+// found with indexof, the text between them is sliced once, and the scan
+// stops as soon as enough results are in hand.
+function ws_links(html, want, limit) {
+    out = []
+    i = 0
+    n = len(html)
+    while i < n and len(out) < limit {
+        at = html.indexof("<a ", i)
+        if at < 0 { break }
+        gt = html.indexof(">", at)
+        if gt < 0 { break }
+        end = html.indexof("</a>", gt + 1)
+        if end < 0 { break }
+        tag = html.slice(at, gt + 1)
+        text = ws_tagtext(html.slice(gt + 1, end))
+        if text != "" and tag.contains(want) {
+            out.push({"href": ws_attr(tag, "href"), "text": text})
+        }
+        i = end + 4
+    }
+    return out
+}
+
+// Percent-decode a query-string value, without a code-point-to-character
+// builtin to build a decoder from. The table is every escape that can
+// appear in an http(s) URL -- the reserved set plus space and the common
+// punctuation -- and anything outside it is left percent-encoded, which is
+// still a valid URL to fetch. %25 is applied last so a single decode is not
+// turned into a double one.
+function ws_urldecode(s) {
+    if !s.contains("%") { return s }
+    pairs = [
+        ["%20", " "], ["%2F", "/"], ["%3A", ":"], ["%3F", "?"],
+        ["%3D", "="], ["%26", "&"], ["%23", "#"], ["%2D", "-"],
+        ["%2E", "."], ["%5F", "_"], ["%7E", "~"], ["%21", "!"],
+        ["%24", "$"], ["%2A", "*"], ["%27", "'"], ["%22", "\""],
+        ["%28", "("], ["%29", ")"], ["%2C", ","], ["%3B", ";"],
+        ["%3C", "<"], ["%3E", ">"], ["%40", "@"], ["%5B", "["],
+        ["%5D", "]"], ["%5C", "\\"], ["%7C", "|"], ["%7B", "{"],
+        ["%7D", "}"], ["%2B", "+"], ["%09", " "], ["%0A", " "],
+        ["%0D", " "], ["%25", "%"]
+    ]
+    i = 0
+    while i < len(pairs) {
+        s = s.replace(pairs[i][0], pairs[i][1])
+        i = i + 1
+    }
+    return s
+}
+
+// A DuckDuckGo result href, resolved to the page it points at. Results are
+// wrapped in a redirector holding the target in `uddg=`; a href that is not
+// one is already the target.
+function ws_ddg_url(href) {
+    if href.startswith("//") { href = "https:" + href }
+    at = href.indexof("uddg=")
+    if at < 0 { return href }
+    rest = href.slice(at + 5, len(href))
+    amp = rest.indexof("&")
+    if amp >= 0 { rest = rest.slice(0, amp) }
+    return ws_urldecode(rest)
+}
+
+// Drop <script>...</script> and friends whole. Their text is code, not
+// content, and stripping only the tags would leave the code in the output.
+function ws_drop_block(html, name) {
+    shut = "</" + name + ">"
+    out = html
+    while true {
+        at = out.indexof("<" + name)
+        if at < 0 { break }
+        end = out.indexof(shut, at)
+        if end < 0 { break }
+        out = out.slice(0, at) + out.slice(end + len(shut), len(out))
+    }
+    return out
+}
+
+// Cut at the budget, on a word boundary where there is one, and say how
+// much was left. A page cut mid-word reads as a broken tool; the same page
+// cut after a whole word reads as a quote.
+function ws_cut(text, budget) {
+    t = text.trim()
+    if len(t) <= budget { return t }
+    head = t.slice(0, budget)
+    i = len(head) - 1
+    while i > 0 {
+        if head[i] == " " { break }
+        i = i - 1
+    }
+    if i > budget / 2 { head = head.slice(0, i) }
+    omitted = len(t) - len(head)
+    return head.trim() + " ...[" + str(omitted) + " more characters, cut]"
+}
+
+// A page as text, against a budget. The scan is one pass of
+// indexof()/slice(); text accumulates until the budget is met and then the
+// loop stops, so reading a page costs about what its budget is, not what
+// its size is. A space is kept for every tag, which is what separates the
+// text of block elements from each other -- and since the result is
+// whitespace-collapsed, the extra spaces cost nothing.
+function ws_html_text(html, budget) {
+    page = ws_drop_block(html, "script")
+    page = ws_drop_block(page, "style")
+    page = ws_drop_block(page, "noscript")
+    parts = []
+    used = 0
+    i = 0
+    n = len(page)
+    while i < n {
+        if used >= budget { break }
+        lt = page.indexof("<", i)
+        if lt < 0 {
+            tail = page.slice(i, n)
+            if len(tail) > budget { tail = tail.slice(0, budget) }
+            if len(tail) > 0 { parts.push(ws_collapse(ws_entities(tail))) }
+            break
+        }
+        if lt > i {
+            seg = page.slice(i, lt)
+            if len(seg) > budget { seg = seg.slice(0, budget) }
+            parts.push(ws_collapse(ws_entities(seg)))
+            used = used + len(seg)
+        }
+        gt = page.indexof(">", lt)
+        if gt < 0 { break }
+        parts.push(" ")
+        used = used + 1
+        i = gt + 1
+    }
+    return ws_cut(ws_collapse(join(" ", parts)), budget)
+}
+
+// ------------------------------------------------------------------ hit maps
+//
+// One provider parses; the next builds the hit list from what it parsed.
+// They are separate so the parsers can be tested against a canned body with
+// no network, which is how the regression suite covers them.
+
+// Wikipedia: an excerpt API. Titles become wiki URLs, and the snippet is
+// html-escaped markup with the matched terms highlighted.
+function ws_hits_wikipedia(data, limit) {
+    q = data["query"]
+    if q == null { return [] }
+    items = q["search"]
+    if items == null { return [] }
+    out = []
+    for it in items {
+        if len(out) >= limit { break }
+        title = ws_collapse(str(it["title"]))
+        if title == "" or title == "null" { continue }
+        out.push({
+            "title": ws_cap(title, 120),
+            "url": "https://en.wikipedia.org/wiki/" + title.replace(" ", "_"),
+            "snippet": ws_cap(ws_snippet(str(it["snippet"])), 240),
+            "source": "wikipedia"
+        })
+    }
+    return out
+}
+
+// Hacker News, through the Algolia index: fronts, points and comments --
+// and when the story has no link of its own (an Ask HN), the item page.
+function ws_hits_hackernews(data, limit) {
+    hits = data["hits"]
+    if hits == null { return [] }
+    out = []
+    for h in hits {
+        if len(out) >= limit { break }
+        title = ws_collapse(str(h["title"]))
+        if title == "" or title == "null" or title == "nil" { continue }
+        link = str(h["url"])
+        if link == "" or link == "null" or link == "nil" {
+            link = "https://news.ycombinator.com/item?id=" + str(h["objectID"])
+        }
+        snippet = ""
+        if h["story_text"] != null { snippet = ws_cap(ws_snippet(str(h["story_text"])), 180) }
+        meta = ws_num(h["points"], 0) + " points, " + ws_num(h["num_comments"], 0) + " comments"
+        if snippet != "" { snippet = snippet + "  (" + meta + ")" }
+        else { snippet = meta + " on Hacker News" }
+        out.push({
+            "title": ws_cap(title, 120),
+            "url": link,
+            "snippet": ws_cap(snippet, 240),
+            "source": "hackernews"
+        })
+    }
+    return out
+}
+
+// StackExchange: questions, with score and answer count as the snippet. The
+// title carries the question, which is usually the whole answer to "is this
+// a known problem".
+function ws_hits_stackexchange(data, limit) {
+    items = data["items"]
+    if items == null { return [] }
+    out = []
+    for it in items {
+        if len(out) >= limit { break }
+        title = ws_collapse(str(it["title"]))
+        if title == "" or title == "null" { continue }
+        out.push({
+            "title": ws_cap(title, 120),
+            "url": str(it["link"]),
+            "snippet": ws_cap(ws_num(it["score"], 0) + " score, " + ws_num(it["answer_count"], 0) +
+                             " answers, " + (it["is_answered"] ? "answered" : "still open") +
+                             " - stackoverflow", 240),
+            "source": "stackoverflow"
+        })
+    }
+    return out
+}
+
+// GitHub repositories: name, description, language, stars -- which is what
+// "is there a library for X" is actually asking.
+function ws_hits_github(data, limit) {
+    items = data["items"]
+    if items == null { return [] }
+    out = []
+    for it in items {
+        if len(out) >= limit { break }
+        name = str(it["full_name"])
+        if name == "" or name == "null" { continue }
+        desc = str(it["description"])
+        if desc == "null" { desc = "" }
+        lang = str(it["language"])
+        if lang == "null" { lang = "" }
+        snippet = desc
+        if lang != "" {
+            if snippet != "" { snippet = snippet + " - " + lang }
+            else { snippet = lang }
+        }
+        out.push({
+            "title": ws_cap(name, 120),
+            "url": str(it["html_url"]),
+            "snippet": ws_cap(snippet + " - " + ws_num(it["stargazers_count"], 0) +
+                             " stars on GitHub", 240),
+            "source": "github"
+        })
+    }
+    return out
+}
+
+// Google, through its own Custom Search JSON API.
+//
+// This is the head of the chain when it is configured, because it is the only
+// provider here whose answers are Google's: the same index, ranking and
+// snippets the search page shows. To turn it on:
+//
+//   1. api.key  A Google Cloud API key with "Custom Search API" enabled:
+//              https://developers.google.com/custom-search/v1/overview
+//   2. se.engid The engine id of a Programmable Search Engine. Create one at
+//              https://programmablesearchengine.google.com/ and set it to
+//              search the whole web ("Search the entire web" must be on --
+//              the default is a single site, which makes a keyed request
+//              search one domain and look like the tool is broken).
+//
+//   GOOGLE_API_KEY=... GOOGLE_CSE_ID=...
+//
+// A wrong or missing pair answers 400/403, which the chain treats as "no
+// results" and moves on -- so a broken key degrades to the providers below it
+// rather than failing the question.
+//
+// Why this and not the search page itself, in one line: what
+// www.google.com/search serves without a key from a datacenter is a JS shell.
+// Measured on the machine this was written on, in Oct 2026: 200 and ~93KB,
+// containing /httpservice/retry/enablejs -- literally "enable JavaScript to
+// search" -- with zero result links and zero result markup. The variants that
+// used to work do not: ?gbv=1, ?client=chrome, /m?q=, ?udm=14, the ie/oe pair,
+// a co.uk mirror, and following the shell's own meta refresh all return the
+// same empty page. Scraping it is not a matter of the right parser.
+function ws_hits_google(data, limit) {
+    items = data["items"]
+    if items == null { return [] }
+    out = []
+    for it in items {
+        if len(out) >= limit { break }
+        title = ws_collapse(str(it["title"]))
+        if title == "" or title == "null" { continue }
+        snippet = ws_collapse(str(it["snippet"]))
+        if snippet == "null" { snippet = "" }
+        out.push({
+            "title": ws_cap(title, 120),
+            "url": str(it["link"]),
+            "snippet": ws_cap(snippet, 240),
+            "source": "google"
+        })
+    }
+    return out
+}
+
+// Brave Search API, the optional keyed provider. It is a real web search
+// engine too, which is why a key puts it just behind Google.
+function ws_hits_brave(data, limit) {
+    web = data["web"]
+    if web == null { return [] }
+    items = web["results"]
+    if items == null { return [] }
+    out = []
+    for it in items {
+        if len(out) >= limit { break }
+        title = ws_collapse(str(it["title"]))
+        if title == "" or title == "null" { continue }
+        snippet = ws_collapse(str(it["description"]))
+        if snippet == "null" { snippet = "" }
+        out.push({
+            "title": ws_cap(title, 120),
+            "url": str(it["url"]),
+            "snippet": ws_cap(snippet, 240),
+            "source": "brave"
+        })
+    }
+    return out
+}
+
+// ----------------------------------------------------------------- transport
+
+// A get that never throws and always answers the same shape. A transport
+// failure (DNS, TLS, timeout) is a value, not a panic: an agent looping
+// over providers has to be able to carry on to the next one.
+function ws_get(cfg, url, params, headers) {
+    r = {"ok": false, "status": 0, "body": "", "ms": 0.0, "error": ""}
+    t0 = time.clock()
+    try {
+        merged = {"User-Agent": cfg["ua"], "Accept": "*/*"}
+        for k in headers {
+            merged[k] = headers[k]
+        }
+        resp = http.get(url, headers = merged, params = params, timeout = cfg["timeout"])
+        r["status"] = resp["status"]
+        if resp["status"] == 200 {
+            r["body"] = resp["body"]
+            r["ok"] = true
+        } else {
+            r["error"] = "HTTP " + str(resp["status"])
+        }
+    } catch e {
+        r["error"] = str(e)
+    }
+    r["ms"] = (time.clock() - t0) * 1000.0
+    return r
+}
+
+// A get whose body is parsed as JSON, or null for any failure at all --
+// transport, status, or body. Every JSON provider is three lines on top of
+// this, which is the point.
+function ws_json_get(cfg, url, params, headers) {
+    r = ws_get(cfg, url, params, headers)
+    if !r["ok"] { return null }
+    try { return json.parse(r["body"]) } catch e { return null }
+}
+
+// ---------------------------------------------------------------- providers
+
+function ws_prov_google(cfg, query, limit) {
+    if cfg["google_key"] == "" or cfg["google_cx"] == "" { return [] }
+    // num is the page size, capped by the API at 10; asking for 20 of a
+    // 5-result default would be rejected.
+    n = limit
+    if n > 10 { n = 10 }
+    data = ws_json_get(cfg, "https://www.googleapis.com/customsearch/v1",
+                       {"key": cfg["google_key"], "cx": cfg["google_cx"],
+                        "q": query, "num": str(n)},
+                       {"Accept": "application/json"})
+    if data == null { return [] }
+    return ws_hits_google(data, limit)
+}
+
+function ws_prov_brave(cfg, query, limit) {
+    if cfg["brave_key"] == "" { return [] }
+    data = ws_json_get(cfg, "https://api.search.brave.com/res/v1/web/search",
+                       {"q": query, "count": str(limit)},
+                       {"Accept": "application/json",
+                        "X-Subscription-Token": cfg["brave_key"]})
+    if data == null { return [] }
+    return ws_hits_brave(data, limit)
+}
+
+// DuckDuckGo's html endpoint: the only general engine in the default chain.
+// It is tried first because it is the fastest when it works; when it is
+// challenged (a 202 answer with no result markup) it parses to nothing and
+// the chain moves on, which is exactly what a chain is for.
+function ws_prov_ddg(cfg, query, limit) {
+    r = ws_get(cfg, "https://html.duckduckgo.com/html/", {"q": query}, {})
+    if !r["ok"] { return [] }
+    body = r["body"]
+    links = ws_links(body, "result__a", limit)
+    if len(links) == 0 { return [] }
+    snips = ws_links(body, "result__snippet", limit)
+    out = []
+    i = 0
+    while i < len(links) {
+        url = ws_ddg_url(links[i]["href"])
+        if url != "" {
+            text = ""
+            if i < len(snips) { text = snips[i]["text"] }
+            out.push({"title": ws_cap(links[i]["text"], 120), "url": url,
+                      "snippet": ws_cap(text, 240), "source": "duckduckgo"})
+        }
+        i = i + 1
+    }
+    return out
+}
+
+function ws_prov_wikipedia(cfg, query, limit) {
+    data = ws_json_get(cfg, "https://en.wikipedia.org/w/api.php",
+                       {"action": "query", "list": "search", "format": "json",
+                        "srsearch": query, "srlimit": str(limit)}, {})
+    if data == null { return [] }
+    return ws_hits_wikipedia(data, limit)
+}
+
+function ws_prov_hackernews(cfg, query, limit) {
+    data = ws_json_get(cfg, "https://hn.algolia.com/api/v1/search",
+                       {"query": query, "tags": "story", "hitsPerPage": str(limit)}, {})
+    if data == null { return [] }
+    return ws_hits_hackernews(data, limit)
+}
+
+function ws_prov_stackexchange(cfg, query, limit) {
+    data = ws_json_get(cfg, "https://api.stackexchange.com/2.3/search/advanced",
+                       {"order": "desc", "sort": "relevance", "q": query,
+                        "site": "stackoverflow", "pagesize": str(limit)}, {})
+    if data == null { return [] }
+    return ws_hits_stackexchange(data, limit)
+}
+
+function ws_prov_github(cfg, query, limit) {
+    data = ws_json_get(cfg, "https://api.github.com/search/repositories",
+                       {"q": query, "per_page": str(limit)}, {})
+    if data == null { return [] }
+    return ws_hits_github(data, limit)
+}
+
+// Name to provider. A dispatcher rather than a list of functions, because a
+// bare function reference is not a value in Ovyth -- the same shape the
+// tool agent's execute_tool uses.
+function ws_run_provider(cfg, name, query, limit) {
+    if name == "google" { return ws_prov_google(cfg, query, limit) }
+    if name == "brave" { return ws_prov_brave(cfg, query, limit) }
+    if name == "duckduckgo" { return ws_prov_ddg(cfg, query, limit) }
+    if name == "wikipedia" { return ws_prov_wikipedia(cfg, query, limit) }
+    if name == "hackernews" { return ws_prov_hackernews(cfg, query, limit) }
+    if name == "stackoverflow" { return ws_prov_stackexchange(cfg, query, limit) }
+    if name == "github" { return ws_prov_github(cfg, query, limit) }
+    return []
+}
+
+// The chain, in the order it is tried.
+//
+// Google leads when it is keyed, Brave just behind it: those two are real web
+// search engines, and everything below them is a federation of topic
+// indexes -- which is a fine answer to "what is X" and a wrong answer to
+// "who is X". A chain of nothing-but-indexes is how a search for a name comes
+// back with five Wikipedia articles and the model reports "no results".
+//
+// Keyless, the engines are tried in the order they survive a datacenter
+// address: DuckDuckGo first, then the JSON APIs that always answer. When
+// neither engine answers, the indexes are what is left, and the result is
+// still more than nothing.
+function ws_order(cfg) {
+    order = []
+    if cfg["google_key"] != "" and cfg["google_cx"] != "" { order.push("google") }
+    if cfg["brave_key"] != "" { order.push("brave") }
+    order.push("duckduckgo")
+    order.push("wikipedia")
+    order.push("hackernews")
+    order.push("stackoverflow")
+    order.push("github")
+    return order
+}
+
+// --------------------------------------------------------------------- cache
+
+function ws_cache_load(path) {
+    if path == "" or !file.exists(path) { return [] }
+    text = file.read(path)
+    if text == "" { return [] }
+    store = []
+    try { store = json.parse(text) } catch e { return [] }
+    if type(store) != "List" { return [] }
+    return store
+}
+
+function ws_cache_save(store, path) {
+    if path == "" { return false }
+    return file.write(path, json.stringify(store))
+}
+
+// The hits for `key`, or null for a miss. A stale entry and an absent one
+// both answer null -- the caller goes to the network either way -- and the
+// scan runs newest first, because a repeated question is usually a recent
+// one.
+function ws_cache_get(store, key, now, ttl) {
+    i = len(store) - 1
+    while i >= 0 {
+        entry = store[i]
+        if entry["q"] == key {
+            if now - entry["t"] <= ttl { return entry["hits"] }
+            return null
+        }
+        i = i - 1
+    }
+    return null
+}
+
+// A new store with this entry at the end, the same key replaced, and the
+// oldest past the cap dropped -- so the file grows to a bound and stays
+// there. A new list rather than a mutation, because the caller owns the
+// store and takes the update from the result.
+function ws_cache_put(store, key, hits, now, cap) {
+    out = []
+    i = 0
+    while i < len(store) {
+        if store[i]["q"] != key { out.push(store[i]) }
+        i = i + 1
+    }
+    out.push({"q": key, "t": now, "hits": hits})
+    while len(out) > cap {
+        drop = len(out) - cap
+        trimmed = []
+        j = drop
+        while j < len(out) {
+            trimmed.push(out[j])
+            j = j + 1
+        }
+        out = trimmed
+    }
+    return out
+}
+
+// The cache key: the query, lower-cased, whitespace collapsed. Two spellings
+// of the same question are one entry.
+function ws_key(query) {
+    q = query.lower().replace("\n", " ").replace("\t", " ")
+    words = []
+    for w in q.split(" ") {
+        if w != "" { words.push(w) }
+    }
+    return join(" ", words)
+}
+
+// -------------------------------------------------------------------- search
+
+// Search the web. The cache is the caller's: it goes in, and the updated one
+// comes back as result["cache"] for the caller to keep. A result is
+//
+//   {"ok", "hits", "cached", "ms", "sources", "error", "cache"}
+//
+// with hits shaped {"title", "url", "snippet", "source"}. Misses are not
+// cached: a provider that was briefly unreachable should not answer the
+// same question with a failure for the next fifteen minutes.
+function ws_search(cfg, cache, query) {
+    key = ws_key(query)
+    now = time.now()
+
+    fresh = ws_cache_get(cache, key, now, cfg["ttl"])
+    if fresh != null {
+        return {"ok": len(fresh) > 0, "hits": fresh, "cached": true, "ms": 0.0,
+                "sources": [], "error": "", "cache": cache}
+    }
+    if query.trim() == "" {
+        return {"ok": false, "hits": [], "cached": false, "ms": 0.0, "sources": [],
+                "error": "nothing to search for", "cache": cache}
+    }
+
+    limit = cfg["limit"]
+    t0 = time.clock()
+    hits = []
+    sources = []
+    for name in ws_order(cfg) {
+        if len(hits) >= limit { break }
+        // Wall-clock guard. The chain is a ladder, not an obligation: when
+        // the providers already tried have spent the budget, the rest are
+        // skipped rather than turning one question into a long stall.
+        if (time.clock() - t0) * 1000.0 > cfg["budget_ms"] { break }
+        got = ws_run_provider(cfg, name, query, limit - len(hits))
+        if len(got) > 0 {
+            for h in got { hits.push(h) }
+            sources.push(name)
+        }
+    }
+    ms = (time.clock() - t0) * 1000.0
+
+    error = ""
+    if len(hits) == 0 { error = "no provider returned a result" }
+    if len(hits) > 0 {
+        cache = ws_cache_put(cache, key, hits, now, 128)
+        ws_cache_save(cache, cfg["cache_path"])
+    }
+    return {"ok": len(hits) > 0, "hits": hits, "cached": false, "ms": ms,
+            "sources": sources, "error": error, "cache": cache}
+}
+
+// Read a page from the web as text, against a character budget. The
+// companion to search: a result's snippet is often the middle of the
+// answer, and the rest of the page is one call away.
+function ws_fetch(cfg, url, max_chars) {
+    if url == "" {
+        return {"ok": false, "status": 0, "text": "", "ms": 0.0, "error": "no url"}
+    }
+    if !url.contains("://") {
+        return {"ok": false, "status": 0, "text": "", "ms": 0.0,
+                "error": "not a url: " + url}
+    }
+    t0 = time.clock()
+    r = ws_get(cfg, url, {},
+               {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
+    ms = (time.clock() - t0) * 1000.0
+    if !r["ok"] {
+        return {"ok": false, "status": r["status"], "text": "", "ms": ms, "error": r["error"]}
+    }
+    text = ws_html_text(r["body"], max_chars)
+    if text == "" {
+        return {"ok": false, "status": r["status"], "text": "", "ms": ms,
+                "error": "the page had no readable text"}
+    }
+    return {"ok": true, "status": r["status"], "text": text, "ms": ms, "error": ""}
+}
+
+// ------------------------------------------------------------------- output
+
+// A result as the text that goes back to a model: numbered, one line per
+// field, the url on its own line so it can be quoted, bounded at the end so
+// one search cannot eat a context window. Bounded three times over -- at
+// the hit, at the block, and here.
+function ws_format(out, max_chars) {
+    if !out["ok"] {
+        return "search found nothing" + (out["error"] == "" ? "" : ": " + out["error"])
+    }
+    text = ""
+    i = 0
+    while i < len(out["hits"]) {
+        h = out["hits"][i]
+        text = text + str(i + 1) + ". " + h["title"] + "\n   " + h["url"] +
+               "\n   " + h["snippet"] + "\n"
+        i = i + 1
+    }
+    if len(text) > max_chars {
+        return text.slice(0, max_chars) + "\n... " +
+               str(len(text) - max_chars) + " characters more"
+    }
+    return text.trim()
+}

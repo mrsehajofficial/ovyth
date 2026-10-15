@@ -634,6 +634,7 @@ struct OvFunc {
 void  ov_gc_collect(void);
 /* Telemetry: what the heap actually did, for "why is this slow?" */
 size_t ov_gc_cycles(void);
+size_t ov_gc_cycle_count(void);
 size_t ov_gc_collected_bytes(void);
 size_t ov_heap_peak_bytes(void);
 size_t ov_heap_resize_count(void);
@@ -647,6 +648,7 @@ typedef void (*OvGcScanner)(void);
 void  ov_gc_set_scanner(OvGcScanner s);
 void  ov_gc_mark_value(OvValue v);
 void  ov_gc_collect_ex(OvValue* extra_roots, int n);
+int   ov_gc_address_live(void* p);   /* TEMP DIAGNOSTIC */
 size_t ov_gc_live_bytes(void);
 size_t ov_gc_heap_bytes(void);
 size_t ov_heap_alloc_count(void);

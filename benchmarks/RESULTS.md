@@ -31,6 +31,14 @@ Ovyth numbers are whole-process wall clock; C/Python time their cases
 internally, so Ovyth's column additionally carries ~4ms of process start.
 ```
 
+**Superseded in part.** This snapshot predates the P1 int-collections
+change (12 Oct) and the 15 Oct 2026 re-measurement of the same script.
+The only figure that moved materially is `listappend`: 3ms whole-process
+against C's 0.06ms — **~50x slower, not 185x** — because provable int
+pushes now emit a raw `int64_t` array instead of a boxed list. Current
+state: `benchmarks/BASELINE.md` (profile) and `docs/PERFORMANCE.md` §1
+(the 15 Oct compare table).
+
 Best-of-3 wall clock. This is a desktop, so numbers move between runs: an
 hour apart, `intloop` measured 21-22ms while Python's copy measured
 6827-7399ms, and Python's `fib` ranged 32-91ms. Treat the tables as orders

@@ -23,6 +23,7 @@
 // this feature warrants.
 #define _POSIX_C_SOURCE 200809L
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -52,6 +53,12 @@ int ov_net_listen(const char* host, int port, int backlog, char** err) {
   }
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  /* Close-on-exec: a child spawned by os.exec/os.run must not inherit the
+   * listening socket. A child that outlived its parent would otherwise keep
+   * the port bound and reachable. os.exec's own fds are dup2'd through
+   * posix_spawn file actions, which clears the flag on the child's copy
+   * only, so deliberate wiring still works. */
+  fcntl(fd, F_SETFD, FD_CLOEXEC);
 
   struct sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));

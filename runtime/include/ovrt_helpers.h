@@ -32,6 +32,42 @@ int ov_h_fail_with(OvValue v);
 int ov_os_run(const char* cmd, int* threw, OvValue* out);
 int ov_os_tty(void);   /* is standard output a terminal? */
 
+/* os.exec(): spawn a program without a shell, with a deadline and control
+ * over the child's streams, cwd and environment. out receives
+ * {ok, status, code, pid, stdout, stderr, elapsed_ms}; status is one of
+ * "ok", "failed", "signal", "timeout", "truncated". timeout is milliseconds
+ * (0 = none), max_output is bytes (64MB default). Returns 0 when the program
+ * ran, 1 when it could not be started or the arguments were invalid. */
+int ov_os_exec(OvValue argv, OvValue timeout, OvValue cwd, OvValue env,
+               OvValue stdin_v, OvValue stdout_v, OvValue stderr_v,
+               OvValue max_output, int* threw, OvValue* out);
+
+/* sleep(ms): wait without burning a core. Monotonic, so a wall-clock change
+ * cannot shorten or extend it; EINTR resumes the remainder. */
+void ov_os_sleep(OvValue ms);
+
+/* ------------------------------------------------- file descriptors (W3/W4)
+ *
+ * The four primitives that make an fd a first-class thing: make one, read it,
+ * write it, close it. A pipe from os.pipe(), a socket from net.listen() and a
+ * file from file.open() are all fds, and all four work on all of them.
+ *
+ * fds are integers by design -- they are native handles -- which means a
+ * program *can* name fd 0, 1 or 2. Treat them as opaque: use what the runtime
+ * handed you. */
+int  ov_os_pipe(OvValue* out);              /* -> {"read", "write"}      */
+int  ov_os_read_fd(int fd, int64_t max, OvValue* out);   /* -> bytes, "" at EOF */
+int  ov_os_write_fd(int fd, OvValue data, int64_t* wrote);
+void ov_os_close(int fd);
+
+/* file.open(path, mode) -> fd (modes r, w, a, rw); file.seek(fd, off,
+ * whence) -> the new position or -1 (whence: SEEK_SET/CUR/END). */
+int      ov_file_open_fd(const char* path, const char* mode, int64_t* out_fd);
+int64_t  ov_file_seek_fd(int fd, int64_t off, int whence);
+
+/* os.stat(path) -> {size, mode, mtime, is_dir, is_file, is_link} */
+int ov_os_stat_path(const char* path, OvValue* out);
+
 /* net.c -- a TCP server, so the agent can be driven from another device.
  *
  * The client side of any connection these can serve is plain TCP: a line sent

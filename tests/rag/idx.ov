@@ -1,0 +1,208 @@
+// Differential test for the rag index: indexed ranking must be *identical* to
+// a full scan.
+//
+// Not "close to" -- exactly. Same texts, same scores, same order, including
+// the zero-score hits at the tail. The whole argument for the index is that it
+// skips only chunks holding none of the query's terms, and every such chunk
+// scores zero; so the scored list is identical either way, and anything less
+// than identity is a bug in the index.
+//
+// A store big enough for a mistake to show up, built deterministically so the
+// same queries are asked on every machine and every run.
+
+import "rag"
+
+// Ten words, so every query term either matches a known set of chunks or
+// matches nothing at all -- both halves of the boundary.
+vocab = ["alpha", "beta", "gamma", "delta", "epsilon",
+         "zeta", "eta", "theta", "iota", "kappa"]
+
+// Deterministic corpus: chunk i holds three words at offsets that wrap, so
+// words repeat across chunks and a term matches many of them.
+//
+// `vocab` is a parameter, not a top-level name read inside: a top-level let is
+// invisible to a function on the native backend, which is the project's oldest
+// trap and not what this test is measuring.
+function corpus_text(vocab, i) {
+    return vocab[(i * 3) % len(vocab)] + " " +
+           vocab[(i + 7) % len(vocab)] + " " +
+           vocab[(i * 2 + 1) % len(vocab)]
+}
+
+function build_store(vocab, n) {
+    store = []
+    i = 0
+    while i < n {
+        store.push({"text": corpus_text(vocab, i),
+                    "source": "corpus", "chunk": 0, "doc": i})
+        i = i + 1
+    }
+    return store
+}
+
+// Rendered so two hits can be compared as one string: text, source and score,
+// with the score printed as a stable number.
+function show(h) {
+    return str(h["score"]) + "|" + str(h["source"]) + "|" + h["text"]
+}
+
+function show_all(hits) {
+    out = ""
+    for h in hits { out = out + show(h) + "\n" }
+    return out
+}
+
+// Do the two paths agree for this query?
+function agree(store, idx, query, k) {
+    a = show_all(rag_topk(store, query, k))
+    b = show_all(rag_topk_idx(store, query, k, idx))
+    return a == b
+}
+
+// Positions of the chunks that hold `word`, by hand. The ground truth the
+// index's postings are checked against.
+function postings_of(store, word) {
+    want = []
+    i = 0
+    while i < len(store) {
+        if store[i]["text"].split(" ").contains(word) { want.push(i) }
+        i = i + 1
+    }
+    return want
+}
+
+function same_postings(got, want) {
+    if got == null or len(got) != len(want) { return false }
+    j = 0
+    while j < len(want) {
+        if got[j] != want[j] { return false }
+        j = j + 1
+    }
+    return true
+}
+
+// Print one line built from string parts. Built up in a rooted local rather
+// than as one big expression: a chain of allocations that only live in C
+// temporaries is not GC-rooted on the native backend, and the collector fires
+// mid-chain here. Each part is rooted before the next concatenation starts.
+function say(parts) {
+    s = parts[0]
+    i = 1
+    while i < len(parts) {
+        s = s + parts[i]
+        i = i + 1
+    }
+    print(s)
+}
+
+// ------------------------------------------------------------------ data
+
+store = build_store(vocab, 1000)
+idx = rag_index(store)
+
+queries = ["alpha gamma", "alpha", "zeta", "alpha beta kappa", "epsilon theta",
+           "iota", "zeta eta", "alpha beta gamma delta", "epsilon", "kappa",
+           "theta zeta alpha", "kappa eta theta", "alpha alpha alpha",
+           "nothing matches this", "alpha zzz", "zzz", "alpha",
+           "beta gamma epsilon iota", "delta delta", "eta kappa"]
+
+// ------------------------------------------------- behavioural equivalence
+
+mismatch = 0
+q = 0
+while q < len(queries) {
+    k = 1
+    while k <= 50 {
+        if !agree(store, idx, queries[q], k) {
+            mismatch = mismatch + 1
+        }
+        k = k == 1 ? 3 : (k == 3 ? 7 : (k == 7 ? 50 : 1000))
+    }
+    q = q + 1
+}
+say(["agree on ", str(len(queries) * 4), " query/k pairs, ",
+     str(mismatch), " mismatches"])
+
+// ------------------------------------------------- the index itself, directly
+
+// The index is only worth having if it really skips work: check its shape, not
+// just the rankings. The postings for a word are exactly the positions of the
+// chunks containing it, ascending.
+posting_bad = 0
+w = 0
+while w < len(vocab) {
+    if !same_postings(idx[vocab[w]], postings_of(store, vocab[w])) {
+        posting_bad = posting_bad + 1
+    }
+    w = w + 1
+}
+say(["postings correct for ", str(len(vocab)), " words, ",
+     str(posting_bad), " wrong"])
+
+// A query matching one term must mask far fewer positions than the store
+// holds. If the index were not skipping anything this would be 1000.
+mask = rag_query_mask(idx, "iota", len(store))
+ones = 0
+for m in mask {
+    if m == 1 { ones = ones + 1 }
+}
+say(["mask marks ", str(ones), " of ", str(len(store)), " chunks"])
+if ones > len(store) / 2.0 {
+    say(["FAIL the index is not skipping anything (", str(ones),
+         " of ", str(len(store)), " are live)"])
+    mismatch = mismatch + 1
+}
+
+// ------------------------------------------ incremental updates stay correct
+
+// The agent appends after loading and re-indexes only what is new, so the
+// index has to stay right across an append without being rebuilt.
+more = rag_build(["alpha beta gamma delta epsilon zeta eta theta iota kappa"], 6, 2)
+before = len(store)
+for m in more { store.push(m) }
+rag_index_update(idx, store, before)
+
+upd_bad = 0
+w = 0
+while w < len(vocab) {
+    if !same_postings(idx[vocab[w]], postings_of(store, vocab[w])) {
+        upd_bad = upd_bad + 1
+    }
+    w = w + 1
+}
+say(["after an append, ", str(upd_bad), " words are wrongly indexed"])
+if upd_bad > 0 { mismatch = mismatch + upd_bad }
+
+// And the ranking is still identical, on the store it just grew.
+q = 0
+while q < len(queries) {
+    k = 1
+    while k <= 7 {
+        if !agree(store, idx, queries[q], k) { mismatch = mismatch + 1 }
+        k = k == 1 ? 3 : (k == 3 ? 5 : (k == 5 ? 7 : 1000))
+    }
+    q = q + 1
+}
+
+// An index built from scratch equals one maintained incrementally.
+fresh = rag_index(store)
+fresh_bad = 0
+w = 0
+while w < len(vocab) {
+    if !same_postings(fresh[vocab[w]], idx[vocab[w]]) {
+        fresh_bad = fresh_bad + 1
+    }
+    w = w + 1
+}
+ok_words = len(vocab) - fresh_bad
+say(["incremental matches from-scratch for ", str(ok_words),
+     " of ", str(len(vocab)), " words"])
+if fresh_bad > 0 { mismatch = mismatch + fresh_bad }
+
+// ------------------------------------------------------------------- verdict
+
+if mismatch > 0 or posting_bad > 0 {
+    say(["RESULT FAIL ", str(mismatch + posting_bad)])
+} else {
+    say(["RESULT PASS"])
+}

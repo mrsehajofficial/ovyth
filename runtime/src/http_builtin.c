@@ -89,6 +89,13 @@ int ov_h_http(const char* method, OvValue url, OvValue headers, OvValue json_bod
   if (!r) return ov_h_fail("http request could not be allocated", 36);
   if (r->error) return ov_h_fail_with(ov_str(r->error));
 
+  // The response map is built in a C local, and every key below allocates.
+  // Bracket the build with the mutation guard so no collection runs while the
+  // map is reachable from nothing: a collection there would free it out from
+  // under these sets, and the caller would be handed a map built on freed
+  // memory. The map's only reference from there on is *out, so the guard is
+  // released before returning. Same rule ov_json_parse applies to a document.
+  ov_gc_begin_mutation();
   OvMap* m = ov_map_new();
   ov_map_set(m, ov_str(ov_str_new("status", 6)), ov_int(r->status));
   ov_map_set(m, ov_str(ov_str_new("ok", 2)),
@@ -96,6 +103,7 @@ int ov_h_http(const char* method, OvValue url, OvValue headers, OvValue json_bod
   ov_map_set(m, ov_str(ov_str_new("body", 4)), ov_str(r->body));
   ov_map_set(m, ov_str(ov_str_new("headers", 7)), r->headers);
   ov_map_set(m, ov_str(ov_str_new("elapsed_ms", 10)), ov_float(r->elapsed_ms));
+  ov_gc_end_mutation();
   *out = ov_map(m);
   return 0;
 }

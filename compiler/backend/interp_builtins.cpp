@@ -142,12 +142,21 @@ static OvValue http_call(const std::string& method, OvValue url_v,
     throw t;
   }
 
+  // The response map is built in a C local and every key allocates, so a
+  // collection triggered by one of those allocations would free the half-built
+  // map -- it is reachable from nothing at that instant -- and the program
+  // would be handed a map built on freed memory. Marking it two collections
+  // later segfaults in the collector. Bracketing the build with the mutation
+  // guard holds the collector off until the map is in the caller's hands, the
+  // same rule ov_json_parse already applies to a document.
+  ov_gc_begin_mutation();
   OvMap* m = ov_map_new();
   ov_map_set(m, ov_str_val("status"), ov_int(r->status));
   ov_map_set(m, ov_str_val("ok"), ov_bool(r->status >= 200 && r->status < 400));
   ov_map_set(m, ov_str_val("body"), ov_str(r->body));
   ov_map_set(m, ov_str_val("headers"), r->headers);
   ov_map_set(m, ov_str_val("elapsed_ms"), ov_float(r->elapsed_ms));
+  ov_gc_end_mutation();
   return ov_map(m);
 }
 
@@ -211,8 +220,13 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
                              return ov_str_split(s, mk_str(sep)); }
           if (f == "startswith") return ov_bool(ov_str_find(s, a0.str, 0) == 0);
           if (f == "endswith") {
-            int64_t at = ov_str_find(s, a0.str, 0);
-            return ov_bool(at >= 0 && (size_t)at + a0.str->len == s->len);
+            // Compare against the tail, not the needle's first occurrence:
+            // "http://host/" contains "/" at index 5, and asking whether it
+            // ends with "/" must not be answered by that earlier hit.
+            size_t n = a0.str->len;
+            int tail = n <= s->len &&
+                       memcmp(s->bytes + (s->len - n), a0.str->bytes, n) == 0;
+            return ov_bool(tail);
           }
           if (f == "contains")   return ov_bool(ov_str_contains(s, a0.str));
           if (f == "replace")    return ov_str(ov_str_replace(s, a0.str, a1.str));
@@ -424,8 +438,11 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
   if (q == "endswith") {
     OvStr* s = ARG(0).str;
     OvStr* t = ARG(1).str;
-    int64_t at = ov_str_find(s, t, 0);
-    return ov_bool(at >= 0 && (size_t)at + t->len == s->len);
+    // Compare against the tail, not the needle's first occurrence (see the
+    // value-method copy above).
+    size_t n = t->len;
+    int tail = n <= s->len && memcmp(s->bytes + (s->len - n), t->bytes, n) == 0;
+    return ov_bool(tail);
   }
   if (q == "contains") {
     OvValue needle = ARG(0), hay = ARG(1);
@@ -574,6 +591,92 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
     return out;
   }
 
+  if (q == "os.exec") {
+    /* argv first, then the options as named arguments -- the native backend
+     * passes the same values in the same order (see codegen_c.cpp). */
+    int threw = 0;
+    OvValue out = ov_nil();
+    if (ov_os_exec(ARG(0), NAMED("timeout"), NAMED("cwd"), NAMED("env"),
+                   NAMED("stdin"), NAMED("stdout"), NAMED("stderr"),
+                   NAMED("max_output"), &threw, &out))
+      ov_throw_value(ov_h_err_value());
+    return out;
+  }
+
+  if (q == "os.pipe") {
+    OvValue out = ov_nil();
+    if (ov_os_pipe(&out)) ov_throw_value(ov_h_err_value());
+    return out;
+  }
+
+  if (q == "os.read") {
+    /* os.read(fd, n) -> the bytes, "" at end of file. The same EOF convention
+     * file.read and net.read use, so a caller tests it one way everywhere. */
+    OvValue fdv = ARG(0), nv = ARG(1);
+    int64_t n = 4096;
+    if (ov_tagof(nv) == OV_INT) n = nv.i;
+    else if (ov_tagof(nv) == OV_FLOAT) n = (int64_t)nv.f;
+    OvValue out = ov_nil();
+    int fd = ov_tagof(fdv) == OV_INT ? (int)fdv.i : -1;
+    if (ov_os_read_fd(fd, n, &out)) ov_throw_value(ov_h_err_value());
+    return out;
+  }
+
+  if (q == "os.write") {
+    OvValue fdv = ARG(0);
+    int fd = ov_tagof(fdv) == OV_INT ? (int)fdv.i : -1;
+    int64_t wrote = 0;
+    if (ov_os_write_fd(fd, ARG(1), &wrote)) ov_throw_value(ov_h_err_value());
+    return ov_int(wrote);
+  }
+
+  if (q == "os.close") {
+    OvValue fdv = ARG(0);
+    ov_os_close(ov_tagof(fdv) == OV_INT ? (int)fdv.i : -1);
+    return ov_nil();
+  }
+
+  if (q == "os.stat") {
+    std::string path = str_arg(ARG(0));
+    OvValue out = ov_nil();
+    if (ov_os_stat_path(path.c_str(), &out)) ov_throw_value(ov_h_err_value());
+    return out;
+  }
+
+  if (q == "file.open") {
+    std::string path = str_arg(ARG(0));
+    /* The mode is the second positional argument, and mode= also works: the
+     * native backend accepts both, so the two must accept the same thing. */
+    std::string mode;
+    OvValue m1 = ARG(1);
+    if (ov_tagof(m1) != OV_STRING) m1 = NAMED("mode");
+    if (ov_tagof(m1) == OV_STRING) mode = std::string(m1.str->bytes, m1.str->len);
+    if (mode.empty()) mode = "r";
+    int64_t fd = -1;
+    if (ov_file_open_fd(path.c_str(), mode.c_str(), &fd))
+      ov_throw_value(ov_h_err_value());
+    return ov_int(fd);
+  }
+
+  if (q == "file.seek") {
+    OvValue fdv = ARG(0), offv = ARG(1), whv = ARG(2);
+    int fd = ov_tagof(fdv) == OV_INT ? (int)fdv.i : -1;
+    int64_t off = ov_tagof(offv) == OV_INT ? offv.i
+                : ov_tagof(offv) == OV_FLOAT ? (int64_t)offv.f : 0;
+    int whence = SEEK_SET;
+    if (ov_tagof(whv) == OV_STRING) {
+      std::string w(whv.str->bytes, whv.str->len);
+      if (w == "current") whence = SEEK_CUR;
+      else if (w == "end") whence = SEEK_END;
+    }
+    return ov_int(ov_file_seek_fd(fd, off, whence));
+  }
+
+  if (q == "sleep") {
+    ov_os_sleep(ARG(0));
+    return ov_nil();
+  }
+
   // ------------------------------------------------------------------- net
   // The server half of remote control. The same runtime calls the native
   // backend emits, so a program serving the agent behaves identically either
@@ -676,12 +779,9 @@ OvValue Interp::call_builtin(const std::string& qualifier, const Expr* site, std
 
   if (q == "gc") {
     std::string what = args.empty() ? std::string("collect") : str_arg(eval(args[0], env));
-    if (what == "stats") {
-      std::string out = "live=" + std::to_string(ov_gc_live_bytes()) +
-                        " heap=" + std::to_string(ov_gc_heap_bytes()) +
-                        " allocs=" + std::to_string(ov_heap_alloc_count());
-      return ov_s(out);
-    }
+    /* One implementation, both backends: the native path calls this same
+     * helper, so a divergence in the stats string is impossible. */
+    if (what == "stats") return ov_h_gc(ov_s("stats"));
     if (what == "reset") { ov_heap_reset_stats(); return ov_nil(); }
     ov_gc_collect();
     return ov_nil();

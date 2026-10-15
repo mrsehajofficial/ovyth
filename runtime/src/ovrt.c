@@ -166,10 +166,17 @@ void ov_i64a_push_slow(OvInt64Array* a, int64_t v) {
   uint32_t cap = a->cap ? a->cap : 4;
   while (cap < a->len + 1) cap *= 2;
   ov_heap_count_resize();
+  /* The tracked size must follow the realloc: sweep() subtracts the *current*
+   * cap, so a growth that was never recorded drifts heap_bytes down by the
+   * delta every time. Enough of that wraps it negative, and then every
+   * allocation trips the collection threshold -- a collector on every push,
+   * which is a quadratic slowdown on any append-heavy loop. */
+  size_t old_bytes = sizeof(*a) + (size_t)a->cap * sizeof(int64_t);
   int64_t* items = (int64_t*)realloc(a->data, cap * sizeof(int64_t));
   if (!items) oom((size_t)cap * sizeof(int64_t));
   a->data = items;
   a->cap = cap;
+  ov_heap_note_realloc(old_bytes, sizeof(*a) + (size_t)cap * sizeof(int64_t));
   a->data[a->len++] = v;
 }
 
@@ -225,10 +232,13 @@ void ov_f64a_push_slow(OvFloat64Array* a, double v) {
   uint32_t cap = a->cap ? a->cap : 4;
   while (cap < a->len + 1) cap *= 2;
   ov_heap_count_resize();
+  /* See the i64a copy: the tracked size must follow the realloc. */
+  size_t old_bytes = sizeof(*a) + (size_t)a->cap * sizeof(double);
   double* items = (double*)realloc(a->data, cap * sizeof(double));
   if (!items) oom((size_t)cap * sizeof(double));
   a->data = items;
   a->cap = cap;
+  ov_heap_note_realloc(old_bytes, sizeof(*a) + (size_t)cap * sizeof(double));
   a->data[a->len++] = v;
 }
 
@@ -262,10 +272,13 @@ void ov_stra_push_slow(OvStringArray* a, OvStr* v) {
   if (!a) return;
   uint32_t cap = a->cap ? a->cap : 4;
   while (cap < a->len + 1) cap *= 2;
+  /* See the i64a copy: the tracked size must follow the realloc. */
+  size_t old_bytes = sizeof(*a) + (size_t)a->cap * sizeof(OvStr*);
   OvStr** items = (OvStr**)realloc(a->data, cap * sizeof(OvStr*));
   if (!items) oom((size_t)cap * sizeof(OvStr*));
   a->data = items;
   a->cap = cap;
+  ov_heap_note_realloc(old_bytes, sizeof(*a) + (size_t)cap * sizeof(OvStr*));
   a->data[a->len++] = v;
 }
 
@@ -508,13 +521,36 @@ OvValue ov_map_values(OvMap* m) {
 
 OvValue ov_caught;
 
-static jmp_buf g_jmp;
+/* A stack of try frames, not one global.
+ *
+ * The single-jmp_buf version could not survive nesting: a try inside a
+ * function overwrote the caller's saved context, so when that function
+ * returned, a later panic or exit() unwound into a frame that no longer
+ * existed -- which showed up as a stack smash at an unrelated canary, or as
+ * an exit() reporting "ovyth: null" and exiting 70. Each push takes the next
+ * slot and each pop gives the previous one back, so an inner try never
+ * disturbs an outer one and a returning frame leaves the stack as it found
+ * it. 128 is far beyond any real nesting; deeper than that is a program
+ * shape worth refusing rather than corrupting over. */
+#define OV_TRY_MAX 128
+static jmp_buf g_jmp_stack[OV_TRY_MAX];
+static int     g_try_depth = 0;
 static int     g_jmp_active = 0;
 static int     g_exit_code = 0;
 static int     g_panic_exit = 0;   /* panic came from exit(), not a throw */
 
-jmp_buf* ov_try_push(void)    { g_jmp_active = 1; return &g_jmp; }
-void     ov_try_pop(void)     { g_jmp_active = 0; }
+jmp_buf* ov_try_push(void) {
+  if (g_try_depth >= OV_TRY_MAX) {
+    ov_error("try nesting deeper than %d frames", OV_TRY_MAX);
+    return NULL;
+  }
+  g_jmp_active = 1;
+  return &g_jmp_stack[g_try_depth++];
+}
+void ov_try_pop(void) {
+  if (g_try_depth > 0) g_try_depth--;
+  g_jmp_active = g_try_depth > 0;
+}
 int      ov_try_active(void)  { return g_jmp_active; }
 int      ov_exit_code(void)   { return g_exit_code; }
 
@@ -535,9 +571,11 @@ static void report_uncaught(void) {
 
 static void raise(OvValue v) {
   ov_caught = v;
-  if (g_jmp_active) {
+  /* Unwind to the innermost try that is still open. Its own cleanup pops
+   * the slot, so this leaves the stack alone and simply jumps. */
+  if (g_jmp_active && g_try_depth > 0) {
     g_jmp_active = 0;
-    longjmp(g_jmp, 1);
+    longjmp(g_jmp_stack[g_try_depth - 1], 1);
   }
   report_uncaught();
   ov_runtime_shutdown();

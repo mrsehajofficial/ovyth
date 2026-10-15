@@ -256,6 +256,75 @@ else
 fi
 kill $mg_pid 2>/dev/null || true
 
+# ---------------------------------------------------------- the search tool
+# The websearch tool, end to end through the agent. A scripted gateway sends
+# a {"search": ...} tool call first and an answer second, so what is asserted
+# is the whole path: run_tool dispatching it, the provider chain answering
+# without a key, the cache being written, and the result reaching the model.
+#
+# Three things this section deliberately guards:
+#
+#   * The agent must *import* websearch. It ships as a module beside the
+#     agent, and a resolution that only finds installed packages would leave
+#     the tool dead -- which shows up here as "unknown function ws_search".
+#   * The search itself must not need a key. Every provider in the default
+#     chain is keyless, and the Wikipedia one answers from anywhere with a
+#     network, so the assertion holds on a clean runner.
+#   * The result must be was is fed back, not a failure string: the reply's
+#     url is the evidence the tool result actually reached the model.
+CACHE="$BIN/websearch-cache.json"
+SGPORT2=$(( 20500 + (RANDOM % 1000) ))
+python3 "$PWD/tests/fixtures/searchgateway.py" "$SGPORT2" "zig programming language" >/dev/null 2>&1 &
+sg2_pid=$!
+sleep 1
+printf 'what is zig\n:quit\n' > "$BIN/search.txt"
+if out="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
+          WEBSEARCH_CACHE="$CACHE" \
+          AI_API_URL="http://127.0.0.1:$SGPORT2/v1/chat/completions" \
+          OVC_AGENT_DEBUG=0 \
+          timeout 90 "$OVC" run "$PWD/examples/agent/tui.ov" < "$BIN/search.txt" 2>&1)"; then
+  if grep -q "search: zig programming language" <<<"$out"; then
+    ok "the model's search tool call is dispatched"
+  else
+    bad "the model's search tool call is dispatched" "$out"
+  fi
+  if grep -q "en.wikipedia.org/wiki/Zig_(programming_language)" <<<"$out"; then
+    ok "the keyless search chain returns results"
+  else
+    bad "the keyless search chain returns results" "$out"
+  fi
+  if grep -q "See https://en.wikipedia.org/wiki/Zig_(programming_language)" <<<"$out"; then
+    ok "the search result reaches the model as its own observation"
+  else
+    bad "the search result reaches the model as its own observation" "$out"
+  fi
+  if [[ -f "$CACHE" ]] && grep -q "zig programming language" "$CACHE"; then
+    ok "a completed search is cached to disk"
+  else
+    bad "a completed search is cached to disk" "no cache entry written"
+  fi
+else
+  bad "the search tool run" "agent exited non-zero"
+fi
+kill $sg2_pid 2>/dev/null || true
+
+# The same question through :search must be answered from the cache the run
+# above just wrote -- the second half of what makes the tool cheap to use
+# repeatedly. "cached" is the tool's own word for it.
+printf ':search zig programming language\n:quit\n' > "$BIN/cached.txt"
+if out="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
+          WEBSEARCH_CACHE="$CACHE" \
+          AI_API_URL="http://127.0.0.1:1/v1/chat/completions" \
+          timeout 90 "$OVC" run "$PWD/examples/agent/tui.ov" < "$BIN/cached.txt" 2>&1)"; then
+  if grep -q "search: zig programming language  (cached)" <<<"$out"; then
+    ok ":search answers a repeat query from the cache"
+  else
+    bad ":search answers a repeat query from the cache" "$out"
+  fi
+else
+  bad ":search answers a repeat query from the cache" "agent exited non-zero"
+fi
+
 echo
 echo "ovc agent memory regression: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

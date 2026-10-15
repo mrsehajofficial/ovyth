@@ -1,0 +1,90 @@
+// tests/interp/025_websearch.ov
+//
+// The websearch module's parsers, offline: entity decoding, tag stripping,
+// DDG URL resolution, anchor extraction, the JSON hit builders, the cache
+// round-trip (no network touched), and formatting. The regression suite must
+// agree on both backends.
+
+import "../../examples/agent/websearch.ov"
+
+cfg = ws_config()
+
+print("ua-ok=" + (len(cfg["ua"]) > 20))
+
+print(ws_entities("a &lt;b&gt; &amp; &#39;x&#39; &hellip; &nbsp;end"))
+print(ws_tagtext("<h2>Hello <strong>World</strong></h2>"))
+print(ws_urldecode("https%3A%2F%2Fexample.com%2Fa%3Fb%3D1%26c%3D2"))
+print(ws_ddg_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fex.com%2Fone&rut=abc"))
+
+page = "<div class=\"result results_links\"><a rel=\"nofollow\" class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fex.com%2Fone&rut=x\">First &amp; only</a></div><a class=\"result__snippet\" href=\"x\">The first snippet.</a>"
+links = ws_links(page, "result__a", 5)
+print(len(links))
+print(links[0]["text"])
+print(ws_ddg_url(links[0]["href"]))
+snips = ws_links(page, "result__snippet", 5)
+print(snips[0]["text"])
+
+wiki = json.parse("{\"query\":{\"search\":[{\"title\":\"Ovyth\",\"snippet\":\"a small &lt;span class=\\\"searchmatch\\\"&gt;language&lt;/span&gt; for tooling...\"}]}}")
+hits = ws_hits_wikipedia(wiki, 5)
+print(len(hits))
+print(hits[0]["title"])
+print(hits[0]["url"])
+print(hits[0]["snippet"])
+
+hn = json.parse("{\"hits\":[{\"title\":\"A story\",\"url\":\"https://ex.com/s\",\"points\":120,\"num_comments\":30,\"objectID\":\"1\"},{\"title\":\"Ask\",\"points\":5,\"num_comments\":2,\"objectID\":\"2\"}]}")
+hits = ws_hits_hackernews(hn, 5)
+print(len(hits))
+print(hits[1]["url"])
+
+se = json.parse("{\"items\":[{\"title\":\"Search sort\",\"link\":\"https://ex.com/q\",\"score\":10,\"answer_count\":3,\"is_answered\":true}]}")
+hits = ws_hits_stackexchange(se, 5)
+print(len(hits))
+print(hits[0]["title"])
+
+gh = json.parse("{\"items\":[{\"full_name\":\"mrsehajofficial/ovyth\",\"description\":\"compiled language\",\"language\":\"C\",\"html_url\":\"https://github.com/mrsehajofficial/ovyth\",\"stargazers_count\":5}]}")
+hits = ws_hits_github(gh, 5)
+print(len(hits))
+print(hits[0]["title"])
+
+// Google, from the shape the Custom Search API answers: a flat list of items
+// with title, link and snippet -- and a plain domain, no redirector.
+google = json.parse("{\"items\":[{\"title\":\"Sehaj Varma\",\"link\":\"https://sehajvarma.com\",\"snippet\":\"portfolio and work\",\"displayLink\":\"sehajvarma.com\"},{\"title\":\"About\",\"link\":\"https://sehajvarma.com/about\",\"snippet\":\"who I am\"}]}")
+hits = ws_hits_google(google, 5)
+print(len(hits))
+print(hits[0]["title"])
+print(hits[0]["url"])
+print(hits[1]["snippet"])
+
+// A keyless chain must not offer Google: the keyless search page is a JS
+// shell from a datacenter, and a provider that answers with nothing is the
+// same as one that is absent -- except it is not, because it is tried first.
+// The keys are blanked by hand so this line does not depend on the machine's
+// environment, and the same line cannot drift if the ambient env has a key.
+nokey = ws_config()
+nokey["google_key"] = ""
+nokey["google_cx"] = ""
+nokey["brave_key"] = ""
+print(join(",", ws_order(nokey)))
+keyed = ws_order({"google_key": "k", "google_cx": "cx", "brave_key": "b"})
+print(join(",", keyed))
+keyed_only_google = ws_order({"google_key": "k", "google_cx": "cx", "brave_key": ""})
+print(join(",", keyed_only_google))
+
+now = time.now()
+store = []
+store = ws_cache_put(store, "ovyth language", [{"title":"t","url":"u","snippet":"s","source":"test"}], now, 128)
+print(ws_cache_save(store, "/tmp/ovyth-websearch-test.json"))
+back = ws_cache_load("/tmp/ovyth-websearch-test.json")
+print(len(back))
+print(len(ws_cache_get(back, ws_key("Ovyth Language"), now, 900)))
+print(ws_cache_get(back, ws_key("something else"), now, 900) == null)
+print(ws_cache_get(back, ws_key("Ovyth Language"), now + 100000, 900) == null)
+
+longs = "one two three four five six seven eight nine ten"
+print(ws_cut(longs, 20))
+print(ws_cap("abcdefg", 5))
+
+cache_res = {"ok": true, "hits": [{"title":"T","url":"U","snippet":"S","source":"x"}], "cached": false, "sources": ["x"], "error": ""}
+print(ws_format(cache_res, 200))
+empty_res = {"ok": false, "hits": [], "cached": false, "sources": [], "error": "no provider returned a result"}
+print(ws_format(empty_res, 200))

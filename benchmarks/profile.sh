@@ -68,7 +68,7 @@ median() {
 # One case can be named differently from its file: the chatbot stub has always
 # been chatbot_stub.ov, and a harness that reports "BUILD FAILED" for a case
 # that compiles is measuring the harness.
-CASES="startup intloop fib strconcat listappend mapops json chatbot"
+CASES="startup intloop fib strconcat listappend mapops json chatbot procs"
 declare -A CASE_FILE=( [chatbot]=chatbot_stub )
 
 printf '=== Ovyth profile (%s, %s reps, %s) ===\n\n' "$MODE" "$REPS" "$(hostname)"

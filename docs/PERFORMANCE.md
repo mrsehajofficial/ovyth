@@ -1,11 +1,11 @@
 # How fast is Ovyth?
 
 The short, honest answer: **on loop-heavy code Ovyth beats Python by 5x to
-310x; where it loses to Python it loses by 1.2x to 1.6x (hash maps, string
-building); on AI-pipeline work it beats CPython on five of seven cases;
-and against `-O3 -march=native` C it runs within 1.8x on a tight integer
-loop, up to 185x behind where every operation allocates.** It starts in
-about 6ms and ships binaries of 18-44 KB.
+310x; where it loses to Python it loses by 1.2x to 2.9x (hash maps, string
+building, context assembly); on AI-pipeline work it beats CPython on five of
+seven cases; and against `-O3 -march=native` C it runs within 1.5x on a tight
+integer loop, with its worst core-suite case — list building — at ~50x.**
+It starts in about 1ms and ships binaries of 18-44 KB.
 
 Every number on this page was measured on this machine (4 cores, Linux
 x86-64, clang 22.1.8 / gcc 16.2.1, Python 3.14.7) with the scripts in
@@ -43,15 +43,20 @@ mapops              194ms    82.46ms      158ms   identical, py: identical
 Measured 8 Oct 2026 (best-of-3 wall clock). This is a desktop, so expect
 movement: two runs an hour apart gave `intloop` 21-22ms, Python's copy
 6827-7399ms, and Python's `fib` anywhere from 32ms to 91ms. Read the tables
-as orders of magnitude.
+as orders of magnitude. **This snapshot predates the P1 int-collections
+work (12 Oct) and the re-measurement of 15 Oct — for current numbers use
+`benchmarks/BASELINE.md` and the table below**, which is the 15 Oct run of
+the same script: `intloop` 6ms/3.47ms, `fib` 1ms/0.12ms, `strconcat`
+2ms/0.17ms, `listappend` 3ms/0.06ms, `mapops` 66ms/21.27ms, every answer
+checked identical against C and Python.
 
 | case | Ovyth vs Python | Ovyth vs C | what the case measures |
 |---|---|---|---|
-| `intloop` | **310x faster** | 1.8x slower | 20M-iteration integer loop (xor/shift body — see §6) |
-| `fib` | **5.3x faster** | 14.6x slower | recursive calls, `fib(25)` |
-| `strconcat` | 1.6x **slower** | 22.6x slower | 40k string appends |
-| `listappend` | **2.5x faster** | 185x slower | 500k `push`es + sum |
-| `mapops` | 1.2x slower | 2.4x slower | 100k map inserts + 100k reads |
+| `intloop` | **400x faster** | 1.5-1.8x slower | 20M-iteration integer loop (xor/shift body — see §6) |
+| `fib` | **13x faster** | 8x, the process floor | recursive calls, `fib(25)`; the call work itself is at parity with C (BASELINE §5) |
+| `strconcat` | **1.5x faster** | 12x slower | 40k string appends |
+| `listappend` | **11x faster** | ~50x slower | 500k `push`es + sum |
+| `mapops` | 1.2x slower | 3.1x slower | 100k map inserts + 100k reads |
 
 How to read that honestly:
 
@@ -69,9 +74,10 @@ How to read that honestly:
   now emit as raw `int64_t` with no boxing, so the loop body is close to
   what clang would write by hand. (The older `total += i * 3 - 1` version
   of this case was being *erased* by the optimiser — see §6.)
-- **The C column is the real scoreboard**, and it ranges from 1.8x to 185x
-  depending on how much the case allocates. That spread is the object
-  model — see §4.
+- **The C column is the real scoreboard**, and it ranges from 1.5x to 50x
+  (core suite, 15 Oct 2026) depending on how much the case allocates. That
+  spread is the object model — see §4. The 8 Oct snapshot above showed 1.8x
+  to 185x; specialized int arrays (P1) moved the worst end of that range.
 
 ---
 
@@ -99,7 +105,7 @@ is ordinary desktop noise.
 
 Two numbers here are genuinely good regardless of what C does:
 
-- **~6 ms cold start.** There is no VM to boot, and libcurl is only linked
+- **~1 ms cold start.** There is no VM to boot, and libcurl is only linked
   into binaries that actually call `http.*`.
 - **18 KB for `print("hi")`.** The runtime is linked normally (not
   `--whole-archive`) with `-ffunction-sections` + `--gc-sections`, so dead
@@ -159,10 +165,10 @@ value. Several optimizations have closed most of the distance:
 | per-operation allocation (`str(i)`, string appends, `"key" + str(i)` keys) | **mostly fixed** — stack-buffer rendering, string sharing, pinned literals |
 | the compiler did not specialise int/float, so no value ever lived in a register | **partially done** — proven int/float locals emit as raw `int64_t`/`double` with no boxing; list elements and function parameters still take the boxed path |
 
-The remaining gap is the boxed path: values flowing through lists, maps
-and function parameters still get rebuilt and re-tagged rather than kept
+The remaining gap is the boxed path: values flowing through generic lists,
+maps and function parameters still get rebuilt and re-tagged rather than kept
 in registers. Loop variables the type-inference pass can prove are fixed —
-that is why `intloop` sits at 1.8x while `listappend` sits at 185x. Closing
+that is why `intloop` sits at 1.5x while `listappend` sits at ~50x. Closing
 the rest is the work tracked under stage P3 in the performance spec.
 
 ---
@@ -172,12 +178,12 @@ the rest is the work tracked under stage P3 in the performance spec.
 | workload | verdict |
 |---|---|
 | scripting / automation (I/O, JSON, HTTP) | **fast enough** — bounded by the network, not the language |
-| replacing Python scripts | **usually much faster** — 2.5x-310x on loops, recursion, lists; hash maps within 1.2x; string building 1.6x behind |
-| AI pipeline operations | **mostly ahead of Python** — 5 of 7 cases faster (1.6x-14.5x); context assembly 3.0x behind; see §7 |
-| startup-sensitive CLI tools | **good** — ~6 ms, 18 KB binaries |
-| tight numeric loops | **within 1.8x of `-O3` C** while locals stay unboxed — was 5.6x before the P3 locals landed |
-| allocation-heavy hot loops | **the weak spot** — 185x behind C on list churn; boxing + GC per push (P3 remains) |
-| map-heavy hot loops | **within 1.2x of CPython**, 2.4x behind C |
+| replacing Python scripts | **usually much faster** — 2.5x-400x on loops, recursion, lists; hash maps within 1.2x; string building 1.5x ahead |
+| AI pipeline operations | **mostly ahead of Python** — 5 of 7 cases faster (1.9x-19.3x); context assembly 2.9x behind; see §7 |
+| startup-sensitive CLI tools | **good** — ~1 ms, 22 KB binaries |
+| tight numeric loops | **within 1.5-1.8x of `-O3` C** while locals stay unboxed — was 5.6x before the P3 locals landed |
+| allocation-heavy hot loops | **the weak spot** — ~50x behind C on list churn; specialized int arrays removed the per-push box, growth resizes + GC remain (P3 remains) |
+| map-heavy hot loops | **within 1.2x of CPython**, 3.1x behind C |
 
 ---
 
@@ -292,9 +298,10 @@ case caveats and the open work are in
 ## 8. Known limitations
 
 - **Partial unboxing.** Only variables proven int/float at the type level
-  are emitted as raw `int64_t`/`double`. Values flowing through lists, maps
-  and function parameters remain boxed, so collection-heavy hot paths pay
-  the full representation cost — this is the 185x on `listappend`.
+  are emitted as raw `int64_t`/`double`, and only collections sema proves
+  homogeneous-int become raw arrays. Values flowing through generic lists,
+  maps and function parameters remain boxed, so collection-heavy hot paths
+  pay the full representation cost — ~50x on `listappend`.
 - **GC overhead.** Every allocation goes through the collector, adding
   roughly 1-2µs per object.
 - **No escape analysis.** The compiler cannot yet prove that a temporary

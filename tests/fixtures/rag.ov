@@ -6,18 +6,7 @@
 // in, so the tests exercise the same code users run; refresh it deliberately
 // when the package changes.
 //
-// --- snapshot of ovyth-rag 1.0.0 ---
-
-// rag :: rag.ov
-//
-// One job: keep a knowledge base, retrieve from it, and build the prompt.
-//
-//   install:  ovc pkg install rag
-//   import:   import "rag"
-//
-// Every public name is prefixed rag_ because Ovyth flattens all top-level
-// names into one program — the prefix is the namespace. The store is a plain
-// list of maps the caller owns, so it serialises with json.stringify and
+// --- snapshot of ovyth-rag 1.1.0 ---
 // survives with rag_save/rag_load; the module holds nothing between calls.
 //
 // Retrieval is lexical by default, which searches offline with no model and
@@ -208,19 +197,113 @@ function rag_score(query, text) {
     return score
 }
 
-// Rank a store lexically. Returns [{"text", "source", "score"}] best first.
-function rag_topk(store, query, k) {
+// An inverted index over a store: word -> ascending positions of the chunks
+// that contain it.
+//
+// Retrieval is otherwise a full scan: every query re-tokenizes every chunk in
+// the store -- lower() and split() over all of it, every time. That is
+// invisible at fifty chunks and ruinous at ten thousand, and an agent's memory
+// grows by design, with every turn filed and nothing evicted. The index is
+// what stops a growing memory from quietly making the agent slower.
+//
+// It is a value the caller owns, like the store itself: serializable, passed
+// in, never held between calls. Nothing about the store's own JSON changes.
+function rag_index_update(index, store, from) {
+    n = 0
+    i = from
+    if i < 0 { i = 0 }
+    while i < len(store) {
+        // Chunks are visited in order, so each position list stays sorted on
+        // its own; the last-element check is what keeps a chunk that mentions
+        // a word twice to a single entry.
+        for w in rag_words(store[i]["text"]) {
+            where = index[w]
+            if where == null {
+                index[w] = [i]
+            } else if where[len(where) - 1] != i {
+                where.push(i)
+            }
+        }
+        n = n + 1
+        i = i + 1
+    }
+    return n
+}
+
+// Index a whole store from scratch. What rag_load followed by
+// rag_index_update produces, and the two are interchangeable.
+function rag_index(store) {
+    index = {}
+    rag_index_update(index, store, 0)
+    return index
+}
+
+// One 1/0 per chunk: 1 where the chunk holds at least one query term.
+//
+// This is what makes indexed ranking *identical* to a full scan rather than
+// nearly identical, and the argument is one line: a chunk that scores anything
+// must contain a query term, so every chunk the mask skips was going to score
+// zero anyway. rag_rank below then walks the store in its own order with the
+// scores the scan would have produced -- no ordering to preserve, no padding
+// to invent, no ties decided differently.
+function rag_query_mask(index, query, n) {
+    mask = []
+    i = 0
+    while i < n {
+        mask.push(0)
+        i = i + 1
+    }
+    for term in rag_words(query) {
+        where = index[term]
+        if where != null {
+            for p in where {
+                if p >= 0 and p < n { mask[p] = 1 }
+            }
+        }
+    }
+    return mask
+}
+
+// Score a store in order and return the best k. The body both ranking paths
+// share, so they cannot drift.
+function rag_rank(store, query, k, mask) {
     scored = []
     i = 0
     while i < len(store) {
+        s = 0
+        // No mask, or a mask that says this chunk can match: score it. A masked
+        // chunk scores zero here, which is exactly what the scan would have
+        // computed for a chunk holding none of the query's terms.
+        if mask == null or mask[i] == 1 {
+            s = rag_score(query, store[i]["text"])
+        }
         scored.push({
             "text": store[i]["text"],
             "source": store[i]["source"],
-            "score": rag_score(query, store[i]["text"])
+            "score": s
         })
         i = i + 1
     }
     return rag_sort(scored, k)
+}
+
+// Rank a store lexically. Returns [{"text", "source", "score"}] best first.
+//
+// The full scan: every chunk is scored, so a query costs O(store). Fine while
+// the store is small, and the reason this stays the default call rather than
+// becoming a broken one.
+function rag_topk(store, query, k) {
+    return rag_rank(store, query, k, null)
+}
+
+// The same ranking, from an index. Returns exactly what rag_topk returns --
+// same texts, same scores, same order -- because the mask only skips chunks
+// that cannot score.
+//
+// Use it once you are holding an index: hand back the store's new length after
+// rag_add, and the cost of a query stops depending on how much is remembered.
+function rag_topk_idx(store, query, k, index) {
+    return rag_rank(store, query, k, rag_query_mask(index, query, len(store)))
 }
 
 // Rank by cosine similarity against a stored doc["vec"] — the path to use once

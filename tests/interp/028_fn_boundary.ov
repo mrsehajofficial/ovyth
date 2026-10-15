@@ -1,0 +1,85 @@
+// Function-boundary unboxing: which parameters and returns may cross a call
+// as a raw int64_t, and -- more importantly -- which must not. Every case
+// below must print the same bytes on the interpreter and the native backend.
+function add(a, b) { return a + b }
+function fib(n) {
+  if n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+function strp(s) { return s + "!" }
+function mutate(n) { n = n + 1; return n }
+function mixed(x) { return x }
+function loopvar(n) {
+  keep = 0
+  for n in [1, 2] { keep = keep + n }
+  return n + keep
+}
+function ev(n) {
+  if n > 0 { return "pos" }
+  return n
+}
+function nothing() { return 7 }
+function capture(n) {
+  f = function (m) { return m + n }
+  return f(2)
+}
+function mut_b(x) { return x + 1 }
+function mut_a(x) { return mut_b(x) }
+function pair(a, b) { return a + len(b) }
+function kw(a, b) { return a * b }
+
+// raw: both call sites pass literals
+print(add(1, 2))
+print(add(20, 22))
+
+// raw: self-recursion through raw parameters
+print(fib(15))
+print(fib(20))
+
+// boxed: a string parameter
+print(strp("hi"))
+
+// boxed: the parameter is assigned in the body
+print(mutate(5))
+
+// boxed: called with both an int and a float
+print(mixed(3))
+print(mixed(2.5))
+
+// boxed: the body binds the parameter's name as a loop variable
+print(loopvar(41))
+
+// boxed: not every return is an int
+print(ev(-1))
+print(ev(2))
+
+// raw return with no parameters at all
+print(nothing())
+
+// boxed: the body creates a closure
+print(capture(10))
+
+// raw: a claim through another function's argument
+print(mut_a(1))
+print(mut_b(4))
+
+// mixed signature: one raw parameter, one boxed
+print(pair(10, "hello"))
+
+// named arguments bind to raw parameters too
+print(kw(b: 3, a: 4))
+
+// raw results in value contexts
+xs = [add(1, 2), add(3, 4)]
+print(len(xs), sum(xs))
+if add(1, 1) { print("truthy") }
+print(str(add(4, 5)) + "!")
+
+// overflow keeps the boxed path's two's-complement answer
+print(add(9223372036854775807, 1))
+
+// float addition stays float through the boxed path
+print(add(1.5, 2))
+
+// a raw result feeding a boxed parameter
+print(strp(str(add(6, 6))))

@@ -252,6 +252,96 @@ print('two sessions')
 kill $agent_pid 2>/dev/null
 wait $agent_pid 2>/dev/null
 
+# ------------------------------------------------- a response map vs. the GC
+# Every http.* call answers a map, and both backends built that map in a C
+# local while allocating each key -- the body string included. A collection
+# triggered by one of those allocations is entitled to free the half-built
+# map -- reachable from nothing at that instant -- so the caller was handed a
+# map built on freed memory, and the process died two collections later in the
+# collector's mark phase.
+#
+# `ovc agent` hit it on its search path: a search response, a model call, then
+# a segfault inside mark_loop. Nothing about it was visible at the request
+# itself, which is why this is a regression test and not a memory.
+#
+# The conditions are the whole test, and they are arithmetical: a collection
+# fires when heap_bytes reaches 2 x live + 8MB, so the test needs garbage to
+# accumulate past that. The ballast pins the live set; the big response bodies
+# are the garbage, and they are allocated *inside* the map-building window --
+# so when the threshold is crossed, it is crossed while the map is only half
+# built. A handful of small responses would not get there; 2MB bodies do in a
+# few requests.
+HTTP_PORT_FILE="$BIN/http.port"
+python3 - "$HTTP_PORT_FILE" << 'PY' >"$BIN/http.log" 2>&1 &
+import sys, http.server
+PORT_FILE = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        # A megabyte of body: the search tool reads pages of this size, and
+        # the response map holds each one.
+        body = ("<html><body><p>" + ("ovyth gc response body. " * 38000) + "</p></body></html>").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(PORT_FILE, "w").write(str(srv.server_port))
+srv.serve_forever()
+PY
+http_pid=$!
+HPORT="$(wait_file "$HTTP_PORT_FILE" || true)"
+if [[ -z "$HPORT" ]]; then
+  bad "http server published a port" "$(cat "$BIN/http.log")"
+else
+  cat > "$BIN/httpgc.ov" <<EOF
+// The live set, pinned above.
+ballast = []
+i = 0
+while i < 200 {
+    filler = []
+    j = 0
+    while j < 200 {
+        filler.push("filler-string-" + str(i) + "-" + str(j))
+        j = j + 1
+    }
+    ballast.push(filler)
+    i = i + 1
+}
+print("ballast " + str(len(ballast)))
+bad = 0
+k = 0
+while k < 30 {
+    resp = http.get("http://127.0.0.1:$HPORT/", timeout = 20.0)
+    if resp["status"] != 200 or !resp["ok"] { bad = bad + 1 }
+    if len(resp["body"]) < 900000 { bad = bad + 1 }
+    if resp["headers"] == null { bad = bad + 1 }
+    k = k + 1
+}
+print("requests 30 bad " + str(bad))
+EOF
+  hout="$(timeout 240 "$OVC" run "$BIN/httpgc.ov" 2>&1)"
+  if grep -q "^requests 30 bad 0$" <<<"$hout"; then
+    ok "every http response map survives the collector"
+  else
+    bad "every http response map survives the collector" "$hout"
+  fi
+  # The same, compiled: the native builtin builds its own response map.
+  if "$OVC" "$BIN/httpgc.ov" -o "$BIN/httpgc" >/dev/null 2>&1; then
+    nout="$(timeout 240 "$BIN/httpgc" 2>&1)"
+    if grep -q "^requests 30 bad 0$" <<<"$nout"; then
+      ok "the native backend builds the same map safely"
+    else
+      bad "the native backend builds the same map safely" "$nout"
+    fi
+  else
+    bad "the native http test compiled" "compile failed"
+  fi
+fi
+kill $http_pid 2>/dev/null
+
 echo
 echo "ovc net regression: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

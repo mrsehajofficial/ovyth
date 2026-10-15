@@ -66,8 +66,13 @@ int ov_h_value_method(OvValue base, const char* name, OvValue a0, OvValue a1,
       *out = ov_bool(ov_str_find(s, a0.str, 0) == 0); return 0;
     }
     if (!strcmp(name, "endswith")) {
-      int64_t at = ov_str_find(s, a0.str, 0);
-      *out = ov_bool(at >= 0 && (size_t)at + a0.str->len == s->len); return 0;
+      // Compare against the tail, not the needle's first occurrence: a URL
+      // like http://host/ contains "/" at index 5, and asking whether it ends
+      // with "/" must not be answered by that earlier hit.
+      size_t n = a0.str->len;
+      int tail = n <= s->len &&
+                 memcmp(s->bytes + (s->len - n), a0.str->bytes, n) == 0;
+      *out = ov_bool(tail); return 0;
     }
     if (!strcmp(name, "contains")) {
       *out = ov_bool(ov_str_contains(s, a0.str)); return 0;
@@ -293,6 +298,7 @@ OvValue ov_h_json_parse(OvValue s, int* threw) {
     size_t n = s.str->len < 80 ? s.str->len : 80;
     char tmp[200];
     snprintf(tmp, sizeof(tmp), "invalid JSON: %.*s", (int)n, s.str->bytes);
+    *threw = 1;  /* without this the caller keeps the message as a value */
     fail(tmp, strlen(tmp)); return ov_h_err_value();
   }
   /* Use fast parser that reuses buffers */
@@ -457,11 +463,15 @@ OvValue ov_h_num1(OvValue v, int* threw, char op) {
 OvValue ov_h_gc(OvValue mode) {
   const char* what = (ov_tagof(mode) == OV_STRING) ? ov_str_data(mode.str) : "";
   if (!strcmp(what, "stats")) {
-    char tmp[160];
-    snprintf(tmp, sizeof(tmp), "live=%llu heap=%llu allocs=%llu",
+    char tmp[192];
+    /* Cycles too: the interpreter's own stats path already printed them, and
+     * a collector that runs more often than its growth policy intends is a
+     * bug you can only see if the count is observable. */
+    snprintf(tmp, sizeof(tmp), "live=%llu heap=%llu allocs=%llu cycles=%llu",
              (unsigned long long)ov_gc_live_bytes(),
              (unsigned long long)ov_gc_heap_bytes(),
-             (unsigned long long)ov_heap_alloc_count());
+             (unsigned long long)ov_heap_alloc_count(),
+             (unsigned long long)ov_gc_cycle_count());
     return ov_str(ov_str_new(tmp, strlen(tmp)));
   }
   if (!strcmp(what, "reset")) { ov_heap_reset_stats(); return ov_nil(); }

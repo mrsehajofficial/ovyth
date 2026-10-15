@@ -83,8 +83,12 @@ function ai_trim(messages, keep) {
 // root — Ollama answers GET / with "Ollama is running" and rejects everything
 // else — which is a confusing way to learn the path. With it, the host alone
 // is a complete configuration.
+//
+// The default path survives the trailing-slash case: a host written as
+// http://host:11434/ has a path of "/" in the URL, and reusing that as the
+// path to append produced http://host:11434// with the endpoint path gone.
 function ai_normalize_url(url) {
-    path = "/v1/chat/completions"
+    default_path = "/v1/chat/completions"
     if !url.contains("://") { return url }
     rest = url.slice(url.indexof("://") + 3, len(url))
     slash = rest.indexof("/")
@@ -92,8 +96,8 @@ function ai_normalize_url(url) {
         path = rest.slice(slash, len(rest))
         if path != "" and path != "/" { return url }
     }
-    if url.endswith("/") { return url + path.slice(1, len(path)) }
-    return url + path
+    if url.endswith("/") { return url + default_path.slice(1, len(default_path)) }
+    return url + default_path
 }
 
 function ai_request(url, key, model, messages, timeout_s) {
@@ -123,17 +127,34 @@ function ai_request(url, key, model, messages, timeout_s) {
         result["elapsed_ms"] = response.elapsed_ms
         if response.status == 200 {
             data = json.parse(response.body)
-            text = data["choices"][0]["message"]["content"]
-            // A 200 with no message content in it is not a success. Some
-            // gateways answer that way, and reporting ok with a nil text means
-            // every caller has to check for nil after being told it worked --
-            // so the shape is validated here, once, where the response is
-            // still in hand.
-            if text == null {
-                result["error"] = "the endpoint replied with no message content"
+            // The shape is validated before it is indexed. A 200 is not a
+            // success: gateways and proxies answer 200 with a login page, an
+            // empty choices array, or a body with no choices key at all, and
+            // letting the index throw says "list index 0 out of range" --
+            // which reads like the caller's own list is wrong, not the
+            // provider's reply.
+            choices = data["choices"]
+            if choices == null {
+                result["error"] = "the endpoint replied 200 with no choices"
+            } else if len(choices) == 0 {
+                result["error"] = "the endpoint replied 200 with zero choices"
             } else {
-                result["text"] = text
-                result["ok"] = true
+                message = choices[0]["message"]
+                text = null
+                if message != null {
+                    text = message["content"]
+                }
+                // A 200 with no message content in it is not a success. Some
+                // gateways answer that way, and reporting ok with a nil text means
+                // every caller has to check for nil after being told it worked --
+                // so the shape is validated here, once, where the response is
+                // still in hand.
+                if text == null {
+                    result["error"] = "the endpoint replied with no message content"
+                } else {
+                    result["text"] = text
+                    result["ok"] = true
+                }
             }
         } else {
             // Keep the server's message, not just its status. "HTTP 502" gives
@@ -157,7 +178,15 @@ function ai_request(url, key, model, messages, timeout_s) {
                               (msg == "" ? "" : ": " + msg)
         }
     } catch e {
-        result["error"] = str(e)
+        // A transport failure (DNS, refused, timeout) or a 200 whose body
+        // would not parse lands here. Name the status when one is known:
+        // "invalid JSON" alone does not distinguish a provider answering
+        // 200 with a login page from one answering 500 with a stack trace.
+        where = ""
+        if result["status"] != 0 {
+            where = "HTTP " + str(result["status"]) + ": "
+        }
+        result["error"] = where + str(e)
     }
     return result
 }

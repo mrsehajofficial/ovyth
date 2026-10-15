@@ -6,3 +6,12 @@ print("a".repeat(3) + " " + "bc".upper())
 print("XyZ".lower())
 n = 42
 print("n=" + n)
+
+// endswith answers the tail, not the needle's first occurrence: "http:" and
+// "//" both appear before the final "/", and a URL's trailing slash is still
+// a trailing slash. (Same shape as startswith, which has always been right.)
+u = "http://127.0.0.1:11434/"
+print(u.endswith("/"), u.endswith("11434/"), u.endswith("v1"), u.endswith("http://"))
+print("abc/".endswith("/"), "abc/".endswith("c/"), "abc/".endswith("/abc"), "".endswith(""))
+// endswith with a needle longer than the string is false, not a crash.
+print("ab".endswith("abc"), "abc".endswith("abc"))

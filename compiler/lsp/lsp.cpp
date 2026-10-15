@@ -309,15 +309,15 @@ const std::vector<std::string> kBareBuiltins = {
     "gc", "get", "getenv", "getenv_or", "has", "indexof", "input", "int",
     "items", "join", "keys", "len", "list", "lower", "max", "merge", "min",
     "pad", "pop", "pow", "print", "push", "range", "repeat", "replace",
-    "reverse", "round", "set", "setenv", "sort", "split", "sqrt", "startswith",
-    "str", "sum", "throw", "trim", "type", "upper", "values",
+    "reverse", "round", "set", "setenv", "sleep", "sort", "split", "sqrt",
+    "startswith", "str", "sum", "throw", "trim", "type", "upper", "values",
 };
 
 // The namespaces the runtime installs as globals (interp_stmt.cpp), with the
 // members their backends dispatch on. Used after `ns.` is typed.
 const std::map<std::string, std::vector<std::string>> kNamespaces = {
-    {"os",   {"run", "tty"}},
-    {"file", {"read", "write", "exists", "append", "delete"}},
+    {"os",   {"run", "exec", "pipe", "read", "write", "close", "stat", "tty"}},
+    {"file", {"read", "write", "exists", "append", "delete", "open", "seek"}},
     {"json", {"parse", "stringify", "valid", "get", "get_int", "get_float", "extract"}},
     {"time", {"clock", "now"}},
     {"http", {"get", "head", "body", "headers", "params", "timeout", "content_type"}},
