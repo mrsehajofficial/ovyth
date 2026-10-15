@@ -21,7 +21,7 @@ jobs:
         run: make -j"$(nproc)"
 
       - name: Test (runtime self-test + both-backend regression)
-        run: make
+        run: make test
 
       # Deterministic performance counters only: allocations and collection
       # resizes are runtime telemetry, so they are machine-independent.
