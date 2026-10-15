@@ -3699,11 +3699,19 @@ std::string Gen::run() {
   line("  ov_runtime_init(argc, argv);");
   line("  int _code = 0;");
   line("  jmp_buf* _jb = ov_try_push();");
+  // A panic or `exit(code)` longjmps out of ov_main, which skips ov_main's
+  // own epilogue -- so every root it registered still points into its frame,
+  // and that frame is dead. ov_runtime_shutdown() collects, and a collector
+  // that walks a root into a dead frame dereferences whatever now occupies
+  // it: a segfault whose location has nothing to do with the cause. Restore
+  // the root list to this frame's entry mark before anything walks it, the
+  // same idiom an in-language `try` uses on its catch path.
+  line("  size_t _rm = ov_gc_roots_mark();");
   line("  if (setjmp(*_jb) == 0) {");
   line("    ov_main();");
   line("    _code = 0;");
   line("  } else {");
-  // An uncaught panic, or `exit(code)`, arrives here via longjmp.
+  line("    ov_gc_roots_restore(_rm);");
   line("    _code = ov_uncaught_code();");
   line("  }");
   line("  ov_try_pop();");

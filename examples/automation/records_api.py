@@ -23,7 +23,7 @@ state. That is what makes the test reproducible.
 
 import json
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RECORDS = [
     {"id": 1, "name": "api-gateway", "status": "degraded", "cpu": 71.2, "region": "eu-west"},
@@ -79,4 +79,4 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8791
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

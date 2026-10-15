@@ -1299,3 +1299,32 @@ escapes and reports once).
 
 Everything green: 64 language tests (both backends) + 43 pkg + 25 ui + 11
 net + 24 ai + 88 system + **17 automation** + 5 rag + 17 memory.
+
+### A segfault at exit, on one compiler and not another — 15 Oct 2026
+
+CI's automation suite failed with `rc=139` (SIGSEGV) in the *native binary*,
+after it had printed its entire correct output — and the same binary passed
+locally under clang 22, ASan and UBSan. Auditing the exit path found the
+cause, and it was not in the new code.
+
+`exit()` (and any uncaught panic) unwinds with `longjmp` out of `ov_main`,
+which skips `ov_main`'s epilogue. Every root `ov_main` registered therefore
+stayed in the collector's root list, pointing into a frame that was already
+dead — and `ov_runtime_shutdown()` runs a collection, which walks that list
+and dereferences what it finds. Whether the dead frame still held plausible
+values is a stack-layout question, so it crashed on CI's clang and not here:
+a segfault whose location has nothing to do with its cause.
+
+The top-level frame now captures the root mark at push and restores it before
+anything walks the root list on the unwind path — the same idiom an in-language
+`try` has always used on its catch path. Regression:
+`tests/interp/031_exit_after_alloc.ov` (allocate 2000 rooted values, then
+exit; the harness asserts rc=0, so a crash at exit fails loudly on any
+compiler).
+
+Two fixes in the example's own harness along the way: its records API was a
+single-threaded `HTTPServer` (a client that held a connection stalled the
+next one), now `ThreadingHTTPServer` like the suite's other providers; and
+the native-vs-interpreter comparison now prints both runs' tails on a
+mismatch instead of a diff summary, because "rc 139 vs 70" is not a
+diagnosis.

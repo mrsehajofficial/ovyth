@@ -1,0 +1,15 @@
+// exit() after allocating: the panic path longjmps out of ov_main, skipping
+// its epilogue, so the roots it registered must be restored by the top-level
+// frame. Without that, ov_runtime_shutdown's collection walks pointers into a
+// dead frame -- a segfault whose stack trace points nowhere near the cause.
+// This shape is what found it: allocate a few thousand rooted values, then
+// exit, and the exit-time collection either walks live roots or garbage.
+data = []
+i = 0
+while i < 2000 {
+  data.push({"i": i, "s": "row " + str(i)})
+  i = i + 1
+}
+m = {"first": data[0], "count": len(data)}
+print("prepared", len(data), m["count"], m["first"]["s"])
+exit(0)
