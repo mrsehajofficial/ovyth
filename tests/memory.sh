@@ -304,7 +304,7 @@ if out="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
     bad "a completed search is cached to disk" "no cache entry written"
   fi
 else
-  bad "the search tool run" "agent exited non-zero"
+  bad "the search tool run" "$out"
 fi
 kill $sg2_pid 2>/dev/null || true
 
@@ -322,7 +322,7 @@ if out="$(OVYTH_HOME="$AGENT_HOME" OVYTH_AGENT_MEMORY="$MEM" \
     bad ":search answers a repeat query from the cache" "$out"
   fi
 else
-  bad ":search answers a repeat query from the cache" "agent exited non-zero"
+  bad ":search answers a repeat query from the cache" "$out"
 fi
 
 echo
