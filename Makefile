@@ -183,6 +183,7 @@ test: $(OVC) $(RT_TEST)
 	@bash tests/system.sh
 	@bash tests/automation.sh
 	@bash tests/rag.sh
+	@bash tests/memory.sh
 	
 
 # --- install --------------------------------------------------------------
